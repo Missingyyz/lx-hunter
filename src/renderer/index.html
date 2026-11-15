@@ -544,7 +544,10 @@
           <label class="chk"><input type="checkbox" id="cfgPatrolAutoDelete"><span>巡检连续失效达阈值<strong>自动删除音源</strong>（从服务端+本地一并移除；本地未灌入服务端的源只禁用不删）</span></label>
           <label class="field inline"><span>自动删除所需连续失效次数</span><input class="input" id="cfgPatrolDeleteAfter" type="number" min="1" max="20" step="1"></label>
           <label class="field inline"><span>自动禁用所需连续失效次数</span><input class="input" id="cfgPatrolDisableAfter" type="number" min="1" max="20" step="1"></label>
+          <label class="chk"><input type="checkbox" id="cfgAutoTrustObf"><span><strong>重度混淆脚本自动信任</strong>（规则制：无硬特征 + 沙箱实测外联域名全部为音乐生态白名单 → 检测后自动放行，不再需要人工点信任；硬特征条目永远保持隔离，内容更新自动重新隔离）</span></label>
+          <label class="field inline"><span>额外信任的外联域名（逗号分隔，子串匹配）</span><input class="input" id="cfgTrustedObfDomains" placeholder="例：api.my-music.example.com, cdn2.myhost.cn"></label>
         </div>
+        <p class="hint"><strong>「自动信任」的局限如实说明</strong>：沙箱实测只能覆盖检测当轮的行为，混淆脚本可以设计成特定条件下才连坏域名——自动信任是初筛自动化而非安全结论。自动放行的条目在隔离日志与音源条目上都打了 <code>obfAutoTrust</code> 标注，随时可「取消信任」。白名单外域名（如 lx-source 系的 zddyr.top / wwwweb.top）会保持隔离并在条目上注明原因，确认安全后把域名加进上面的额外信任清单即可自动放行。</p>
         <p class="hint"><strong>「自动禁用」先于「自动删除」发生</strong>：连续失效次数先到「禁用阈值」就把源在服务端停用（可随时手动恢复），继续失效到「删除阈值」且勾了自动删除才移除。因此<strong>禁用次数应 ≤ 删除次数</strong>，否则源会没被禁用就直接被删。</p>
         <p class="hint"><strong>「启用定时巡检」就是定时巡检的总开关</strong>：勾上后，软件运行期间后台每分钟核对一次「距上次巡检是否已够间隔」，够了才真正开跑 —— <strong>实际触发比设定间隔最多晚 1 分钟</strong>，且<strong>软件必须保持运行</strong>。</p>
         <p class="hint">巡检覆盖「本工具灌入」及「同步纳入的本地候选」音源（服务端原生音源无本地脚本，自动跳过）；网络抖动不会误杀，恢复可用的会自动重新启用。也可在「已灌入」页随时手动巡检。</p>
@@ -730,6 +733,6 @@
 <div class="toast" id="toast" hidden></div>
 <script src="sorters.js?v=27"></script>
 <script src="web-bridge.js?v=57"></script>
-<script src="app.js?v=69"></script>
+<script src="app.js?v=70"></script>
 </body>
 </html>

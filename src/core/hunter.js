@@ -1567,10 +1567,13 @@ class Hunter {
   applyObfGate(list, codeOf, phase) {
     const cfg = this.store.config
     if (!cfg.excludeHighRiskObfuscated) return { rejected: 0, trusted: 0 }
-    const trustedHashes = Array.isArray(cfg.trustedObfHashes) ? cfg.trustedObfHashes : []
+    // P-1431 规则制：trustedHashes 必须挂回 cfg，否则首次自动信任 push 到临时数组会丢
+    if (!Array.isArray(cfg.trustedObfHashes)) cfg.trustedObfHashes = []
+    const trustedHashes = cfg.trustedObfHashes
     const kept = []
     let rejected = 0
     let trusted = 0
+    let autoTrusted = 0
     for (const e of list) {
       const code = codeOf(e)
       // P-1430：正文拿不到的条目不隔离，且要清掉历史残留的隔离状态。
@@ -1602,6 +1605,36 @@ class Hunter {
           kept.push(e)
           continue
         }
+        // P-1431 规则制自动信任（v1.13.7）：纯密度型（无空转死循环/混淆自调度/jsjiami/eval
+        // 等硬特征）+ 沙箱已实测（deep 存在）+ 实测取链域名与静态外联域名全部落在
+        // 音乐生态白名单（内置 + config.trustedObfDomains 自定义）→ 自动写入信任指纹放行。
+        // 局限如实：混淆脚本可条件触发恶意行为，沙箱一轮实测看不见——自动信任是初筛
+        // 自动化而非安全结论，条目打 obfAutoTrust 标注可追溯，内容更新自动重新隔离。
+        if (cfg.autoTrustCleanObf !== false && e.contentHash && !trustedHashes.includes(e.contentHash) && e.deep && e.deep.checkedAt) {
+          const hh = risk.hits || {}
+          const hardHit = (hh.spinLoops || 0) > 0 || (hh.selfSchedCalls || 0) > 0 ||
+            (hh.jsjiamiMarks || 0) > 0 || (hh.evalCalls || 0) > 0
+          if (!hardHit) {
+            const urls = []
+            for (const p of Object.values(e.deep.platforms || {})) {
+              if (p && p.url) urls.push(String(p.url))
+            }
+            const verdict = obfDomainVerdict(obfDomains(code).concat(urls), cfg.trustedObfDomains)
+            if (verdict.clean) {
+              trustedHashes.push(e.contentHash)
+              e.obfTrusted = true
+              e.obfAutoTrust = true
+              e.quarantined = false
+              if (e.status === 'quarantined') e.status = 'ok'
+              e.error = '自动信任：无硬特征，沙箱实测外联域名全部为音乐生态白名单'
+              autoTrusted++
+              trusted++
+              kept.push(e)
+              continue
+            }
+            e.obfHoldReason = '白名单外域名：' + verdict.suspect.slice(0, 4).join('、')
+          }
+        }
         e.status = 'quarantined'
         e.quarantined = true
         e.usable = false
@@ -1616,6 +1649,10 @@ class Hunter {
       list.length = 0
       list.push(...kept)
       this.log(`${phase}隔离 ${rejected} 条重度混淆脚本（已移入「混淆隔离」区，可在该页信任后放行）`, '安全', 'warn')
+      this.store.saveDb()
+    }
+    if (autoTrusted) {
+      this.log(`自动信任 ${autoTrusted} 条重度混淆脚本（规则制：无硬特征 + 沙箱实测外联全为音乐生态白名单；内容更新会重新隔离）`, '安全', 'info')
       this.store.saveDb()
     }
     return { rejected, trusted }

@@ -201,6 +201,13 @@ function obfuscationRisk(content) {
  * 信任放行是人工决策，光有混淆密度不够——用户还要知道「这脚本会跟谁通信」。
  * 纯静态字符串扫描：混淆器加密字符串的场景扫不全，结果只能当参考画像，不能当安全结论。
  */
+// 音乐生态外联白名单（v1.13.7 提为模块常量）：obfDomains 域名画像与
+// applyObfGate 的「自动信任判定」共用同一份口径。自定义扩展走
+// config.trustedObfDomains（子串匹配，设置页可改），不改代码。
+const OBF_KNOWN_DOMAINS = ('music.163.com,netease,qq.com,y.qq.com,i.qq.com,kugou,kg.hu,kuwo,migu,bilibili,qishui,gitee,t.me,telegram,' +
+  'gequbao,lxmusic,github,githubusercontent,jsdelivr,ghproxy,ghfast,ikun,cloudflare,aliyuncs,' +
+  'myqcloud,kkgithub,gitcode,chksz,lawaxi,bytedance,douyin,pipilaka,kstore.vip,ceseet.me,vsaa.cn,hhlqilongzhu.cn,oiapi.net,xcvts.cn').split(',')
+
 function obfDomains(code) {
   const t = String(code || '')
   if (!t) return []
@@ -210,18 +217,28 @@ function obfDomains(code) {
   while ((m = re1.exec(t))) raw.push(m[1].toLowerCase())
   const re2 = /["']([a-z0-9.-]+\.(?:com|cn|net|org|top|xyz|cc|vip|icu|ru|tk|me|io|dev|org\.cn|com\.cn))["']/g
   while ((m = re2.exec(t))) raw.push(m[1].toLowerCase())
-  const KNOWN = ('music.163.com,netease,qq.com,y.qq.com,i.qq.com,kugou,kg.hu,kuwo,migu,bilibili,qishui,' +
-    'gequbao,lxmusic,github,githubusercontent,jsdelivr,ghproxy,ghfast,ikun,cloudflare,aliyuncs,' +
-    'myqcloud,kkgithub,gitcode,chksz,lawaxi,bytedance,douyin,pipilaka').split(',')
   const uniq = []
   for (const h of raw) {
     const host = h.replace(/^\./, '')
     if (!host || host.split('.').length < 2) continue
     if (uniq.includes(host)) continue
-    if (KNOWN.some(k => host.includes(k))) continue
+    if (OBF_KNOWN_DOMAINS.some(k => host.includes(k))) continue
     uniq.push(host)
   }
   return uniq
+}
+
+/**
+ * 自动信任判定（v1.13.7，规则制）：给定外联域名集合，判断是否全部落在
+ * 音乐生态白名单（内置 OBF_KNOWN_DOMAINS + config.trustedObfDomains 自定义）内。
+ * 供 applyObfGate 在检测路径做「无硬特征 + 沙箱实测外联干净 → 自动信任」。
+ */
+function obfDomainVerdict(domains, customList) {
+  const customs = Array.isArray(customList) ? customList.map(x => String(x || '').toLowerCase()).filter(Boolean) : []
+  const list = Array.isArray(domains) ? domains.map(x => String(x || '').toLowerCase()) : []
+  const suspect = list.filter(d => d && d.split('.').length >= 2 &&
+    !OBF_KNOWN_DOMAINS.some(k => d.includes(k)) && !customs.some(k => d.includes(k)))
+  return { clean: suspect.length === 0, suspect }
 }
 
 /** 混淆风险的中文摘要（状态徽章 tooltip / 日志用） */
@@ -1023,7 +1040,7 @@ function regressionJudge(prevPassed, newPassed, newFailed) {
 
 module.exports = {
   TEST_SONGS, PLATFORMS, PLATFORM_LABEL,
-  sha256Str, extractMeta, classifyEntry, scoreEntry, isHostAdapterScript, obfuscationRisk, obfuscationTip, obfDomains, verifyUrl,
+  sha256Str, extractMeta, classifyEntry, scoreEntry, isHostAdapterScript, obfuscationRisk, obfuscationTip, obfDomains, obfDomainVerdict, verifyUrl,
   checkBasic, deepCheck, usableCount, stoppable, testPlatform, sameReasonHint, patrolJudge, probeTopTier, planTierProbe,
   aggregateMetrics, declaredQualities,
   isTransient, isLocalNetworkIssue, deepFailKind, applyProbeRecord, extractApiHosts, probeApiHosts, apiDownVerdict,

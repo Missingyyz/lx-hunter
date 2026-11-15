@@ -138,6 +138,10 @@ const DEFAULT_CONFIG = {
   // 重载脚本，故删除需严格串行化并保留 serverDeleteIntervalMs 间隔，避免服务端假死）。
   // patrolAutoDelete=false（默认）时仅禁用不删；开启后连续 patrolDeleteAfter 次（默认 3）
   // 巡检判定 dead 才走删除。注意：本地（未灌入服务端）的音源无论开关如何都只禁用、不删。
+  // v1.13.7 P-1431：重度混淆脚本自动信任规则（见 checker.obfDomainVerdict）。默认开：
+  // 无硬特征 + 沙箱实测外联全白名单 → 检测后自动放行，不再等人工点信任。
+  autoTrustCleanObf: true,
+  trustedObfDomains: [],
   patrolAutoDelete: false,
   patrolDeleteAfter: 3,
   // v1.13.4：巡检「连续失效自动禁用」的阈值（patrolJudge 的 streak 达到即处置、

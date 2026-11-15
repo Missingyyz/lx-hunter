@@ -95,7 +95,20 @@ const hunterSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'hun
 const checkerSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'checker.js'), 'utf8')
 ok(/function obfDomains\(code\)/.test(checkerSrc), 'checker 提供 obfDomains 域名画像');ok(/正文拿不到的条目不隔离，且要清掉历史残留/.test(hunterSrc), '空正文的隔离残留自动清回音源库')
 ok(/e\.obfDomains = obfDomains\(code\)/.test(hunterSrc), '隔离时记录外联域名画像')
-ok(/obfDomains, verifyUrl/.test(checkerSrc), 'checker 导出 obfDomains')
+ok(/obfDomains, obfDomainVerdict/.test(checkerSrc), 'checker 导出 obfDomains/obfDomainVerdict')
 ok(/外联：/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8')), '隔离页显示外联域名画像')
+
+console.log('--- ⑮ P-1431：规则制自动信任（用户要求：不要每次人工信任）---')
+ok(/function obfDomainVerdict\(domains, customList\)/.test(checkerSrc), 'checker 提供自动信任判定 obfDomainVerdict')
+ok(/autoTrustCleanObf !== false && e\.contentHash && !trustedHashes\.includes/.test(hunterSrc), '闸门检测路径有自动信任判定（可关）')
+ok(/hardHit = \(hh\.spinLoops \|\| 0\) > 0/.test(hunterSrc), '硬特征条目永不自动信任')
+ok(/obfDomainVerdict\(obfDomains\(code\)\.concat\(urls\), cfg\.trustedObfDomains\)/.test(hunterSrc), '判定域 = 静态外联 + 沙箱实测取链 URL')
+ok(/自动信任 \$\{autoTrusted\} 条/.test(hunterSrc), '自动信任有日志可追溯')
+ok(/Array\.isArray\(cfg\.trustedObfHashes\)\) cfg\.trustedObfHashes = \[\]/.test(hunterSrc), 'trustedHashes 挂回 cfg（修复首签丢失隐患）')
+ok(/autoTrustCleanObf: true,/.test(storeSrc), '默认开启')
+ok(/id="cfgAutoTrustObf"/.test(accHtml), '设置页有自动信任开关')
+ok(/id="cfgTrustedObfDomains"/.test(accHtml), '设置页有自定义白名单输入框')
+ok(/autoTrustCleanObf: \$\('cfgAutoTrustObf'\)\.checked/.test(
+  fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8')), '读写链路接通')
 
 console.log(`\nsecurity-hardening: PASS ${pass} / FAIL 0`)
