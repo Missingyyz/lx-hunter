@@ -7,7 +7,7 @@ const cases = [
   ['沙箱 fetch 失败: fetch failed ← connect ECONNREFUSED 127.0.0.1:7890 [https://a.cn]', /连接被拒绝/],
   ['沙箱 fetch 失败: 请求超时 8000ms [https://a.cn]', /请求超时/],
   ['HTTP 403', /鉴权|403/],
-  ['返回空链接', /所有平台报同一个错/]
+  ['返回空链接', /多个平台报同一个错/]
 ]
 cases.forEach(([m, re]) => {
   const h = sameReasonHint(m)

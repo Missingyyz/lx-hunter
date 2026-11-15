@@ -111,6 +111,14 @@ ok(/id="cfgTrustedObfDomains"/.test(accHtml), '设置页有自定义白名单输
 ok(/autoTrustCleanObf: \$\('cfgAutoTrustObf'\)\.checked/.test(
   fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8')), '读写链路接通')
 
+console.log('--- ⑰ P-1432：检测口径「未测 vs 不可用」+ dedupe 完整性守卫 ---')
+const checkerSrc3 = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'checker.js'), 'utf8')
+ok(/const attemptsBefore = metrics\.attempts/.test(checkerSrc3), 'testPlatform 记录 dispatch 前 attempts 基线')
+ok(/metrics\.attempts === attemptsBefore &&\s*\n\s*\/已知失败\|跳过重复请求\|RATE_LIMIT\|限流\/i\.test\(lastMsg\)\) {\s*\n\s*return done\(\{ status: 'untested'/.test(checkerSrc3), '脚本拦截类拒绝记 untested（语义白名单，网络错误仍 failed）')
+ok(/多个平台报同一个错/.test(checkerSrc3), 'hint 文案修正（不再声称「所有平台」）')
+ok(/const incomplete = x =>/.test(hunterSrc), '_dedupe 深检完整性守卫（含 untested 不定胜负）')
+ok(/vals\.some\(pl => !pl \|\| pl\.status === 'untested' \|\| pl\.status === 'pending'\)/.test(hunterSrc), '完整性判定覆盖 untested/pending')
+
 console.log(`\nsecurity-hardening: PASS ${pass} / FAIL 0`)
 
 console.log('--- ⑯ P-1508 规则化：同名冲突自动补测 ---')
@@ -118,7 +126,7 @@ const hunterSrc2 = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'hu
 ok(/async _supplementConflicts\(plans, codeCache, cfg\)/.test(hunterSrc2), '证据补齐层已实现（照 _probeTierForConflicts 模式）')
 ok(/await this\._supplementConflicts\(plans, codeCache, cfg\)/.test(hunterSrc2), '调用点在规划之后、音质档补测之前')
 ok(/usableN >= srvN\) continue/.test(hunterSrc2), '判据：实测已达标不补测')
-ok(/metrics\.depth === 'full' && e\.deep\.checkedAt &&\s*\n\s*Date\.now\(\) - e\.deep\.checkedAt < 7 \* 24 \* 3600 \* 1000\) continue/.test(hunterSrc2), '修正①：full+untested 不重复触发；修正②：7 天内 full 证据直接复用')
+ok(/metrics\.depth === 'full' && untestedN === 0 && e\.deep\.checkedAt/.test(hunterSrc2), 'P-1432：只有 full 且无 untested 才算新鲜完整证据（full+untested 仍补测）')
 ok(/quickCheck: false/.test(hunterSrc2), '补测用全平台深检（写回 e.deep）')
 ok(/item\.srv \|\| srvByName/.test(hunterSrc2), 'skip 项补带 srv 引用（老数据按名回查）')
 ok(/自动补测 \$\{probes\} 条 → 重新裁决改判/.test(hunterSrc2), '补测结果有日志可追溯')

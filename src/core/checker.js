@@ -485,6 +485,7 @@ async function testPlatform(sb, src, cfg, onEvent, bail, displayName, def) {
         if (bail()) return done({ status: 'untested', message: '已停止（其它平台已确认可用）' })
         if (Date.now() > deadline) { lastMsg = lastMsg || '取链超时（已超出单平台预算）'; continue }
         onEvent('step', { text: `沙箱取链 ${PLATFORM_LABEL[src]}「${song.name}」${q} · ${displayName || ''}` })
+        const attemptsBefore = metrics.attempts
         try {
           const left = Math.max(1000, deadline - Date.now())
           const waitMs = Math.min(Number(cfg.linkTimeoutMs) || 20000, left)
@@ -529,6 +530,18 @@ async function testPlatform(sb, src, cfg, onEvent, bail, displayName, def) {
           lastMsg = String((e && e.message) || e).slice(0, 80)
           // 网络抖动才重试；脚本明确返回空/异常没必要再试
           if (isTransient(lastMsg) && attempt < 2) { onEvent('step', { text: `${PLATFORM_LABEL[src]} 网络抖动，重试…` }); continue }
+          // P-1432：区分「未测」与「真失败」。dispatch 抛错有两种同形来源：
+          //  a) 脚本在发出请求**前**就拒绝——上游失败缓存/限流熔断（「该请求已知失败，
+          //     跳过重复请求」），请求根本没发出，属于「没测到」→ 记 untested，
+          //     不产生假负证据，_dedupe/_supplementConflicts 等冷却后重试；
+          //  b) 宿主网络错误（ENOTFOUND/ECONNREFUSED/超时）——请求已真实发出后失败，
+          //     是真失败证据 → 保持 failed（doh-dead-domain 集成测试依赖此口径）。
+          // 两者在 dispatch 层面同形（都是脚本 Promise reject），只能按语义白名单区分，
+          // 与 isTransient 同模式；漏配的限流文案仍记 failed，只是保守不会误放。
+          if (metrics.attempts === attemptsBefore &&
+              /已知失败|跳过重复请求|RATE_LIMIT|限流/i.test(lastMsg)) {
+            return done({ status: 'untested', message: lastMsg })
+          }
         }
       }
     }
@@ -815,7 +828,7 @@ function sameReasonHint(msg) {
   if (/fetch 失败|沙箱|网络/.test(m)) {
     return '所有平台报同一个网络错（' + cause.slice(0, 60) + '），多为本机到音源接口不通或被拦截，不代表导入洛雪后不可用'
   }
-  return '所有平台报同一个错：' + m.slice(0, 60)
+  return '多个平台报同一个错：' + m.slice(0, 60)
 }
 
 /** 统计可用平台数。两种入参都认：

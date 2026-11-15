@@ -1085,7 +1085,16 @@ class Hunter {
       if (!byName[nm]) { byName[nm] = e; continue }
       const cur = byName[nm]
       const dc = checkedDeep(cur), dn = checkedDeep(e)
-      if (!dc || !dn) {
+      // P-1432：深检「不完整」（含 untested/pending，如实测报告的上游限流熔断场景）
+      // 视同未完成——不参与质量对决定胜负，双方留待完整证据。否则限流一瞬间的
+      // 3/5 vs 5/5 会把本可救回的产物当场废掉（doujs r2 实测）。
+      const incomplete = x => {
+        const dd = checkedDeep(x)
+        if (!dd) return true
+        const vals = Object.values(dd.platforms || {})
+        return vals.length === 0 || vals.some(pl => !pl || pl.status === 'untested' || pl.status === 'pending')
+      }
+      if (!dc || !dn || incomplete(cur) || incomplete(e)) {
         if (dc && usableCount({ deep: dc }) === 0) {
           // 已检方深检 0 平台（确认失效）→ 让位给未检测方，这条例外维持不变
           dep(cur, e, 'oldVersion'); res.oldVersion++
@@ -3100,8 +3109,13 @@ class Hunter {
         const usableN = usableCount(e)
         if (usableN >= srvN) continue        // 证据已够，裁决不是被平台数挡的
         const metrics = (e.deep && e.deep.metrics) || {}
-        if (metrics.depth === 'full' && e.deep.checkedAt &&
-            Date.now() - e.deep.checkedAt < 7 * 24 * 3600 * 1000) continue  // 新鲜 full 证据直接复用
+        const platVals = Object.values((e.deep && e.deep.platforms) || {})
+        const untestedN = platVals.filter(pl => !pl || pl.status === 'untested' || pl.status === 'pending').length
+        // P-1432 修正：full 但含 untested/pending = 深检不完整（上游限流熔断跳过），
+        // 不是「已完整」——仍要补测（RATE_LIMIT 冷却 5 分钟后重测能出真结果）。
+        // 只有「full 且无 untested」才算新鲜完整证据，7 天内直接复用。
+        if (metrics.depth === 'full' && untestedN === 0 && e.deep.checkedAt &&
+            Date.now() - e.deep.checkedAt < 7 * 24 * 3600 * 1000) continue  // 新鲜完整证据直接复用
         const code = codeCache[e.id] || (typeof e.code === 'string' && e.code ? e.code : '')
         if (!code) continue
         if (this.cancelRequested) return
