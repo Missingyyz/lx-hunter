@@ -2296,6 +2296,10 @@ class Hunter {
       }
       total += p.queue.length
     }
+    // 同名冲突第二层半（v1.13.7，P-1508 doujs 案例规则化）：quick 证据不足（实测平台数 < 服务端声明）
+    // 时先用灌入阶段已下载的正文跑一次全平台深检补齐证据，再重新裁决——不再需要人肉 POST /api/check。
+    // 放在第三层（音质档补测）之前：平台数证据便宜且常直接定胜负。
+    await this._supplementConflicts(plans, codeCache, cfg)
     // 同名冲突第三层：平台数、p50 都打平且本地还没有音质档证据时，为**这一条**补测最高可播档。
     // 放在规划之后、执行之前：补测结果可能把「改名并存」翻成「留优删差 / 保留服务端」。
     await this._probeTierForConflicts(plans, codeCache, cfg)
@@ -3061,6 +3065,88 @@ class Hunter {
   }
 
   /**
+   * 同名冲突的「证据补齐」层（v1.13.7，P-1508 doujs 案例的规则化，用户拍板）。
+   *
+   * 缺口：检测默认 quickCheck=true（测到第一个可用平台就停、其余标 untested），
+   * 同名裁决里「服务端声明平台数 > 本地实测」的 skip 是拿声明值压实测下限的
+   * 不公平比较（声明值天然偏大）；provenDifferent 分支写着「请先做全平台检测」
+   * 却只提示、不自动做——P-1508 靠人肉 POST /api/check {full:true} 补证据才放行。
+   *
+   * 触发（照 _probeTierForConflicts 的保守口径）：
+   *  - item 是同名 skip（item.srv 由 _planImportQueue 补带的服务端条目）；
+   *  - 本地实测可用数少于服务端声明数（srvN > usableCount(e)）——裁决确实是被证据挡的；
+   *  - 本地没有新鲜的 full 深检证据（depth==='full' 且 7 天内 → 直接复用，不重复补测）。
+   * 动作：用灌入阶段已下载的 codeCache 跑 deepCheck({quickCheck:false}) 写回 e.deep，
+   * 重调 sameNameVerdict 重新裁决并改写 item（模式照抄 _probeTierForConflicts）；
+   * sameNameVerdict 一行不改，比较层仍简单可解释。
+   * 预算照抄：单条 20s / 整轮 3 分钟 / 上限 20 条；失败维持原裁决绝不阻断灌入。
+   */
+  async _supplementConflicts(plans, codeCache, cfg) {
+    const BUDGET_MS = 20000
+    const TOTAL_BUDGET_MS = 3 * 60 * 1000
+    const MAX_PROBES = 20
+    const startedAt = Date.now()
+    let probes = 0
+    let respins = 0
+    for (const p of plans) {
+      const srvByName = p.serverByName || {}
+      for (const item of (p.queue || [])) {
+        if (!item || !item.skip || !item.e) continue
+        const e = item.e
+        // 同名服务端条目：skip 项补带了 item.srv；老数据没有就按名回查
+        const srv = item.srv || srvByName[e.lxName || e.scriptName || e.name || '']
+        if (!srv || !Array.isArray(srv.supportedSources)) continue
+        const srvN = srv.supportedSources.length
+        const usableN = usableCount(e)
+        if (usableN >= srvN) continue        // 证据已够，裁决不是被平台数挡的
+        const metrics = (e.deep && e.deep.metrics) || {}
+        if (metrics.depth === 'full' && e.deep.checkedAt &&
+            Date.now() - e.deep.checkedAt < 7 * 24 * 3600 * 1000) continue  // 新鲜 full 证据直接复用
+        const code = codeCache[e.id] || (typeof e.code === 'string' && e.code ? e.code : '')
+        if (!code) continue
+        if (this.cancelRequested) return
+        if (probes >= MAX_PROBES || Date.now() - startedAt > TOTAL_BUDGET_MS) {
+          const why = probes >= MAX_PROBES ? `已达条数上限 ${MAX_PROBES}` : `已用 ${Math.round((Date.now() - startedAt) / 1000)}s 超预算`
+          this.log(`同名冲突自动补测停止（${why}，共补测 ${probes} 条），其余维持原裁决`, '灌入', 'warn')
+          return
+        }
+        probes++
+        this.log(`同名冲突自动补测：全平台深检「${e.scriptName || e.lxName || e.name}」（服务端声明 ${srvN} > 本地实测 ${usableN}）…`, '灌入')
+        let r
+        try {
+          r = await deepCheck(e, code, Object.assign({}, cfg, { quickCheck: false }),
+            (t, pl) => this.emit(t, pl), () => this.cancelRequested)
+        } catch (err) {
+          item.skip += `（自动补测失败：${String((err && err.message) || err).slice(0, 60)}）`
+          continue
+        }
+        e.deep = r
+        const v = this.sameNameVerdict(e, srv, code, cfg, { ledger: (p.ledger && p.ledger[e.id]) || null })
+        const note = `（已自动补测全平台：实测 ${usableCount(e)} 个可用）`
+        respins++
+        if (v.act === 'skip') {
+          item.skip = `与服务端同名「${srv.name}」：${v.why}${note}`
+        } else if (v.act === 'replace') {
+          this.log(`补测后改判：留本地（删旧装新）—— ${v.why}`, '灌入', 'info')
+          item.replaceServer = srv
+          item.why = `同名裁决：${v.why}${note}`
+          delete item.skip
+        } else if (v.act === 'rename') {
+          this.log(`补测后改判：改名并存 —— ${v.why}`, '灌入', 'info')
+          item.renameServer = srv
+          item.why = `同名裁决：${v.why}${note}`
+          delete item.skip
+        } else if (v.act === 'synced') {
+          item.sameContentServer = srv
+          item.why = `同名裁决：${v.why}${note}`
+          delete item.skip
+        }
+      }
+    }
+    if (probes) this.log(`同名冲突自动补测 ${probes} 条 → 重新裁决改判 ${respins} 条`, '灌入', 'info')
+  }
+
+  /**
    * 同名冲突的音质专项补测（字典序第三层）。
    *
    * 触发条件（全部满足才动手，避免无谓的沙箱开销）：
@@ -3200,7 +3286,7 @@ class Hunter {
       // matchedByBase 留给 UI/日志：用户要能分清「精确同名」与「删版本号后同名」
       const mb = !!matchedByBase
       if (v.act === 'synced') queue.push({ e, sameContentServer: srv, why: v.why, matchedByBase: mb })
-      else if (v.act === 'skip') queue.push({ e, skip: `与服务端同名${via}「${srv.name}」：${v.why}`, matchedByBase: mb })
+      else if (v.act === 'skip') queue.push({ e, skip: `与服务端同名${via}「${srv.name}」：${v.why}`, srv, matchedByBase: mb })
       else if (v.act === 'rename' && ctx.uniqueName === false) {
         queue.push({
           e,

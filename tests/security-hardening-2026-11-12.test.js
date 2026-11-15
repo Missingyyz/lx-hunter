@@ -112,3 +112,13 @@ ok(/autoTrustCleanObf: \$\('cfgAutoTrustObf'\)\.checked/.test(
   fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8')), '读写链路接通')
 
 console.log(`\nsecurity-hardening: PASS ${pass} / FAIL 0`)
+
+console.log('--- ⑯ P-1508 规则化：同名冲突自动补测 ---')
+const hunterSrc2 = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'hunter.js'), 'utf8')
+ok(/async _supplementConflicts\(plans, codeCache, cfg\)/.test(hunterSrc2), '证据补齐层已实现（照 _probeTierForConflicts 模式）')
+ok(/await this\._supplementConflicts\(plans, codeCache, cfg\)/.test(hunterSrc2), '调用点在规划之后、音质档补测之前')
+ok(/usableN >= srvN\) continue/.test(hunterSrc2), '判据：实测已达标不补测')
+ok(/metrics\.depth === 'full' && e\.deep\.checkedAt &&\s*\n\s*Date\.now\(\) - e\.deep\.checkedAt < 7 \* 24 \* 3600 \* 1000\) continue/.test(hunterSrc2), '修正①：full+untested 不重复触发；修正②：7 天内 full 证据直接复用')
+ok(/quickCheck: false/.test(hunterSrc2), '补测用全平台深检（写回 e.deep）')
+ok(/item\.srv \|\| srvByName/.test(hunterSrc2), 'skip 项补带 srv 引用（老数据按名回查）')
+ok(/自动补测 \$\{probes\} 条 → 重新裁决改判/.test(hunterSrc2), '补测结果有日志可追溯')
