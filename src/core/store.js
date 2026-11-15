@@ -141,6 +141,8 @@ const DEFAULT_CONFIG = {
   // v1.13.7 P-1431：重度混淆脚本自动信任规则（见 checker.obfDomainVerdict）。默认开：
   // 无硬特征 + 沙箱实测外联全白名单 → 检测后自动放行，不再等人工点信任。
   autoTrustCleanObf: true,
+  // P-1432 R3：同名并存组自动深检跟进（检测收尾把 quick 证据升级 full，让去重裁决收敛）
+  autoDeepPendingDuels: true,
   trustedObfDomains: [],
   patrolAutoDelete: false,
   patrolDeleteAfter: 3,

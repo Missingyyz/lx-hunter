@@ -64,12 +64,15 @@ function musicInfo(song) {
 }
 
 function extractMeta(code) {
-  const meta = { name: '', description: '', version: '', author: '', homepage: '' }
+  // P-1432（R4 用户拍板）：认 @repository（产物头部元信息契约，2026-11-15 定）——
+  // identity.candidateRepo 读 e.repository，此前 extractMeta 不认该键导致同源识别链路断裂。
+  const meta = { name: '', description: '', version: '', author: '', homepage: '', repository: '' }
   const block = code.match(/\/\*[!*][\s\S]*?\*\//)
   if (!block) return meta
   const pairs = {
     name: /@name\s+(.+)/, version: /@version\s+(.+)/,
-    description: /@description\s+(.+)/, author: /@author\s+(.+)/, homepage: /@homepage\s+(.+)/
+    description: /@description\s+(.+)/, author: /@author\s+(.+)/, homepage: /@homepage\s+(.+)/,
+    repository: /@repository\s+(.+)/
   }
   for (const k of Object.keys(pairs)) {
     const m = block[0].match(pairs[k])
@@ -322,7 +325,8 @@ async function checkBasic(entry, cfg, onEvent, preferredMirror) {
     entry.scriptName = meta.name || entry.name
     entry.scriptVersion = meta.version || ''
     entry.author = meta.author || ''
-    entry.homepage = meta.homepage || ''
+    entry.homepage = meta.homepage || entry.homepage || ''
+    entry.repository = meta.repository || entry.repository || ''
     entry.description = meta.description || ''
     entry.lxName = meta.name || ''
     entry.apiHosts = extractApiHosts(entry.code)
@@ -351,7 +355,8 @@ async function checkBasic(entry, cfg, onEvent, preferredMirror) {
   entry.scriptName = meta.name || entry.name
   entry.scriptVersion = meta.version || ''
   entry.author = meta.author || ''
-  entry.homepage = meta.homepage || ''
+  entry.homepage = meta.homepage || entry.homepage || ''
+  entry.repository = meta.repository || entry.repository || ''
   entry.description = meta.description || ''
   entry.lxName = meta.name || ''
   entry.apiHosts = extractApiHosts(text)

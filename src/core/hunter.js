@@ -1088,13 +1088,7 @@ class Hunter {
       // P-1432：深检「不完整」（含 untested/pending，如实测报告的上游限流熔断场景）
       // 视同未完成——不参与质量对决定胜负，双方留待完整证据。否则限流一瞬间的
       // 3/5 vs 5/5 会把本可救回的产物当场废掉（doujs r2 实测）。
-      const incomplete = x => {
-        const dd = checkedDeep(x)
-        if (!dd) return true
-        const vals = Object.values(dd.platforms || {})
-        return vals.length === 0 || vals.some(pl => !pl || pl.status === 'untested' || pl.status === 'pending')
-      }
-      if (!dc || !dn || incomplete(cur) || incomplete(e)) {
+      if (!dc || !dn || this._deepIncomplete(cur) || this._deepIncomplete(e)) {
         if (dc && usableCount({ deep: dc }) === 0) {
           // 已检方深检 0 平台（确认失效）→ 让位给未检测方，这条例外维持不变
           dep(cur, e, 'oldVersion'); res.oldVersion++
@@ -1219,6 +1213,18 @@ class Hunter {
    *  - 都没检测过 → 按「有更新 > 时间 > 版本号 > id」兜底（检测前先临时占位，
    *    检测完成后 runCheck 的同名即时去重会按上面三条重新裁决）
    */
+  /**
+   * P-1432：深检完整性判定。quick 模式的条目天然含 untested（首个可用即停），
+   * 上游限流熔断也会让 full 深检留下 untested——这两种状态都算「深检未完成」，
+   * 不参与质量对决定胜负（_dedupe 与 runCheck 本批内同名去重共用此口径）。
+   */
+  _deepIncomplete(x) {
+    const dd = x && x.deep && x.deep.checkedAt ? x.deep : null
+    if (!dd) return true
+    const vals = Object.values(dd.platforms || {})
+    return vals.length === 0 || vals.some(pl => !pl || pl.status === 'untested' || pl.status === 'pending')
+  }
+
   betterKeeper(a, b) {
     const da = a && a.deep && a.deep.checkedAt ? a.deep : null
     const db = b && b.deep && b.deep.checkedAt ? b.deep : null
@@ -1727,7 +1733,22 @@ class Hunter {
     const picked = (ids && ids.length ? ids.map(i => this.store.db.sources[i]).filter(Boolean) : this.store.getSources())
     // 服务端原生音源：服务端 list 会带 sourceUrl（当年经 URL 导入时留存的原始脚本地址），
     // 有地址的同样可以下载 + 沙箱真实取链检测 —— 过去一律跳过，用户点「检测」毫无反应
-    const list = picked.filter(e => !e.deprecated && (!e.fromServer || e.url))
+    // P-1432（W3）：排除明细进返回体（谁、为何被排除）；opts.force=true 时把
+    // deprecated 条目也纳入检测（音源库的「强制重测」），检测收尾 dedupe 按新证据重评。
+    const excludedList = []
+    const list = picked.filter(e => {
+      if (!(opts && opts.force) && e.deprecated) {
+        excludedList.push({ id: e.id, name: e.lxName || e.scriptName || e.name || e.id,
+          reason: '已废弃（同名旧版本），点条目的「强制重测」可纳入检测' })
+        return false
+      }
+      if (e.fromServer && !e.url) {
+        excludedList.push({ id: e.id, name: e.lxName || e.scriptName || e.name || e.id,
+          reason: '服务端原生音源且无原始脚本地址，不参与本地检测' })
+        return false
+      }
+      return true
+    })
     // 静默过滤是「点了检测却毫无反应」的根源：重复合并项/无脚本地址的服务端音源本来就不该本地检测，
     // 但用户不知道，只会以为功能坏了。这里必须说清楚跳过了多少、为什么。
     let excluded = picked.length - list.length
@@ -1744,7 +1765,7 @@ class Hunter {
     if (obfRejected) excluded += obfRejected
     if (ids && ids.length && !list.length) {
       this.log(`所选 ${picked.length} 条全部无需本地检测（已合并的重复项 / 无原始脚本地址的服务端音源 / 高危混淆剔除），未执行检测`, '检测', 'warn')
-      return { usable: 0, total: 0, excluded, notSource: 0, depInline: 0 }
+      return { usable: 0, total: 0, excluded, excludedReasons: excludedList.slice(0, 50), notSource: 0, depInline: 0 }
     }
     this.job = { running: true, type: 'check', cancel: false, progress: { done: 0, total: list.length, usable: 0 }, step: '' }
     this.emit('job', { running: true, type: 'check' })
@@ -1877,6 +1898,10 @@ class Hunter {
               if (nmKey && !e.deprecated && !e.fromServer) {
                 const prev = nameByNorm[nmKey]
                 if (prev && prev.entry.id !== e.id) {
+                  // P-1432：任一方深检不完整（quick 的 untested / 上游限流熔断）→ 不当场废弃，
+                  // 双方留待检测收尾的「同名并存自动深检」收敛（doujs r2 实测：限流瞬间的
+                  // 3/5 vs 5/5 会被 quick 证据当场废掉可救产物）
+                  if (this._deepIncomplete(prev.entry) || this._deepIncomplete(e)) continue
                   const keep = this.betterKeeper(prev.entry, e) ? prev.entry : e
                   const drop = keep === prev.entry ? e : prev.entry
                   if (drop.usable) usable--
@@ -1911,6 +1936,11 @@ class Hunter {
     this.store.saveDb()
     const bf = await this._backfillApiAlive(list, cfg)
     const dup = this.dedupe()
+    // P-1432（R3 用户裁决）：同名并存组自动深检跟进——系统主动把 quick 证据升级成 full，
+    // 让 _dedupe 的质量对决定胜负，同名条目不再长期并存堆积。
+    if (cfg.autoDeepPendingDuels !== false && !this.cancelRequested) {
+      await this._autoDeepPendingDuels(cfg)
+    }
     if (this.cancelRequested) this.log('检测已取消（已完成的检测结果全部保留）', '检测', 'warn')
     else this.log(`检测完成：可用 ${usable} 条 / 共 ${list.length} 条` +
       (skippedChecked ? `，跳过已检测 ${skippedChecked} 条` : '') +
@@ -1923,7 +1953,7 @@ class Hunter {
       ((dup.dupFile || dup.dupContent || dup.oldVersion) ? `，收尾去重 ${dup.dupFile + dup.dupContent + dup.oldVersion} 条` : ''), '检测')
     this.job.running = false
     this.emit('job', { running: false, type: 'check', done: true, cancelled: this.cancelRequested, usable, total: list.length, notSource, depInline, obfHigh: obfSeen.high || 0, obfMid: obfSeen.mid || 0, backfill: bf || null })
-    return { usable, total: list.length, notSource, depInline, obfHigh: obfSeen.high || 0, obfMid: obfSeen.mid || 0, backfill: bf || null }
+    return { usable, total: list.length, notSource, depInline, obfHigh: obfSeen.high || 0, obfMid: obfSeen.mid || 0, backfill: bf || null , excludedReasons: excludedList.slice(0, 50) }
   }
 
   /**
@@ -3071,6 +3101,61 @@ class Hunter {
       return { act: 'rename', why: '同名不同内容；设置里关闭了自动替换 → 改名上传（保留服务端旧版）' }
     }
     return { act: 'replace', why: '同名不同内容；信息不足以判定为无关脚本 → 按更新处理（删旧装新）' }
+  }
+
+  /**
+   * P-1432（R3 用户裁决）：同名并存组自动深检跟进。
+   *
+   * 背景：H2 完整性守卫让 quick 条目的同名对决转为 pendingDuel（并存堆积）——
+   * 用户裁决「系统可以跟进自动深检」：检测收尾对同名并存组（≥2 条非废弃同名条目、
+   * 组内有深检不完整者）自动跑 full 深检，跑完重新 dedupe 收敛裁决。
+   * 预算照抄：单条 20s / 整轮 3 分钟 / 上限 20 条；开关 cfg.autoDeepPendingDuels（默认开）。
+   * 局限如实：批量 quick 检测后同名组多时整轮最多多 3 分钟；失败条目保持现状不阻断。
+   */
+  async _autoDeepPendingDuels(cfg) {
+    const BUDGET_MS = 20000
+    const TOTAL_BUDGET_MS = 3 * 60 * 1000
+    const MAX_PROBES = 20
+    const startedAt = Date.now()
+    const groups = {}
+    for (const e of this.store.getSources()) {
+      if (e.deprecated || e.fromServer || e.private || !e.contentHash) continue
+      const nm = normName(e.lxName || e.scriptName || e.name)
+      if (!nm) continue
+      if (!this._deepIncomplete(e)) continue
+      ;(groups[nm] = groups[nm] || []).push(e)
+    }
+    let probes = 0
+    for (const [nm, group] of Object.entries(groups)) {
+      if (group.length < 2) continue
+      for (const e of group) {
+        const code = (typeof e.code === 'string' && e.code) ? e.code : ''
+        if (!code) continue
+        if (this.cancelRequested) return
+        if (probes >= MAX_PROBES || Date.now() - startedAt > TOTAL_BUDGET_MS) {
+          this.log(`同名并存自动深检停止（预算/上限，共深检 ${probes} 条），其余下次检测继续`, '检测', 'warn')
+          return
+        }
+        probes++
+        this.log(`同名并存自动深检：「${e.scriptName || e.lxName || e.name}」（组内 ${group.length} 条待完整证据）…`, '检测', 'info')
+        try {
+          const d = await deepCheck(e, code, Object.assign({}, cfg, { quickCheck: false }),
+            (t, pl) => this.emit(t, pl), () => this.cancelRequested)
+          e.deep = d
+          e.usable = usableCount(e) > 0
+          applyProbeRecord(e, e.deep)
+          this.emit('source-updated', e)
+        } catch (err) {
+          this.log(`自动深检失败（${String((err && err.message) || err).slice(0, 60)}）→ 保持现状`, '检测', 'warn')
+          continue
+        }
+      }
+    }
+    if (probes) {
+      this.log(`同名并存自动深检完成 ${probes} 条 → 重新去重裁决`, '检测', 'info')
+      this.dedupe()
+      this.store.saveDb()
+    }
   }
 
   /**

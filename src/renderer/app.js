@@ -1831,7 +1831,7 @@ function rowHtml(e) {
     <td class="c-repo"><span class="repo">${esc(e.repo)}</span>${snap}</td>
     <td class="c-status">${statusCell(e)}</td>
     <td class="c-op">
-      <button class="btn sm" data-act="check" data-id="${esc(e.id)}">检测</button>
+      <button class="btn sm" data-act="check" data-id="${esc(e.id)}">${e.deprecated ? '强制重测' : '检测'}</button>
       <button class="btn sm" data-act="import" data-id="${esc(e.id)}">灌入</button>
     </td>`
 }
