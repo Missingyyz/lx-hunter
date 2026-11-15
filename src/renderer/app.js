@@ -1646,10 +1646,14 @@ function renderQuarantine() {
   $('qzList').innerHTML = list.map(e => {
     const hard = qzHardHits(e)
     const size = e.size ? Math.max(1, Math.round(e.size / 1024)) + 'KB' : ''
+    // v1.13.7：外联域名画像——信任决策的辅助信息（静态扫描，混淆加密的字符串扫不全，仅参考）
+    const domains = Array.isArray(e.obfDomains) ? e.obfDomains.slice(0, 6) : []
+    const domTxt = domains.length ? `外联：${esc(domains.join('、'))}${e.obfDomains.length > 6 ? ' 等' + e.obfDomains.length + '个' : ''}` : ''
     return `<div class="qz-row" data-id="${esc(e.id)}">
       <div class="qz-main">
         <span class="qz-name">${esc(e.lxName || e.scriptName || e.name || e.id)}</span>
         <span class="qz-meta">${esc(e.repo || '')}${size ? ' · ' + size : ''} · ${esc(obfTip(e))}</span>
+        ${domTxt ? `<span class="qz-deep">${domTxt}</span>` : ''}
         <span class="qz-deep">${esc(qzDeepSummary(e))}</span>
       </div>
       ${hard

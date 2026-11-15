@@ -90,4 +90,12 @@ ok(/id="accEnableAfter"/.test(accHtml), '账号弹窗有「灌入后自动启用
 ok(/accEnableAfter'\)\.checked/.test(
   fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8')), '弹窗初始值：账号值优先、跟随全局')
 
+console.log('--- ⑭ P-1430：混淆隔离优化（空正文清残留 + 域名画像）---')
+const hunterSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'hunter.js'), 'utf8')
+const checkerSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'checker.js'), 'utf8')
+ok(/function obfDomains\(code\)/.test(checkerSrc), 'checker 提供 obfDomains 域名画像');ok(/正文拿不到的条目不隔离，且要清掉历史残留/.test(hunterSrc), '空正文的隔离残留自动清回音源库')
+ok(/e\.obfDomains = obfDomains\(code\)/.test(hunterSrc), '隔离时记录外联域名画像')
+ok(/obfDomains, verifyUrl/.test(checkerSrc), 'checker 导出 obfDomains')
+ok(/外联：/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8')), '隔离页显示外联域名画像')
+
 console.log(`\nsecurity-hardening: PASS ${pass} / FAIL 0`)

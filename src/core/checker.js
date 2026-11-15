@@ -196,6 +196,34 @@ function obfuscationRisk(content) {
   return { level: '', hits }
 }
 
+/**
+ * 隔离条目的「外联域名画像」（v1.13.7）：提取脚本里出现、但不在音乐生态白名单内的域名。
+ * 信任放行是人工决策，光有混淆密度不够——用户还要知道「这脚本会跟谁通信」。
+ * 纯静态字符串扫描：混淆器加密字符串的场景扫不全，结果只能当参考画像，不能当安全结论。
+ */
+function obfDomains(code) {
+  const t = String(code || '')
+  if (!t) return []
+  const raw = []
+  const re1 = /https?:\/\/([A-Za-z0-9._-]+)/g
+  let m
+  while ((m = re1.exec(t))) raw.push(m[1].toLowerCase())
+  const re2 = /["']([a-z0-9.-]+\.(?:com|cn|net|org|top|xyz|cc|vip|icu|ru|tk|me|io|dev|org\.cn|com\.cn))["']/g
+  while ((m = re2.exec(t))) raw.push(m[1].toLowerCase())
+  const KNOWN = ('music.163.com,netease,qq.com,y.qq.com,i.qq.com,kugou,kg.hu,kuwo,migu,bilibili,qishui,' +
+    'gequbao,lxmusic,github,githubusercontent,jsdelivr,ghproxy,ghfast,ikun,cloudflare,aliyuncs,' +
+    'myqcloud,kkgithub,gitcode,chksz,lawaxi,bytedance,douyin,pipilaka').split(',')
+  const uniq = []
+  for (const h of raw) {
+    const host = h.replace(/^\./, '')
+    if (!host || host.split('.').length < 2) continue
+    if (uniq.includes(host)) continue
+    if (KNOWN.some(k => host.includes(k))) continue
+    uniq.push(host)
+  }
+  return uniq
+}
+
 /** 混淆风险的中文摘要（状态徽章 tooltip / 日志用） */
 function obfuscationTip(risk) {
   if (!risk || !risk.level || !risk.hits) return ''
@@ -995,7 +1023,7 @@ function regressionJudge(prevPassed, newPassed, newFailed) {
 
 module.exports = {
   TEST_SONGS, PLATFORMS, PLATFORM_LABEL,
-  sha256Str, extractMeta, classifyEntry, scoreEntry, isHostAdapterScript, obfuscationRisk, obfuscationTip, verifyUrl,
+  sha256Str, extractMeta, classifyEntry, scoreEntry, isHostAdapterScript, obfuscationRisk, obfuscationTip, obfDomains, verifyUrl,
   checkBasic, deepCheck, usableCount, stoppable, testPlatform, sameReasonHint, patrolJudge, probeTopTier, planTierProbe,
   aggregateMetrics, declaredQualities,
   isTransient, isLocalNetworkIssue, deepFailKind, applyProbeRecord, extractApiHosts, probeApiHosts, apiDownVerdict,

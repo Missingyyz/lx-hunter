@@ -4,7 +4,7 @@ const { crawl, checkQuota, filterDeadRepos, DEFAULT_REPOS, normalizeRepo, discov
 const { crawlWebSite, isWebRepo, probeExternalSource, normalizeExternalUrl } = require('./websource')
 const { fetchCommunityRepos } = require('./community')
 const { collectFromHubs } = require('./hubfeed')
-const { checkBasic, deepCheck, extractMeta, sha256Str, usableCount, stoppable, isLocalNetworkIssue, patrolJudge, obfuscationRisk, obfuscationTip, applyProbeRecord, probeApiHosts, apiDownVerdict, passedPlatforms, regressionJudge, probeTopTier } = require('./checker')
+const { checkBasic, deepCheck, extractMeta, sha256Str, usableCount, stoppable, isLocalNetworkIssue, patrolJudge, obfuscationRisk, obfuscationTip, obfDomains, applyProbeRecord, probeApiHosts, apiDownVerdict, passedPlatforms, regressionJudge, probeTopTier } = require('./checker')
 const { crawlFetch, readText, sleep } = require('./net')
 const { getActiveService, getService, getBatchImportAccounts, getIsolations, NO_ACCOUNT_ERR } = require('./services')
 const { Store } = require('./store')
@@ -1573,27 +1573,42 @@ class Hunter {
     let trusted = 0
     for (const e of list) {
       const code = codeOf(e)
-      if (code) {
-        const risk = obfuscationRisk(code)
-        if (risk.level === 'high') {
-          e.obfLevel = 'high'
-          e.obfHits = risk.hits
-          if (e.contentHash && trustedHashes.includes(e.contentHash)) {
-            e.obfTrusted = true
-            e.quarantined = false
-            if (e.status === 'quarantined') e.status = 'ok'
-            trusted++
-            kept.push(e)
-            continue
-          }
-          e.status = 'quarantined'
-          e.quarantined = true
+      // P-1430：正文拿不到的条目不隔离，且要清掉历史残留的隔离状态。
+      // 实测隔离区有 10 条「有 url/hash、code 为空」的残缺条目（旧版爬取/瘦身遗留），
+      // status 卡在 quarantined 既无法复评也没法信任，一直挂在隔离区。
+      // 清回音源库后，下次检测/巡检会重新下载正文并用本闸门重评（真混淆的会再进来）。
+      if (!code) {
+        if (e.status === 'quarantined' || e.quarantined) {
+          e.status = 'ok'
+          e.quarantined = false
           e.usable = false
-          e.error = '混淆隔离：重度混淆脚本，已移入「混淆隔离」区，可在该页信任后放行'
-          rejected++
+          e.error = '隔离状态已解除：条目正文缺失，待重新检测后按内容重评'
           this.emit('source-updated', e)
+        }
+        kept.push(e)
+        continue
+      }
+      const risk = obfuscationRisk(code)
+      if (risk.level === 'high') {
+        e.obfLevel = 'high'
+        e.obfHits = risk.hits
+        // v1.13.7：外联域名画像（静态扫描参考画像，非安全结论），隔离页展示供信任决策
+        e.obfDomains = obfDomains(code)
+        if (e.contentHash && trustedHashes.includes(e.contentHash)) {
+          e.obfTrusted = true
+          e.quarantined = false
+          if (e.status === 'quarantined') e.status = 'ok'
+          trusted++
+          kept.push(e)
           continue
         }
+        e.status = 'quarantined'
+        e.quarantined = true
+        e.usable = false
+        e.error = '混淆隔离：重度混淆脚本，已移入「混淆隔离」区，可在该页信任后放行'
+        rejected++
+        this.emit('source-updated', e)
+        continue
       }
       kept.push(e)
     }
