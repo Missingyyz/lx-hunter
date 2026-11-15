@@ -152,3 +152,10 @@ console.log('--- ⑲ P-1432 R3 补充：autoDeepPendingDuels 设置页开关 ---
 ok(/id="cfgAutoDeepDuels"/.test(accHtml), '设置页有「同名并存自动深检」勾选框')
 ok(/cfgAutoDeepDuels'\)\.checked/.test(appSrc4), '读写链路接通（默认跟随 config，未设即开）')
 ok(/autoDeepPendingDuels: \$\('cfgAutoDeepDuels'\)\.checked/.test(appSrc4), '保存链路写回 config')
+
+console.log('--- ⑳ P-1432 日志核查优化：弱名守卫 + 限流退避 ---')
+const hunterSrc4 = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'hunter.js'), 'utf8')
+ok(/if \(isWeakBaseName\(nm\)\) continue\s+\/\/ P-1432 实测：'main' 通用名组/.test(hunterSrc4), 'autoDeep 分组复用弱名守卫（main 组 6 条白耗预算实测）')
+ok(/\/RATE_LIMIT\|限流\|已知失败\/i\.test\(String\(pl\.message \|\| ''\)\)\)/.test(hunterSrc4), '限流退避按 untested 的限流文案判定')
+ok(/Date\.now\(\) - e\.deep\.checkedAt < 30 \* 60 \* 1000\)\s*\{\s*rlSkip\+\+/.test(hunterSrc4), '限流冷却 30 分钟内跳过无效重试')
+ok(/限流冷却中跳过 \$\{rlSkip\} 条/.test(hunterSrc4), '跳过数进汇总日志可追溯')

@@ -3122,16 +3122,27 @@ class Hunter {
       if (e.deprecated || e.fromServer || e.private || !e.contentHash) continue
       const nm = normName(e.lxName || e.scriptName || e.name)
       if (!nm) continue
+      if (isWeakBaseName(nm)) continue   // P-1432 实测：'main' 通用名组 6 条白耗预算，弱名守卫与 _dedupe 同口径
       if (!this._deepIncomplete(e)) continue
       ;(groups[nm] = groups[nm] || []).push(e)
     }
     let probes = 0
+    let rlSkip = 0
     for (const [nm, group] of Object.entries(groups)) {
       if (group.length < 2) continue
       for (const e of group) {
         const code = (typeof e.code === 'string' && e.code) ? e.code : ''
         if (!code) continue
         if (this.cancelRequested) return
+        // P-1432 日志核查发现的优化：限流熔断有冷却窗口（doujs 实测 >5 分钟），
+        // 冷却期内重试是无效消耗（结果不变）——按上次检测里 untested 的限流文案判定退避。
+        const lastPlats = Object.values((e.deep && e.deep.platforms) || {})
+        const rateLimited = lastPlats.some(pl => pl && pl.status === 'untested' &&
+          /RATE_LIMIT|限流|已知失败/i.test(String(pl.message || '')))
+        if (rateLimited && e.deep.checkedAt && Date.now() - e.deep.checkedAt < 30 * 60 * 1000) {
+          rlSkip++
+          continue
+        }
         if (probes >= MAX_PROBES || Date.now() - startedAt > TOTAL_BUDGET_MS) {
           this.log(`同名并存自动深检停止（预算/上限，共深检 ${probes} 条），其余下次检测继续`, '检测', 'warn')
           return
@@ -3152,7 +3163,8 @@ class Hunter {
       }
     }
     if (probes) {
-      this.log(`同名并存自动深检完成 ${probes} 条 → 重新去重裁决`, '检测', 'info')
+      this.log(`同名并存自动深检完成 ${probes} 条 → 重新去重裁决` +
+        (rlSkip ? `；限流冷却中跳过 ${rlSkip} 条（30 分钟后重试）` : ''), '检测', 'info')
       this.dedupe()
       this.store.saveDb()
     }
