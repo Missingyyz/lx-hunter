@@ -272,6 +272,7 @@ async function loadConfig() {
   $('cfgPatrolDeleteAfter').value = c.patrolDeleteAfter || 3
   $('cfgPatrolDisableAfter').value = c.patrolDisableAfter || 2
   $('cfgAutoTrustObf').checked = c.autoTrustCleanObf !== false
+  $('cfgAutoDeepDuels').checked = c.autoDeepPendingDuels !== false
   $('cfgTrustedObfDomains').value = (c.trustedObfDomains || []).join(', ')
   $('cfgCrawlOn').checked = !!c.crawlScheduleEnabled
   $('cfgCrawlAutoImport').checked = !!c.crawlAutoImport
@@ -331,6 +332,7 @@ async function saveAllCfg() {
     patrolDeleteAfter: Math.max(1, Math.min(20, parseInt($('cfgPatrolDeleteAfter').value, 10) || 3)),
     patrolDisableAfter: Math.max(1, Math.min(20, parseInt($('cfgPatrolDisableAfter').value, 10) || 2)),
     autoTrustCleanObf: $('cfgAutoTrustObf').checked,
+    autoDeepPendingDuels: $('cfgAutoDeepDuels').checked,
     trustedObfDomains: $('cfgTrustedObfDomains').value.split(/[,\uff0c\s]+/).map(x => x.trim()).filter(Boolean),
     crawlScheduleEnabled: $('cfgCrawlOn').checked,
     crawlAutoImport: $('cfgCrawlAutoImport').checked,

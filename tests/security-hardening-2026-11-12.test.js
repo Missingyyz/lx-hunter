@@ -147,3 +147,8 @@ ok(/entry\.repository = meta\.repository \|\| entry\.repository/.test(checkerSrc
 ok(/entry\.homepage = meta\.homepage \|\| entry\.homepage/.test(checkerSrc4), 'homepage 不再被覆写成空')
 ok(/e\.deprecated \? '强制重测' : '检测'/.test(appSrc4), 'deprecated 条目按钮显示「强制重测」')
 ok(/autoDeepPendingDuels: true,/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'store.js'), 'utf8')), '自动深检默认开')
+
+console.log('--- ⑲ P-1432 R3 补充：autoDeepPendingDuels 设置页开关 ---')
+ok(/id="cfgAutoDeepDuels"/.test(accHtml), '设置页有「同名并存自动深检」勾选框')
+ok(/cfgAutoDeepDuels'\)\.checked/.test(appSrc4), '读写链路接通（默认跟随 config，未设即开）')
+ok(/autoDeepPendingDuels: \$\('cfgAutoDeepDuels'\)\.checked/.test(appSrc4), '保存链路写回 config')
