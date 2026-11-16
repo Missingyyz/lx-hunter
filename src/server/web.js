@@ -102,9 +102,38 @@ process.on('unhandledRejection', err => {
   } catch (e) {}
 })
 
+// ---------------- 业务日志落盘（v1.13.8-beta.2 补丁） ----------------
+// 内存日志（logs 数组）重启即丢：2026-11-16 实战教训——巡检日志被两次重启抹掉，
+// 自动路径（巡检/爬取/追更/自动信任）无法事后取证。按天追加 JSONL 到 <DATA_DIR>/logs/，
+// fire-and-forget + 全程静默：落盘失败绝不能影响内存日志与 SSE 主流程。
+const APP_LOG_DIR = path.join(DATA_DIR, 'logs')
+const APP_LOG_RETENTION_DAYS = 14
+function appLogDay(d = new Date()) {
+  const p = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+try { fs.mkdirSync(APP_LOG_DIR, { recursive: true }) } catch (e) {}
+function pruneAppLogs() {
+  // 只清 app-YYYY-MM-DD.jsonl 命名格式的旧文件，目录里其他东西一概不碰
+  try {
+    const cutoff = Date.now() - APP_LOG_RETENTION_DAYS * 86400 * 1000
+    for (const f of fs.readdirSync(APP_LOG_DIR)) {
+      const m = /^app-(\d{4}-\d{2}-\d{2})\.jsonl$/.exec(f)
+      if (m && new Date(`${m[1]}T23:59:59`).getTime() < cutoff) fs.unlinkSync(path.join(APP_LOG_DIR, f))
+    }
+  } catch (e) {}
+}
+pruneAppLogs()
+function appendAppLog(e) {
+  try {
+    fs.appendFile(path.join(APP_LOG_DIR, `app-${appLogDay()}.jsonl`), JSON.stringify(e) + '\n', () => {})
+  } catch (e) {}
+}
+
 function pushLog(e) {
   logs.push(e)
   if (logs.length > MAX_LOGS) logs.splice(0, logs.length - MAX_LOGS)
+  appendAppLog(e)
   broadcast('log', e)
 }
 
