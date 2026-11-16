@@ -3959,6 +3959,12 @@ class Hunter {
         cfg.activePlatformId
       )
     } catch (e) { /* 冻结表刷新失败不影响巡检结论 */ }
+    // P-1432 补漏第二处：巡检取链捕获的 updateTips 只在 _mergeUpdateTips 合并了，
+    // 追更动作（拉 updateUrl 入库）此前只挂在 runCheck 收尾——巡检是 updateTip 捕获
+    // 的高频路径（12h 全量 aliveLxIds），这里不跟进的话信号要等下一轮检测才被处理。
+    if (cfg && cfg.autoFollowScriptUpdate !== false && !this.cancelRequested) {
+      try { await this._followUpdateTips(cfg) } catch (e) { /* 追更失败不影响巡检结论 */ }
+    }
     this.job.running = false
     this.emit('job', { running: false, type: 'patrol', done: true, cancelled: this.cancelRequested, summary: { total: items.length, ok, disabled, unknown, reEnabled, deleted } })
     return { ok, disabled, unknown, reEnabled, deleted, total: items.length }

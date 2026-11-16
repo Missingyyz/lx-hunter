@@ -189,3 +189,6 @@ console.log('--- ㉕ P-1432 W-A：疑似重复只读提示（1010🎵音源 漏�
 ok(/function weakNameKey\(s\)/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'identity.js'), 'utf8')), 'identity 提供 weakNameKey（normName 再剥 emoji/符号）')
 ok(hunterSrc3.includes('it.similarNameHint = `与服务端「${srv.name}」疑似重复'), '灌入规划对弱名相同候选打只读标注（不裁决不删除）')
 ok(appSrc4.includes('e.similarNameHint'), '音源库「疑似重复」徽章')
+
+console.log('--- ㉖ P-1432 补漏第二处：巡检收尾也跟进 updateTips ---')
+ok(/追更动作（拉 updateUrl 入库）此前只挂在 runCheck 收尾/.test(hunterSrc3) && /await this\._followUpdateTips\(cfg\) \} catch/.test(hunterSrc3), '巡检收尾 _followUpdateTips 跟进（失败不影响巡检结论）')
