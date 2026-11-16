@@ -1688,9 +1688,11 @@ class Hunter {
     if (trust) {
       if (!e.contentHash) throw new Error('该条目没有内容指纹（contentHash），无法按内容信任')
       const hits = e.obfHits || {}
+      // P-1432 OPT-1 补漏（用户实测点信任被拒）：trustObfSource 是信任判据的第三处副本，
+      // 与 qzHardHits/P-1431 hardHit 同步解绑 jsjiami——品牌标识不是行为特征。
       const hard = (hits.spinLoops || 0) > 0 || (hits.selfSchedCalls || 0) > 0 ||
-        (hits.jsjiamiMarks || 0) > 0 || (hits.evalCalls || 0) > 0
-      if (hard) throw new Error('命中反调试/混淆器硬特征（空转死循环/自调度定时器/jsjiami/eval），不允许信任')
+        (hits.evalCalls || 0) > 0
+      if (hard) throw new Error('命中行为硬特征（空转死循环/自调度定时器/eval 动态执行），不允许信任')
       if (!hashes.includes(e.contentHash)) {
         hashes.push(e.contentHash)
         this.store.saveConfig({ trustedObfHashes: hashes })

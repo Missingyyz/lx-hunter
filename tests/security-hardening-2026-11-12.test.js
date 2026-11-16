@@ -165,3 +165,7 @@ const qzFrag = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'ap
 ok(qzFrag.includes('(h.spinLoops || 0) > 0') && qzFrag.includes('(h.evalCalls || 0) > 0') && !qzFrag.includes('jsjiamiMarks'),
   'qzHardHits 只保留行为特征（jsjiami 移出不可信任名单）')
 ok(/hh\.evalCalls \|\| 0\) > 0`/.test('') || /const hardHit = \(hh\.spinLoops \|\| 0\) > 0 \|\| \(hh\.selfSchedCalls \|\| 0\) > 0 \|\|\s*\n\s*\(hh\.evalCalls \|\| 0\) > 0/.test(hunterSrc3), 'P-1431 自动信任 hardHit 同步解绑')
+
+console.log('--- ㉒ P-1432 OPT-1 补漏：trustObfSource 第三处判据解绑 ---')
+ok(!/hits\.jsjiamiMarks \|\| 0\) > 0/.test(hunterSrc4), '信任接口判据不再含 jsjiami（三处副本全部解绑）')
+ok(hunterSrc4.includes('命中行为硬特征'), '拒绝文案改为行为特征表述')
