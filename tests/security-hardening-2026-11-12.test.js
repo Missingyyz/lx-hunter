@@ -169,3 +169,8 @@ ok(/hh\.evalCalls \|\| 0\) > 0`/.test('') || /const hardHit = \(hh\.spinLoops \|
 console.log('--- ㉒ P-1432 OPT-1 补漏：trustObfSource 第三处判据解绑 ---')
 ok(!/hits\.jsjiamiMarks \|\| 0\) > 0/.test(hunterSrc4), '信任接口判据不再含 jsjiami（三处副本全部解绑）')
 ok(hunterSrc4.includes('命中行为硬特征'), '拒绝文案改为行为特征表述')
+
+console.log('--- ㉓ P-1432：checking 残留清扫（用户实测截图：状态卡「检测中…」）---')
+const storeSrc2 = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'store.js'), 'utf8')
+ok(/清扫上次运行中断残留的 checking 标记/.test(storeSrc2), 'store 加载时清扫中断残留的 checking')
+ok(/delete drop\.checking/.test(hunterSrc4), 'depInline 废弃路径补删 checking')

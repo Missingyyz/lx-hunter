@@ -1908,6 +1908,7 @@ class Hunter {
                   if (this._deepIncomplete(prev.entry) || this._deepIncomplete(e)) continue
                   const keep = this.betterKeeper(prev.entry, e) ? prev.entry : e
                   const drop = keep === prev.entry ? e : prev.entry
+                  delete drop.checking   // P-1432：被废条目若残留检测中标记一并清掉，避免状态卡「检测中…」
                   if (drop.usable) usable--
                   drop.usable = false
                   drop.deprecated = true

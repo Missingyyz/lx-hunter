@@ -187,6 +187,14 @@ class Store {
     if (rawCfg && rawCfg.proxyPolicy == null && rawCfg.forceProxy === true) this.config.proxyPolicy = 'force'
     this.db = this._read(this.dbFile) || { sources: {}, lastCrawl: 0, patrol: { lastRun: 0 } }
     if (!this.db.sources) this.db.sources = {}
+    // P-1432（用户实测截图：检测完成后条目状态卡「检测中…」）：容器重启会打断正在跑的
+    // 检测 job，被打断条目的 checking=true 已落盘，重启后永远没人清 → 状态卡死。
+    // 启动时清扫：重启后不可能存在正在运行的检测。
+    let stuckChecking = 0
+    for (const s of Object.values(this.db.sources || {})) {
+      if (s && s.checking) { delete s.checking; stuckChecking++ }
+    }
+    if (stuckChecking) console.log(`[启动] 清扫上次运行中断残留的 checking 标记 ${stuckChecking} 条`)
     if (!this.db.patrol) this.db.patrol = { lastRun: 0 }
     // v1.10.2 手动删除记录：被删掉的 id 不再由自动采集加回（见 removeSources）
     if (!Array.isArray(this.db.deletedIds)) this.db.deletedIds = []
