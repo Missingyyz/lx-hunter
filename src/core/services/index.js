@@ -138,6 +138,6 @@ async function getIsolations(svc) {
 
 module.exports = {
   getService, getActiveService, resolveService, TYPE_LABELS, REGISTRY,
-  getBatchImportAccounts, getImportTargets, getIsolations,
+  getBatchImportAccounts, getImportTargets, getIsolations, resolveEnableAfterImport,
   NO_ACCOUNT_ERR, SUPPORTED_TYPES: Object.keys(REGISTRY)
 }

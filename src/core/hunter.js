@@ -6,7 +6,7 @@ const { fetchCommunityRepos } = require('./community')
 const { collectFromHubs } = require('./hubfeed')
 const { checkBasic, deepCheck, extractMeta, sha256Str, usableCount, stoppable, isLocalNetworkIssue, patrolJudge, obfuscationRisk, obfuscationTip, obfDomains, applyProbeRecord, probeApiHosts, apiDownVerdict, passedPlatforms, regressionJudge, probeTopTier } = require('./checker')
 const { crawlFetch, readText, sleep } = require('./net')
-const { getActiveService, getService, getBatchImportAccounts, getIsolations, NO_ACCOUNT_ERR } = require('./services')
+const { getActiveService, getService, getBatchImportAccounts, getIsolations, NO_ACCOUNT_ERR, resolveEnableAfterImport } = require('./services')
 const { Store } = require('./store')
 // 2026-11-10 科学性复核：版本算法 / 身份键 / 质量判据统一到单一来源，
 // 不再各写一份（详见 src/core/version.js 顶部说明）。
@@ -2142,8 +2142,14 @@ class Hunter {
     const cfg = this.store.config
     const all = (cfg && cfg.platforms) || []
     const wanted = opts && Array.isArray(opts.platformIds) && opts.platformIds.length ? opts.platformIds : null
+    // P-1433（联动测试报告问题 3）：platformIds 分支此前直接 filter，账号没过
+    // resolveEnableAfterImport —— acct.enableAfterImport 恒 undefined → lxserver 适配器
+    // 透传不触发 → afterImport 里 undefined !== false 成立【恒 toggle 启用】，全局/账号
+    // 开关在这条路径失效（与 P-1429 #6 同类 bug 换路径复发）。补齐与
+    // getBatchImportAccounts 相同的解析口径：账号覆盖 → 回退全局。
     const accts = wanted
       ? all.filter(p => p && p.type && wanted.indexOf(p.id) >= 0)
+          .map(p => Object.assign({}, p, { enableAfterImport: resolveEnableAfterImport(p, cfg) }))
       : getBatchImportAccounts(cfg)
     return accts.map(a => ({ adapter: getService(a.type), acct: a, type: a.type }))
   }
@@ -3959,6 +3965,28 @@ class Hunter {
         cfg.activePlatformId
       )
     } catch (e) { /* 冻结表刷新失败不影响巡检结论 */ }
+    // P-1433（联动测试报告问题 2 主路径）：巡检收尾顺带对账——账本对账此前只在
+    // 「灌入/手动同步」时发生，服务端删源（网页手动 / lxserver 巡检移 .trash/）后
+    // 账本最长漂移 24h+（2026-11-16 实测：账本声称 17950 有 45 条、实际缺 4 条）。
+    // 巡检开头本来就拉过 serverList，这里纯本地重算 + 一次落库，零新增请求。
+    // P-1433 补充（doujs 复核意见第五节，2026-11-16 采纳）：空列表安全阀——
+    // listAs 在「HTTP 200 + 响应非数组」时静默返回 []（lxservice.js:62，认证/响应
+    // 结构异常的常见形态；网络级失败会抛错中断巡检、反而安全）。巡检若拿空列表
+    // 对账会把该平台账本整本清空（45 条正文档案 + P-1411 打分快照不可恢复）。
+    // 巡检路径无用户意图兜底 → 一律保守跳过并告警；「服务端真被清空」的对账
+    // 走灌入/手动同步路径（那里有用户意图，语义上允许清）。
+    const patrolLiveIds = (serverList || []).map(x => x && x.id).filter(Boolean)
+    try {
+      if (!Array.isArray(serverList) || patrolLiveIds.length === 0) {
+        this.log('巡检对账跳过：服务端列表为空，疑似认证/响应异常（防误清账本）', '巡检', 'warn')
+      } else {
+        const rc = this.reconcileImported(cfg.activePlatformId, patrolLiveIds)
+        if (rc.changed) {
+          this.store.saveImported()
+          this.log(`巡检账本对账：摘除 ${rc.dropped} 条服务端已不存在的灌入记录`, '巡检', 'info')
+        }
+      }
+    } catch (e) { /* 对账失败不影响巡检结论 */ }
     // P-1432 补漏第二处：巡检取链捕获的 updateTips 只在 _mergeUpdateTips 合并了，
     // 追更动作（拉 updateUrl 入库）此前只挂在 runCheck 收尾——巡检是 updateTip 捕获
     // 的高频路径（12h 全量 aliveLxIds），这里不跟进的话信号要等下一轮检测才被处理。

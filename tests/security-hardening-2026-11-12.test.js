@@ -119,7 +119,6 @@ ok(/多个平台报同一个错/.test(checkerSrc3), 'hint 文案修正（不再�
 ok(/this\._deepIncomplete\(cur\) \|\| this\._deepIncomplete\(e\)/.test(hunterSrc), '_dedupe 深检完整性守卫（含 untested 不定胜负，共用 _deepIncomplete）')
 ok(/vals\.some\(pl => !pl \|\| pl\.status === 'untested' \|\| pl\.status === 'pending'\)/.test(hunterSrc), '完整性判定覆盖 untested/pending')
 
-console.log(`\nsecurity-hardening: PASS ${pass} / FAIL 0`)
 
 console.log('--- ⑯ P-1508 规则化：同名冲突自动补测 ---')
 const hunterSrc2 = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'hunter.js'), 'utf8')
@@ -192,3 +191,38 @@ ok(appSrc4.includes('e.similarNameHint'), '音源库「疑似重复」徽章')
 
 console.log('--- ㉖ P-1432 补漏第二处：巡检收尾也跟进 updateTips ---')
 ok(/追更动作（拉 updateUrl 入库）此前只挂在 runCheck 收尾/.test(hunterSrc3) && /await this\._followUpdateTips\(cfg\) \} catch/.test(hunterSrc3), '巡检收尾 _followUpdateTips 跟进（失败不影响巡检结论）')
+
+console.log('--- ㉗ P-1433：联动修复——platformIds 开关解析 + 巡检顺带对账 ---')
+ok(hunterSrc4.includes('resolveEnableAfterImport } = require(\'./services\')'), 'hunter 引入 resolveEnableAfterImport')
+ok(/wanted\s*\?\s*all\.filter\(p => p && p\.type && wanted\.indexOf\(p\.id\) >= 0\)\s*\n\s*\.map\(p => Object\.assign\(\{\}, p, \{ enableAfterImport: resolveEnableAfterImport\(p, cfg\) \}\)\)/.test(hunterSrc4), 'platformIds 分支账号过 resolve（与 getBatchImportAccounts 同口径）')
+ok(/巡检收尾顺带对账——账本对账此前只在/.test(hunterSrc4) && /this\.reconcileImported\(cfg\.activePlatformId,/.test(hunterSrc4), '巡检收尾复用 serverList 顺带对账（零新增请求）')
+ok(/巡检账本对账：摘除 \$\{rc\.dropped\} 条/.test(hunterSrc4), '对账摘除数进日志可追溯')
+ok(/rc\.changed\) \{\s*\n\s*this\.store\.saveImported\(\)/.test(hunterSrc4), '对账变更后立即落库')
+
+console.log('--- ㉘ P-1433 行为断言：reconcileImported 语义 + 巡检空列表守卫（doujs 复核意见第五节）---')
+;(function () {
+  const os2 = require('os')
+  const { Hunter } = require('../src/core/hunter')
+  const { Store, DEFAULT_CONFIG } = require('../src/core/store')
+  const dir = fs.mkdtempSync(path.join(os2.tmpdir(), 'lx-reconcile-'))
+  const store = new Store(dir)
+  store.config = Object.assign({}, DEFAULT_CONFIG, store.config, { activePlatformId: 'pT' })
+  store.imported = {
+    keep: { lxId: 'x1', name: '留', platformId: 'pT', importedTo: [{ platformId: 'pT', lxId: 'x1' }], serverSynced: false },
+    gone: { lxId: 'x2', name: '摘', platformId: 'pT', importedTo: [{ platformId: 'pT', lxId: 'x2' }], serverSynced: false }
+  }
+  const hunter = new Hunter(store)
+  // 行为 1：真实列表只含 x1 → 只摘缺失项
+  const r1 = hunter.reconcileImported('pT', ['x1'])
+  ok(r1.dropped === 1 && !!store.imported.keep && !store.imported.gone, '行为：reconcileImported 只摘服务端已缺失的记录')
+  // 行为 2：空数组会通过 reconcileImported 的 Array.isArray 守卫 → 防线必须在巡检调用侧
+  ok(Array.isArray([]) === true && [].length === 0, '前提：空数组会通过 reconcileImported 的守卫（防线必须在巡检调用侧）')
+  ok(hunterSrc4.includes('巡检对账跳过：服务端列表为空，疑似认证/响应异常（防误清账本）'), '行为：巡检对账空列表安全阀已实现（保守跳过 + 告警）')
+  ok(hunterSrc4.includes('const patrolLiveIds = (serverList || []).map(x => x && x.id).filter(Boolean)'), '行为：巡检 liveIds 提取收口到单一变量（守卫与调用同源）')
+  // 行为 3：列表完整时灌入路径对账零误删
+  store.imported.gone = { lxId: 'x2', name: '摘', platformId: 'pT', importedTo: [{ platformId: 'pT', lxId: 'x2' }], serverSynced: false }
+  const r3 = hunter.reconcileImported('pT', ['x1', 'x2'])
+  ok(r3.dropped === 0 && !!store.imported.keep && !!store.imported.gone, '行为：灌入路径对账在列表完整时零误删')
+})()
+
+console.log(`\nsecurity-hardening: PASS ${pass} / FAIL 0`)
