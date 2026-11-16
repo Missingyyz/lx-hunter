@@ -1739,7 +1739,8 @@ function statusCell(e) {
   // 去重废弃的条目一律显示「重复·已合并」——不管它有没有历史检测结果。
   // 旧逻辑只在无深检结果时显示，带历史结果的会落进「疑似」分支，让人误判成检测失败。
   // 它的真实状态是「已合并到保留项」，必须这么说。
-  if (Array.isArray(e.updateTips) && e.updateTips.length) return '<span class="badge warn" title="脚本上报有新版本（updateUrl），追更候选已入库或待跟进">有新版本</span>'\n    if (e.deprecated) return `<span class="badge gray" title="${esc(mergeTip(e))}">重复·已合并</span>`
+  if (Array.isArray(e.updateTips) && e.updateTips.length) return '<span class="badge warn" title="脚本上报有新版本（updateUrl），追更候选已入库或待跟进">有新版本</span>'
+  if (e.similarNameHint) return `<span class="badge warn" title="${esc(e.similarNameHint)}">疑似重复</span>`\n    if (e.deprecated) return `<span class="badge gray" title="${esc(mergeTip(e))}">重复·已合并</span>`
   // 内容有更新（定时爬取发现上游换了内容，检测结果已重置）—— 不能显示成普通「未检测」
   if (e.updated && !e.deep) return '<span class="badge warn" title="上游内容已变更（定时爬取发现），检测结果已重置：重新检测后生效；灌入时会自动替换服务端上的同名旧版">有更新·待检测</span>'
   // v1.12.0 质量守门：疑似回归标记（软拦截——自动灌入跳过，手动不受限）。

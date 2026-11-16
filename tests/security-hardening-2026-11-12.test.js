@@ -184,3 +184,8 @@ ok(/autoFollowScriptUpdate !== false/.test(hunterSrc4), '追更有开关（默�
 ok(/autoFollowScriptUpdate: true,/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'store.js'), 'utf8')), '默认开')
 ok(/cfgAutoFollowUpdate/.test(accHtml), '设置页开关')
 ok(/有新版本/.test(appSrc4), '音源库「有新版本」徽章')
+
+console.log('--- ㉕ P-1432 W-A：疑似重复只读提示（1010🎵音源 漏判实测）---')
+ok(/function weakNameKey\(s\)/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'identity.js'), 'utf8')), 'identity 提供 weakNameKey（normName 再剥 emoji/符号）')
+ok(hunterSrc3.includes('it.similarNameHint = `与服务端「${srv.name}」疑似重复'), '灌入规划对弱名相同候选打只读标注（不裁决不删除）')
+ok(appSrc4.includes('e.similarNameHint'), '音源库「疑似重复」徽章')

@@ -139,7 +139,17 @@ function pickHighestVersion(list) {
   return pick
 }
 
+/**
+ * 弱名键（P-1432 W-A，2026-11-16）：normName 基础上再剥 emoji/Unicode 符号——
+ * 识别「1010音源 vs 1010🎵音源」这类名字仅差 emoji 的疑似重复。
+ * ⚠️ 只用于只读提示（similarNameHint），不参与任何自动裁决/删除——emoji 是作者
+ * 区分变体的常用手段，自动合并有误删风险（normName 是全站公共口径，不改）。
+ */
+function weakNameKey(s) {
+  return normName(s).replace(/[^\w\u4e00-\u9fff]/g, '')
+}
+
 module.exports = {
   normName, repoKey, nameBody, scriptName, candidateRepo, serverRepo, isSameRepo,
-  stripVersionSuffix, baseNameKey, pickHighestVersion, PLACEHOLDER_REPO
+  stripVersionSuffix, baseNameKey, pickHighestVersion, weakNameKey, PLACEHOLDER_REPO
 }

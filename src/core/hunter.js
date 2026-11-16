@@ -11,7 +11,7 @@ const { Store } = require('./store')
 // 2026-11-10 科学性复核：版本算法 / 身份键 / 质量判据统一到单一来源，
 // 不再各写一份（详见 src/core/version.js 顶部说明）。
 const { versionKey: versionNum, cmpVersion, verLabel } = require('./version')
-const { normName, candidateRepo, serverRepo, baseNameKey, pickHighestVersion } = require('./identity')
+const { normName, candidateRepo, serverRepo, baseNameKey, pickHighestVersion, weakNameKey } = require('./identity')
 // v1.13.0：服务端动作（禁用 / 单平台禁用 / 隔离 / 删除）→ 本地冻结标记，防止「删了又灌回来」
 const { computeVeto, isFrozen, vetoReason, splitFrozen, VETO_PRIORITY } = require('./serverVeto')
 // v1.13.0：定时爬取的下次允许时间（配额 → 代理/镜像 → 指数退避，纯函数）
@@ -3571,6 +3571,23 @@ class Hunter {
         // 本地账本有此内容、但服务端上已经没了（用户手动删过/服务端重置）→ 重新灌入
         const rec = e.contentHash ? importedRecs[e.contentHash] : null
         queue.push(rec ? { e, why: `服务端上已无「${rec.name}」（本地记录保留），本次重新灌入` } : { e })
+      }
+    }
+    // P-1432（W-A，2026-11-16）：疑似重复只读提示——同名匹配（normName）未命中、
+    // 但弱名键（去 emoji/符号）与服务端条目相同的候选，标注「疑似重复」。
+    // 只标注不裁决：emoji 是作者区分变体的手段，自动合并有误删风险；音源库徽章供人工判断。
+    if (Array.isArray(ctx.serverList) && ctx.serverList.length) {
+      const srvByWeak = {}
+      for (const s of ctx.serverList) {
+        if (!s || !s.name) continue
+        const wk = weakNameKey(s.name)
+        if (wk && !srvByWeak[wk]) srvByWeak[wk] = s
+      }
+      for (const it of queue) {
+        if (!it || !it.e || it.renameServer || it.skip || it.sameContentServer || it.replaceServer) continue
+        const wk = weakNameKey(it.e.lxName || it.e.scriptName || it.e.name)
+        const srv = srvByWeak[wk]
+        if (srv) it.similarNameHint = `与服务端「${srv.name}」疑似重复（名字仅差 emoji/符号，作者/内容可能不同），如确认是同一音源的变体请人工处理`
       }
     }
     return queue
