@@ -30,6 +30,10 @@ const DEFAULT_CONFIG = {
   // proxyPolicy：off=全局不用代理；auto=第三方站点代理优先、GitHub 走直连+镜像（默认）；
   // force=在 auto 基础上把代理插到 GitHub 候选链最前。forceProxy 是旧字段，写入时与之同步。
   // useJsdelivr：jsDelivr 是否参与镜像候选链；mirrorCustom：镜像选「自定义…」时的前缀基址。
+  // P-1434 采集特征库：候选路径/文件名含这些关键词的**不采集**（子串、忽略大小写）。
+  // 手动维护（设置→采集源→采集特征库）+ 自动学习（判定「缺少洛雪音源特征」的
+  // 非音源脚本自动入册，见 hunter._autoLearnBlockPattern，上限 300 条防膨胀）。
+  crawlerBlockPatterns: ['示例音源', '示例脚本', '插件', 'plugin', 'template', '模板'],
   crawlProxy: '',
   proxyPolicy: 'auto',
   forceProxy: false,

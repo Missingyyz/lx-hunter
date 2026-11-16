@@ -20,6 +20,7 @@ const { Store } = require('../core/store')
 const { Hunter, formatIntervalHours, patrolSchedule } = require('../core/hunter')
 const { getActiveService, getService, resolveService, TYPE_LABELS, NO_ACCOUNT_ERR } = require('../core/services')
 const { createUpdater } = require('../core/sourceUpdate')
+const { getActiveDeepNames } = require('../core/checker')
 const { DEFAULT_REPOS } = require('../core/crawler')
 const { Auth, SESSION_TTL_MS } = require('../core/auth')
 const { publicSourceList } = require('../core/sourceView')
@@ -95,8 +96,11 @@ process.on('unhandledRejection', err => {
     rejSeen.set(first, { at: now, n: 1 })
     if (rejSeen.size > 200) rejSeen.clear()
     const isScript = /沙箱|fetch|Failed to parse URL|__host_|vm:/i.test(first)
+      // P-1434：带上本轮深检活跃源（孤儿 reject 无法精确归因，标注并发歧义）
+      const act = getActiveDeepNames()
+      const tag = (isScript && act.length) ? `（本轮检测活跃源：${act.slice(0, 4).join('、')}${act.length > 4 ? ' 等' : ''}，并发下可能为其中之一）` : ''
     pushLog({
-      msg: (isScript ? '音源脚本内部未捕获异常（已忽略，不影响检测）：' : '已捕获未处理的 Promise 异常：') + first,
+      msg: (isScript ? '音源脚本内部未捕获异常（已忽略，不影响检测）：' : '已捕获未处理的 Promise 异常：') + tag + first,
       module: '系统', level: 'warn', at: now
     })
   } catch (e) {}
@@ -499,7 +503,16 @@ route('POST', '/api/veto/clear', guard((req, res, ctx) => {
   return { cleared }
 }))
 
-route('GET', '/api/logs', guard(() => logs.slice(-800)))
+route('GET', '/api/logs', guard((req, res, ctx) => {
+  // P-1434：支持 ?contains= 与 ?batch= 过滤（前端按源名/轮次查日志）
+  const q = new URL(req.url, 'http://x').searchParams
+  const contains = String(q.get('contains') || '')
+  const batch = String(q.get('batch') || '')
+  let out = logs.slice(-800)
+  if (contains) out = out.filter(e => String(e.msg || '').includes(contains))
+  if (batch) out = out.filter(e => String(e.batch || '') === batch)
+  return out
+}))
 route('POST', '/api/logs/clear', guard(() => { logs.length = 0; return true }))
 
 // ---------------- 音源采集站（v1.9.19）----------------

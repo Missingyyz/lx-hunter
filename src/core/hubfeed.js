@@ -284,6 +284,16 @@ async function collectFromHubs(o) {
       perHub.push({ id: hub.id, ok: false, error: r.error })
       continue
     }
+    // P-1434 采集特征库：候选名命中特征关键词 → 不入库（非音源脚本自动排除）
+    const bp = Array.isArray(cfg.crawlerBlockPatterns) ? cfg.crawlerBlockPatterns : []
+    if (bp.length && Array.isArray(r.entries) && r.entries.length) {
+      const before = r.entries.length
+      r.entries = r.entries.filter(it => {
+        const nm = String((it && it.name) || '').toLowerCase()
+        return !bp.some(x => { const kw = String(x || '').trim().toLowerCase(); return kw && nm.includes(kw) })
+      })
+      if (r.entries.length < before) log(`采集站「${hub.name || hub.url}」特征库过滤 ${before - r.entries.length} 条非音源候选`, '采集', 'info')
+    }
     const conv = hubEntriesToSources(r.entries, hub, knownHashes, usedIds)
     if (conv.items.length) {
       const n = store.addSources(conv.items)

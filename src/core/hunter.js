@@ -1,6 +1,6 @@
 'use strict'
 /** 任务编排：爬取 / 检测 / 灌入 / 撤回 */
-const { crawl, checkQuota, filterDeadRepos, DEFAULT_REPOS, normalizeRepo, discoverReposViaSearch, verifyRepoHasSource, resolveRepoRename } = require('./crawler')
+const { crawl, checkQuota, filterDeadRepos, DEFAULT_REPOS, setCrawlBlockPatterns, normalizeRepo, discoverReposViaSearch, verifyRepoHasSource, resolveRepoRename } = require('./crawler')
 const { crawlWebSite, isWebRepo, probeExternalSource, normalizeExternalUrl } = require('./websource')
 const { fetchCommunityRepos } = require('./community')
 const { collectFromHubs } = require('./hubfeed')
@@ -328,8 +328,31 @@ class Hunter {
     this.job = { running: false, type: '', cancel: false, progress: {}, step: '' }
   }
 
+  /**
+   * P-1434 采集特征库·自动学习：判定「缺少洛雪音源特征」的非音源脚本，
+   * 把文件名主干自动加入 crawlerBlockPatterns（去重、上限 300 条防膨胀）。
+   * 手动清单与自动学习共用同一份列表（设置→采集源可编辑可删）。
+   */
+  _autoLearnBlockPattern(e) {
+    const cfg = this.store.config
+    if (!Array.isArray(cfg.crawlerBlockPatterns)) cfg.crawlerBlockPatterns = []
+    const list = cfg.crawlerBlockPatterns
+    const stem = String(e.scriptName || e.name || '').replace(/\.js$/i, '').trim()
+    if (!stem || stem.length < 2 || stem.length > 60) return
+    if (list.some(x => String(x || '').toLowerCase() === stem.toLowerCase())) return
+    if (list.length >= 300) {
+      this.log(`特征库已达自动学习上限（300 条），本次不自动新增：${stem}`, '采集', 'warn')
+      return
+    }
+    list.push(stem)
+    this.store.saveConfig()
+    this.log(`特征库自动学习：新增「${stem}」（判定非音源脚本，后续不再采集）`, '采集', 'info')
+  }
+
   log(msg, module, level) {
-    this.emit('log', { msg, module: module || '任务', level: level || 'info', at: Date.now() })
+    // P-1434：日志带轮次 batchId（runCheck/runImport/runPatrol/runCrawl 入口生成），
+    // /api/logs?batch= 可按轮过滤，事后取证不再靠时间窗猜。
+    this.emit('log', { msg, module: module || '任务', level: level || 'info', at: Date.now(), batch: this.batchId || undefined })
   }
   step(text) {
     this.job.step = text
@@ -400,6 +423,7 @@ class Hunter {
   }
 
   async runCrawl(opts) {
+    this.batchId = Date.now().toString(36).slice(-6)
     this.jobGate(opts && Array.isArray(opts.only) && opts.only.length ? '主动采集' : (opts && opts.incremental ? '定时增量爬取' : '全量爬取'), opts && Array.isArray(opts.only) && opts.only.length ? opts.only.join('、') : '')
     // v1.10.8 jobGate 竞态修复：jobGate 与下方正式 job 初始化之间隔着镜像池刷新/搜索发现等
     // await（网络调用可达数十秒，246 实测窗口内第二个全量爬取抢入并发），先同步占位，
@@ -611,6 +635,7 @@ class Hunter {
         }
       }
       if (ghRepos.length) {
+        setCrawlBlockPatterns(cfg.crawlerBlockPatterns)
         crawlStats = await crawl({ repos: ghRepos, token: cfg.ghToken, maxCandidatesPerRepo: cfg.maxCandidatesPerRepo, timeoutMs: cfg.timeoutMs, mirror: cfg.mirror, known, sinceDays, latestOnly },
           onCrawlEvent,
           () => this.cancelRequested)
@@ -1724,6 +1749,7 @@ class Hunter {
   }
 
   async runCheck(ids, opts) {
+    this.batchId = Date.now().toString(36).slice(-6)
     this.jobGate('检测', (ids && ids.length ? ids.length + ' 条' : '全部候选'))
     const opt = opts || {}
     // full=true：深度检测（打分）—— 关掉快速模式、全平台逐个真取链并强制重测，
@@ -1927,6 +1953,7 @@ class Hunter {
             }
           } else if (e.status === 'ok' && !e.suspected && code) {
             notSource++   // 下载成功但缺少洛雪音源特征（归入疑似，不进深度检测）
+            this._autoLearnBlockPattern(e)   // P-1434：特征库自动学习——非音源脚本后续不再采集
           }
         } catch (err) {
           const msg = String((err && err.message) || err)
@@ -1951,6 +1978,23 @@ class Hunter {
     if (cfg.autoFollowScriptUpdate !== false && !this.cancelRequested) {
       await this._followUpdateTips(cfg)
     }
+    // P-1434 ④：逐源一行摘要（平台级结果一目了然）；usable=0 用 error 级
+    for (const e of list) {
+      const dp = e.deep && e.deep.platforms
+      if (!dp || e.deprecated) continue
+      const parts = []
+      let bad = 0
+      for (const [pl, x] of Object.entries(dp)) {
+        const st = (x || {}).status
+        if (st === 'usable') { parts.push(pl + '✓'); continue }
+        if (st === 'failed') { bad++; parts.push(pl + '✗(' + String((x || {}).message || '').slice(0, 12) + ')'); continue }
+        parts.push(pl + '…')
+      }
+      if (!parts.length) continue
+      const nm = e.lxName || e.scriptName || e.name || e.id
+      this.log(`「${nm}」 ${parts.join(' ')}`, '检测', bad && !usableCount(e) ? 'error' : 'info')
+    }
+
     if (this.cancelRequested) this.log('检测已取消（已完成的检测结果全部保留）', '检测', 'warn')
     else this.log(`检测完成：可用 ${usable} 条 / 共 ${list.length} 条` +
       (skippedChecked ? `，跳过已检测 ${skippedChecked} 条` : '') +
@@ -2082,7 +2126,7 @@ class Hunter {
           if (e.fetchMirror) this.mirrorPref = e.fetchMirror
           if (e.status === 'ok' && code) {
             hashed++
-            if (!e.suspected) noSource++
+            if (!e.suspected) { noSource++; this._autoLearnBlockPattern(e) }   // P-1434：非音源自动入特征库
             if (e.stale) { e.stale = false; e.staleAt = 0 }   // 已重新下载校验，清除待重下标记
             // 检测完还没深检：先清掉旧的深检结果标记（内容已变则旧结果作废）
             if (e.deep && e.deep.hash && e.deep.hash !== e.contentHash) {
@@ -2166,6 +2210,7 @@ class Hunter {
    *  3. 「已灌入」记录按平台分类（platformId + importedTo[]），撤回按当前账号过滤。
    */
   async runImport(ids, opts) {
+    this.batchId = Date.now().toString(36).slice(-6)
     this.jobGate('灌入', (ids && ids.length ? ids.length + ' 条' : '全部待灌'))
     const cfg = this.store.config
     const targets = (ids || []).map(i => this.store.db.sources[i]).filter(Boolean)
@@ -3752,6 +3797,7 @@ class Hunter {
    *  - 之前因巡检失效被禁用、现在恢复可用 → 自动重新启用
    */
   async runPatrol() {
+    this.batchId = Date.now().toString(36).slice(-6)
     this.jobGate('巡检')
     // v1.10.8 jobGate 竞态修复：与正式初始化之间隔着服务端列表拉取（网络可达数秒），先同步占位；
     // 占位后所有提前 return / throw 路径都必须回滚，否则任务卡死（下方两处已覆盖）。

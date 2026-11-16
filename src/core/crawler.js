@@ -189,18 +189,30 @@ const CLIENT_SOURCE_PATH = /^(?:src\/(?:renderer|main|common|stores|utils|worker
 /** 脚本正文大小上限，与 checker.MAX_CONTENT_BYTES 同口径（超了检测会判「文件过大」） */
 const MAX_SCRIPT_BYTES = 2 * 1024 * 1024
 
+// P-1434 采集特征库（hunter.runCrawl 每轮从 config.crawlerBlockPatterns 注入）
+let crawlBlockPatterns = []
+function setCrawlBlockPatterns(a) { crawlBlockPatterns = Array.isArray(a) ? a.map(x => String(x || '').trim()).filter(Boolean) : [] }
+
 /** 树里的 .js 候选（带 blob sha —— 增量判重靠它，零额外请求）
  *  2026-11-11 性能项 2：候选阶段先按「路径 + 体积」预过滤，少建条目 = 少下载、少排队。
  *  @returns {{items:Array<{path,sha,size}>, filtered:{path:number,size:number}}} */
 function extractCandidates(tree, maxPerRepo) {
   const out = []
-  const filtered = { path: 0, size: 0 }
+  const filtered = { path: 0, size: 0, block: 0 }
   const items = (tree && tree.tree) || []
   for (const item of items) {
     if (item.type !== 'blob' || !/\.js$/i.test(item.path || '')) continue
     if (/(^|\/)(node_modules|test|tests|__tests__|dist\/assets)\//.test(item.path)) continue
     if (/(webpack|vite|rollup|babel|jest|eslint|tsconfig)[^/]*\.js$/i.test(item.path)) continue
     if (CLIENT_SOURCE_PATH.test(item.path)) { filtered.path++; continue }
+    // P-1434 采集特征库：文件名/路径命中特征关键词 → 不采集（示例音源/插件等非音源脚本）
+    const lp = String(item.path || '').toLowerCase()
+    let blocked = false
+    for (const bp of crawlBlockPatterns) {
+      const kw = String(bp || '').trim().toLowerCase()
+      if (kw && lp.includes(kw)) { blocked = true; break }
+    }
+    if (blocked) { filtered.block++; continue }
     const size = Number(item.size)
     // 空文件 / 超过检测上限的文件：下载也是白下（checkBasic 会判「文件过大」或空正文）
     if (size === 0) { filtered.size++; continue }
@@ -1038,7 +1050,7 @@ async function resolveRepoRename(repo, o) {
 }
 
 module.exports = {
-  DEFAULT_REPOS, crawl, checkQuota, fetchReleases, ghGetJson, filterDeadRepos, DEAD_REPO_TTL_MS,
+  DEFAULT_REPOS, crawl, checkQuota, fetchReleases, ghGetJson, filterDeadRepos, DEAD_REPO_TTL_MS, setCrawlBlockPatterns,
   resetGhStats, ghStatsSnapshot,
   parseReleaseAssets, fetchRepoFreshness, judgeFreshness,
   discoverReposViaSearch, looksLikeSourceRepo, verifyRepoHasSource, resolveRepoRename, isSourceAsset,

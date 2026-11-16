@@ -280,6 +280,7 @@ async function loadConfig() {
   $('cfgCrawlHours').value = c.crawlIntervalHours || 24
   $('cfgCrawlSinceDays').value = Math.max(0, Number(c.crawlSinceDays) || 0)
   $('cfgCrawlLatestOnly').checked = c.crawlLatestOnly !== false
+  $('cfgCrawlerBlockPatterns').value = (c.crawlerBlockPatterns || []).join('\n')
   $('cfgReplaceSame').checked = c.replaceSameNameOnImport !== false
   state.defaultRepos = Array.isArray(meta.defaultRepos) ? meta.defaultRepos
     : (Array.isArray(c.defaultRepos) ? c.defaultRepos : [])
@@ -341,6 +342,7 @@ async function saveAllCfg() {
     crawlIntervalHours: Math.max(1, Math.min(720, parseInt($('cfgCrawlHours').value, 10) || 24)),
     crawlSinceDays: Math.max(0, Math.min(365, parseInt($('cfgCrawlSinceDays').value, 10) || 0)),
     crawlLatestOnly: $('cfgCrawlLatestOnly').checked,
+    crawlerBlockPatterns: $('cfgCrawlerBlockPatterns').value.split(/\r?\n/).map(x => x.trim()).filter(Boolean),
     replaceSameNameOnImport: $('cfgReplaceSame').checked,
     repos: state.config.repos || [],
     searchEnabled: $('cfgSearchEnabled').checked,
@@ -1845,6 +1847,7 @@ function rowHtml(e) {
     <td class="c-op">
       <button class="btn sm" data-act="check" data-id="${esc(e.id)}">${e.deprecated ? '强制重测' : '检测'}</button>
       <button class="btn sm" data-act="import" data-id="${esc(e.id)}">灌入</button>
+      <button class="btn sm" data-act="logs" data-name="${esc(e.lxName || e.scriptName || e.name || '')}">日志</button>
     </td>`
 }
 
@@ -1963,6 +1966,15 @@ $('srcBody').addEventListener('click', ev => {
   const btn = ev.target.closest('button[data-act]')
   if (!btn) return
   const id = btn.dataset.id
+  if (btn.dataset.act === 'logs') {
+    // P-1434：跳转日志页并按源名过滤
+    const nm = btn.dataset.name || ''
+    $('logFilterText').value = nm
+    applyLogFilter()
+    const nav = document.querySelector('.nav-item[data-view="logs"]')
+    if (nav) nav.click()
+    return
+  }
   if (btn.dataset.act === 'check') startCheck([id])
   else startImport([id])
 })
@@ -2283,14 +2295,16 @@ function logLine(e) {
 }
 // —— 日志筛选 + 自动刷新（v1.10.8）：模块下拉动态收集、级别过滤、进入本页每 5s 拉增量 ——
 function logFilterState() {
-  return { module: $('logFilterModule').value || '', level: $('logFilterLevel').value || '' }
+  return { module: $('logFilterModule').value || '', level: $('logFilterLevel').value || '', text: ($('logFilterText') || {}).value || '' }
 }
 function applyLogFilter() {
-  const { module: fm, level: fl } = logFilterState()
+  const { module: fm, level: fl, text: ft } = logFilterState()
+  const ftl = ft.trim().toLowerCase()
   const box = $('logBox')
   let shown = 0
   for (const line of box.children) {
-    const ok = (!fm || line.dataset.module === fm) && (!fl || line.dataset.level === fl)
+    const lt = (line.dataset.text || line.textContent || '').toLowerCase()
+    const ok = (!fm || line.dataset.module === fm) && (!fl || line.dataset.level === fl) && (!ftl || lt.includes(ftl))
     line.hidden = !ok
     if (ok) shown++
   }

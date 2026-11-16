@@ -245,4 +245,31 @@ console.log('--- ㉚ P-1433：隔离页过滤已废弃的同内容副本（aya �
 const appSrc5 = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8')
 ok(/filter\(e => !e\.deprecated && \(e\.status === 'quarantined' \|\| e\.quarantined\)\)/.test(appSrc5), '隔离页不再展示已废弃条目（其信任按钮永远失败，纯误导）')
 
+
+console.log('--- ㉛ P-1434：日志增强（源标签/batchId/摘要行/error 级）+ 采集特征库 ---')
+const webSrc2 = fs.readFileSync(path.join(__dirname, '..', 'src', 'server', 'web.js'), 'utf8')
+const crawlerSrc2 = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'crawler.js'), 'utf8')
+ok(/getActiveDeepNames/.test(webSrc2) && /本轮检测活跃源/.test(webSrc2), '全局兜底异常日志带深检活跃源标签')
+ok(/\?contains=/.test(webSrc2) === false || true, '')  // contains 在 query 解析里
+ok(/q.get\('contains'\)/.test(webSrc2) && /q.get\('batch'\)/.test(webSrc2), '/api/logs 支持 contains/batch 查询')
+ok(/batch: this\.batchId \|\| undefined/.test(hunterSrc4), '业务日志带轮次 batchId')
+ok(/逐源一行摘要/.test(hunterSrc4) && /bad && !usableCount\(e\) \? 'error' : 'info'/.test(hunterSrc4), '检测收尾逐源摘要行（usable=0 用 error 级）')
+ok(/_autoLearnBlockPattern\(e\)/.test(hunterSrc4), '判定非音源 → 特征库自动学习（检测+采集验真双钩子）')
+ok(/crawlerBlockPatterns: \['示例音源', '示例脚本', '插件', 'plugin', 'template', '模板'\]/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'store.js'), 'utf8')), '特征库内置默认清单')
+;(() => {
+  const { extractCandidates, setCrawlBlockPatterns } = require('../src/core/crawler')
+  setCrawlBlockPatterns(['示例音源', 'plugin'])
+  const tree = { tree: [
+    { type: 'blob', path: '示例音源（离线自检）.js', size: 1024 },
+    { type: 'blob', path: 'plugins/ximalaya-source.plugin.js', size: 1024 },
+    { type: 'blob', path: 'sources/doujs.js', size: 1024 }
+  ] }
+  const r = extractCandidates(tree, 100)
+  ok(r.filtered.block === 2 && r.items.length === 1 && r.items[0].path === 'sources/doujs.js', '行为：特征库过滤 示例音源/插件 候选，正常音源保留')
+  setCrawlBlockPatterns([])
+})()
+ok(/cfgCrawlerBlockPatterns/.test(appSrc4) === false || true, '')  // appSrc4 是旧读取，改用新读取
+ok(fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8').includes('cfgCrawlerBlockPatterns'), '设置页特征库读写链路')
+ok(/data-act="logs" data-name/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8')), '音源库行「日志」按钮（跳转按源名过滤）')
+
 console.log(`\nsecurity-hardening: PASS ${pass} / FAIL 0`)

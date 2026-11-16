@@ -424,6 +424,11 @@
       </div>
 
       <div class="card">
+        <div class="card">
+          <h3 class="card-title">采集特征库（非音源脚本不采集）</h3>
+          <p class="hint">候选路径/文件名含以下关键词的<strong>不采集</strong>（子串匹配、忽略大小写），每行一条。内置「示例音源/插件/模板」等；判定「缺少洛雪音源特征」的非音源脚本会<strong>自动入册</strong>（上限 300 条），误加的直接删行即可。改动随「保存设置」生效。</p>
+          <textarea class="input" id="cfgCrawlerBlockPatterns" rows="6" style="width:100%;font-family:monospace" placeholder="示例音源&#10;插件"></textarea>
+        </div>
         <h3 class="card-title">音源采集站</h3>
         <p class="hint">把第三方音源筛选站（lxhub 类）挂进来，lx-hunter 直接上去把<strong>站点实测可用</strong>的音源采回来。站点类型自动识别（deerwan 系 / zlyon 系），判重走站点自带的 sha256 —— 与 lx-hunter 内容指纹同算法，<strong>无需下载脚本即可去重</strong>；只有真正新增的条目会在检测 / 巡检时才下载一次。站点判定为可用的先入库，本地检测与巡检负责复检。</p>
         <div id="hubList" class="repo-list"></div>
@@ -631,6 +636,9 @@
             <option value="">全部</option>
           </select>
         </label>
+        <label class="lb-item">关键词
+          <input class="input" id="logFilterText" placeholder="源名 / 任意文本" style="width:160px">
+        </label>
         <label class="lb-item">级别
           <select class="input" id="logFilterLevel">
             <option value="">全部</option>
@@ -735,6 +743,6 @@
 <div class="toast" id="toast" hidden></div>
 <script src="sorters.js?v=27"></script>
 <script src="web-bridge.js?v=57"></script>
-<script src="app.js?v=77"></script>
+<script src="app.js?v=78"></script>
 </body>
 </html>
