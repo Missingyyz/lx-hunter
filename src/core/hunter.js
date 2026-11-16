@@ -3825,8 +3825,11 @@ class Hunter {
               // 巡检同样不继承分数：这一轮是快速模式（depth=quick），
               // 跑完就该回到「未打分」，而不是拿 N 天前的 p50 继续排。
               e.deep = d
+              this._mergeUpdateTips(e, d.updateTips)   // P-1432：巡检取链也嗅探更新信号，别漏巡检路径
               e.usable = usableCount(d) > 0
             }
+            // 保留主检结果时 updateTips 仍要合并——信号在响应里出现与可用性判定无关
+            else if (d.updateTips && d.updateTips.length) this._mergeUpdateTips(e, d.updateTips)
             if (keepPrevUsable) note += '；库内保留主检的可用结果'
             applyProbeRecord(e, e.deep)   // v1.9.9：巡检也刷新探针记录/validTier
           }
