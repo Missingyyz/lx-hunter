@@ -174,3 +174,13 @@ console.log('--- ㉓ P-1432：checking 残留清扫（用户实测截图：状�
 const storeSrc2 = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'store.js'), 'utf8')
 ok(/清扫上次运行中断残留的 checking 标记/.test(storeSrc2), 'store 加载时清扫中断残留的 checking')
 ok(/delete drop\.checking/.test(hunterSrc4), 'depInline 废弃路径补删 checking')
+
+console.log('--- ㉔ P-1432 v1.13.8：脚本更新信号追更 ---')
+ok(/__host_emit\('updateTip'/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'lxbootstrap.js'), 'utf8')), 'lx.request 响应嗅探 updateMsg/updateUrl（收紧判定不用 .msg 兜底）')
+ok(/name === 'updateAlert' && data/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'sandbox.js'), 'utf8')), 'updateAlert 主动上报通道收集（双通道）')
+ok(/result\.updateTips = sb\.updateTips\.slice\(\)/.test(checkerSrc4), 'deepCheck 写回 updateTips')
+ok(/async _followUpdateTips\(cfg\)/.test(hunterSrc4), '追更方法：updateUrl 拉取→脚本判定→hash 查重→入库走全管线')
+ok(/autoFollowScriptUpdate !== false/.test(hunterSrc4), '追更有开关（默认开）')
+ok(/autoFollowScriptUpdate: true,/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'store.js'), 'utf8')), '默认开')
+ok(/cfgAutoFollowUpdate/.test(accHtml), '设置页开关')
+ok(/有新版本/.test(appSrc4), '音源库「有新版本」徽章')

@@ -107,6 +107,7 @@ class Sandbox {
     this.initGraceMs = Number(opts.initGraceMs) || 4000        // 异步 init 的等待宽限
     this.initGraceMaxMs = Number(opts.initGraceMaxMs) || 15000  // 有请求在飞时的硬上限
     this.onLog = opts.onLog || function () {}
+    this.updateTips = []
     this.events = []
     this.cookies = {}
     this.inflightFetches = 0   // 在飞的网络请求数：init 宽限据此自适应延长
@@ -183,6 +184,16 @@ class Sandbox {
         try {
           const data = json == null ? null : JSON.parse(json)
           self.events.push({ name, data, at: Date.now() })
+          // P-1432 更新信号收集（v1.13.8）：lx.request 响应嗅探（updateTip）与脚本主动
+          // 上报（lx.send('updateAlert')）两条通道统一进 self.updateTips，供 deepCheck 写回条目。
+          if (name === 'updateTip' && data && data.url) {
+            if (!self.updateTips.some(t => t.url === data.url)) self.updateTips.push({ url: String(data.url), msg: String(data.msg || ''), at: Date.now() })
+            if (self.updateTips.length > 5) self.updateTips = self.updateTips.slice(-5)
+          }
+          if (name === 'updateAlert' && data) {
+            const u = String(data.updateUrl || data.url || '')
+            if (/^https?:\/\//i.test(u) && !self.updateTips.some(t => t.url === u)) self.updateTips.push({ url: u, msg: String(data.title || data.content || data.log || '').slice(0, 200), at: Date.now() })
+          }
           if (name === 'dispatchResult' || name === 'dispatchError') {
             const p = self.pending.get(data && data.id)
             if (p) { self.pending.delete(data.id); name === 'dispatchResult' ? p.resolve(data) : p.reject(new Error(String((data && data.error) || 'dispatch error'))) }

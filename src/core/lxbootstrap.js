@@ -92,6 +92,19 @@ const SETUP = String.raw`
           var body = text;
           try { body = JSON.parse(text); } catch (_) {}
           safe(null, { statusCode: resp.status, statusMessage: resp.statusText || '', headers: headersObj, body: body, raw: text }, body);
+          // P-1432 更新信号嗅探（v1.13.8）：与 lxserver userApi 的 onSniffUpdate 同位置同协议，
+          // 但判定收紧——只认显式 updateMsg/updateLog/updateUrl 字段（lxserver 的 .msg 兜底误报面大），
+          // 且 updateUrl 必须是 http(s) 才上行。追更动作由 hunter 侧决定（下载→判定脚本→走全管线）。
+          try {
+            var tipData = (body && typeof body === 'object') ? (body.data || body) : null;
+            if (tipData && typeof tipData === 'object') {
+              var uMsg = tipData.updateMsg || tipData.updateLog || null;
+              var uUrl = tipData.updateUrl || tipData.url || tipData.downloadUrl || null;
+              if (uMsg && typeof uMsg === 'string' && uMsg.indexOf('更新') !== -1 && uUrl && /^https?:\/\//i.test(String(uUrl))) {
+                __host_emit('updateTip', JSON.stringify({ url: String(uUrl), msg: String(uMsg).slice(0, 200) }));
+              }
+            }
+          } catch (e) {}
         });
       }).catch(function (err) {
         if (aborted) return;

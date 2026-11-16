@@ -544,6 +544,7 @@
           <label class="chk"><input type="checkbox" id="cfgPatrolAutoDelete"><span>巡检连续失效达阈值<strong>自动删除音源</strong>（从服务端+本地一并移除；本地未灌入服务端的源只禁用不删）</span></label>
           <label class="field inline"><span>自动删除所需连续失效次数</span><input class="input" id="cfgPatrolDeleteAfter" type="number" min="1" max="20" step="1"></label>
           <label class="field inline"><span>自动禁用所需连续失效次数</span><input class="input" id="cfgPatrolDisableAfter" type="number" min="1" max="20" step="1"></label>
+          <label class="chk"><input type="checkbox" id="cfgAutoFollowUpdate"><span><strong>脚本更新信号追更</strong>（脚本取链响应里自带 updateMsg/updateUrl 时——即 lxserver 显示「有新版本啦」的那类提示——自动拉取新版脚本入库，走混淆闸门/检测/同名裁决全套；内容已在库则跳过）</span></label>
           <label class="chk"><input type="checkbox" id="cfgAutoDeepDuels"><span><strong>同名并存自动深检</strong>（检测收尾发现同名并存组（≥2 条非废弃同名、组内有深检不完整者）时，自动跑 full 深检把 quick 证据升级成完整证据，让去重裁决收敛——同名条目不再长期并存；预算单条 20s / 整轮 3 分钟 / 上限 20 条）</span></label>
           <label class="chk"><input type="checkbox" id="cfgAutoTrustObf"><span><strong>重度混淆脚本自动信任</strong>（规则制：无硬特征 + 沙箱实测外联域名全部为音乐生态白名单 → 检测后自动放行，不再需要人工点信任；硬特征条目永远保持隔离，内容更新自动重新隔离）</span></label>
           <label class="field inline"><span>额外信任的外联域名（逗号分隔，子串匹配）</span><input class="input" id="cfgTrustedObfDomains" placeholder="例：api.my-music.example.com, cdn2.myhost.cn"></label>
@@ -734,6 +735,6 @@
 <div class="toast" id="toast" hidden></div>
 <script src="sorters.js?v=27"></script>
 <script src="web-bridge.js?v=57"></script>
-<script src="app.js?v=73"></script>
+<script src="app.js?v=74"></script>
 </body>
 </html>

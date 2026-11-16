@@ -1886,6 +1886,7 @@ class Hunter {
                 // platforms（可能只剩 2 个可用）上 ⇒ 出现「2 平台 · 300ms（来自昨天）」
                 // 这种自相矛盾的成绩，源明明已经坏了却还挂着高分排序。
                 e.deep = d
+                this._mergeUpdateTips(e, d.updateTips)
               }
               if (rec) { rec.deep = e.deep || d; if (rec.resolve) { rec.resolve(rec.deep); rec.resolve = null } }
               e.usable = usableCount(e) > 0
@@ -1945,6 +1946,10 @@ class Hunter {
     // 让 _dedupe 的质量对决定胜负，同名条目不再长期并存堆积。
     if (cfg.autoDeepPendingDuels !== false && !this.cancelRequested) {
       await this._autoDeepPendingDuels(cfg)
+    }
+    // P-1432（v1.13.8）：脚本更新信号追更（updateUrl 指向的新版脚本入库走全管线）
+    if (cfg.autoFollowScriptUpdate !== false && !this.cancelRequested) {
+      await this._followUpdateTips(cfg)
     }
     if (this.cancelRequested) this.log('检测已取消（已完成的检测结果全部保留）', '检测', 'warn')
     else this.log(`检测完成：可用 ${usable} 条 / 共 ${list.length} 条` +
@@ -3109,6 +3114,85 @@ class Hunter {
   }
 
   /**
+   * P-1432（v1.13.8）：合并沙箱收集的更新信号到条目（按 url 去重，保留最新 msg/at）。
+   */
+  _mergeUpdateTips(e, tips) {
+    if (!tips || !tips.length) return
+    const cur = Array.isArray(e.updateTips) ? e.updateTips : []
+    for (const t of tips) {
+      if (!t || !t.url) continue
+      const prev = cur.find(x => x.url === t.url)
+      if (prev) { prev.msg = t.msg || prev.msg; prev.at = t.at || prev.at }
+      else cur.push({ url: String(t.url), msg: String(t.msg || ''), at: t.at || Date.now() })
+    }
+    e.updateTips = cur.slice(-5)
+    this.emit('source-updated', e)
+  }
+
+  /**
+   * P-1432（v1.13.8 用户确认）：脚本更新信号追更——
+   * lxserver/animemusic 这类脚本在取链响应里自带 updateMsg/updateUrl（lxserver 前端的
+   * 「有新版本啦」提示即来源于此）。hunter 沙箱在同位置嗅探（lxbootstrap request 桥 +
+   * lx.send('updateAlert') 双通道），本方法把 updateUrl 指向的新版脚本拉回来入库：
+   *  - 拉取内容按脚本特征（@name/lx.on/lx.send）判定，非脚本（网页）只记提示不追更；
+   *  - 内容 hash 已在库 → 跳过（防重复入库）；新 hash → 新 id 条目（updateurl:: 前缀）；
+   *  - 入库后走既有全管线：检测（混淆闸门/域名画像）→ 同名裁决（版本高+质量不劣 → 删旧装新）。
+   * updateUrl 是脚本作者指定的任意地址，但下载内容过全部既有闸门，无新增信任面。
+   * 预算：单条 20s / 整轮 3 分钟 / 上限 10 条；开关 cfg.autoFollowScriptUpdate（默认开）。
+   */
+  async _followUpdateTips(cfg) {
+    const items = this.store.getSources().filter(e => !e.deprecated && Array.isArray(e.updateTips) && e.updateTips.length)
+    if (!items.length) return
+    const TOTAL_BUDGET_MS = 3 * 60 * 1000
+    const MAX = 10
+    const startedAt = Date.now()
+    let followed = 0
+    const hashes = new Set(Object.values(this.store.db.sources || {}).map(x => x && x.contentHash).filter(Boolean))
+    for (const e of items) {
+      e.followedUpdateUrls = Array.isArray(e.followedUpdateUrls) ? e.followedUpdateUrls : []
+      for (const tip of e.updateTips) {
+        if (e.followedUpdateUrls.includes(tip.url)) continue
+        if (this.cancelRequested) return
+        if (followed >= MAX || Date.now() - startedAt > TOTAL_BUDGET_MS) {
+          this.log(`updateUrl 追更停止（预算/上限，已跟进 ${followed} 条），其余下次检测继续`, '采集', 'warn')
+          return
+        }
+        followed++
+        this.log(`updateUrl 追更：「${e.lxName || e.scriptName || e.name}」拉取 ${tip.url.slice(0, 60)}…`, '采集', 'info')
+        let text = ''
+        try {
+          const r = await crawlFetch(tip.url, { timeoutMs: 15000 })
+          if (!r.res || !r.res.ok) { this.log(`updateUrl 追更拉取失败（HTTP ${r.status || '?'})→ 下轮重试`, '采集', 'warn'); continue }
+          text = String(await r.res.text()).slice(0, 1024 * 1024)
+        } catch (err) {
+          this.log(`updateUrl 追更拉取异常（${String((err && err.message) || err).slice(0, 60)}）→ 下轮重试`, '采集', 'warn')
+          continue
+        }
+        const isScript = /@name\s+(.+)/.test(text.slice(0, 5000)) || /lx\.on\s*\(|lx\.send\s*\(|EVENT_NAMES/.test(text.slice(0, 5000)) || /lx\.on\s*\(/.test(text)
+        if (!isScript) {
+          this.log(`updateUrl 追更：内容不是音源脚本（网页/说明），只记提示`, '采集', 'info')
+          e.followedUpdateUrls.push(tip.url)
+          continue
+        }
+        const sha = sha256Str(text)
+        if (hashes.has(sha)) { e.followedUpdateUrls.push(tip.url); continue }
+        const name = ((text.match(/@name\s+(.+)/) || [])[1] || '').trim() ||
+          ((tip.url.split('/').pop() || 'updateTip').replace(/\.js.*/i, '')) || 'updateTip'
+        const id = 'updateurl::' + sha256Str(tip.url).slice(0, 10) + ':' + sha.slice(0, 12)
+        this.store.addSources([{ id, repo: 'updateUrl 追更', url: tip.url, name, lxName: name, scriptName: name,
+          code: text, contentHash: sha, size: text.length, status: 'ok', usable: false, addedAt: Date.now(),
+          fromUpdateTip: e.id }])
+        hashes.add(sha)
+        e.followedUpdateUrls.push(tip.url)
+        this.log(`updateUrl 追更：新版脚本「${name}」已入库（来自「${e.lxName || e.scriptName || e.name}」的更新提示）→ 待检测`, '采集', 'info')
+        this.emit('source-updated', e)
+      }
+      this.store.saveDb()
+    }
+    if (followed) this.log(`updateUrl 追更完成：跟进 ${followed} 条更新信号`, '采集', 'info')
+  }
+
+  /**
    * P-1432（R3 用户裁决）：同名并存组自动深检跟进。
    *
    * 背景：H2 完整性守卫让 quick 条目的同名对决转为 pendingDuel（并存堆积）——
@@ -3158,6 +3242,7 @@ class Hunter {
           const d = await deepCheck(e, code, Object.assign({}, cfg, { quickCheck: false }),
             (t, pl) => this.emit(t, pl), () => this.cancelRequested)
           e.deep = d
+          this._mergeUpdateTips(e, d.updateTips)
           e.usable = usableCount(e) > 0
           applyProbeRecord(e, e.deep)
           this.emit('source-updated', e)
@@ -3237,6 +3322,7 @@ class Hunter {
           continue
         }
         e.deep = r
+        this._mergeUpdateTips(e, r.updateTips)
         const v = this.sameNameVerdict(e, srv, code, cfg, { ledger: (p.ledger && p.ledger[e.id]) || null })
         const note = `（已自动补测全平台：实测 ${usableCount(e)} 个可用）`
         respins++

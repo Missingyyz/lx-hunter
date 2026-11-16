@@ -143,6 +143,8 @@ const DEFAULT_CONFIG = {
   autoTrustCleanObf: true,
   // P-1432 R3：同名并存组自动深检跟进（检测收尾把 quick 证据升级 full，让去重裁决收敛）
   autoDeepPendingDuels: true,
+  // P-1432（v1.13.8）：脚本更新信号追更（lx.request 响应嗅探 + updateAlert 双通道）
+  autoFollowScriptUpdate: true,
   trustedObfDomains: [],
   patrolAutoDelete: false,
   patrolDeleteAfter: 3,

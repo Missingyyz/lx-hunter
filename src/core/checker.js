@@ -705,6 +705,9 @@ async function deepCheck(entry, code, cfg, onEvent, shouldStop) {
     result.loadError = msg.slice(0, 200)
     if (msg === '已取消') result.cancelled = true
   } finally {
+    // P-1432 更新信号（v1.13.8）：沙箱 lx.request 响应嗅探 + lx.send('updateAlert') 两条
+    // 通道收集到的更新提示，写回检测结果供 hunter 追更入库。
+    if (sb && sb.updateTips && sb.updateTips.length) result.updateTips = sb.updateTips.slice()
     if (sb) sb.stop()
     if (sb) sb.destroy()
     // 统一在这里收口失效类别：无论走正常流程还是异常分支，统计口径都一致
