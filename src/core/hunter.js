@@ -1627,8 +1627,10 @@ class Hunter {
         // 自动化而非安全结论，条目打 obfAutoTrust 标注可追溯，内容更新自动重新隔离。
         if (cfg.autoTrustCleanObf !== false && e.contentHash && !trustedHashes.includes(e.contentHash) && e.deep && e.deep.checkedAt) {
           const hh = risk.hits || {}
+          // P-1432 OPT-1：jsjiami 与 hardHit 判据解绑（同 qzHardHits）——品牌标识
+          // 不是行为特征，jsjiami-only 且域名/沙箱证据干净的条目可自动信任。
           const hardHit = (hh.spinLoops || 0) > 0 || (hh.selfSchedCalls || 0) > 0 ||
-            (hh.jsjiamiMarks || 0) > 0 || (hh.evalCalls || 0) > 0
+            (hh.evalCalls || 0) > 0
           if (!hardHit) {
             const urls = []
             for (const p of Object.values(e.deep.platforms || {})) {

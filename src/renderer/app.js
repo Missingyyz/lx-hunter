@@ -1634,8 +1634,12 @@ function obfTip(e) {
 
 // ---------------- 混淆隔离区（v1.10.7） ----------------
 function qzHardHits(e) {
+  // P-1432 OPT-1：jsjiami 从「不可信任」名单移除——它是混淆器品牌标识（国内版权
+  // 保护用途常见，花瓣/小熊猫/长青等知名源全用），不是恶意行为特征；jsjiami v7 的
+  // CPU 烧用问题由服务端 CPU 护栏自动隔离兜底，信任入口不再一刀切。
+  // 行为硬特征仍不可信任：空转死循环（烧 CPU）/混淆自调度（反调试）/eval（动态执行）。
   const h = e.obfHits || {}
-  return (h.spinLoops || 0) > 0 || (h.selfSchedCalls || 0) > 0 || (h.jsjiamiMarks || 0) > 0 || (h.evalCalls || 0) > 0
+  return (h.spinLoops || 0) > 0 || (h.selfSchedCalls || 0) > 0 || (h.evalCalls || 0) > 0
 }
 
 function qzDeepSummary(e) {

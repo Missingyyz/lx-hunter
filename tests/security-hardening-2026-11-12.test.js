@@ -159,3 +159,9 @@ ok(/if \(isWeakBaseName\(nm\)\) continue\s+\/\/ P-1432 实测：'main' 通用名
 ok(/\/RATE_LIMIT\|限流\|已知失败\/i\.test\(String\(pl\.message \|\| ''\)\)\)/.test(hunterSrc4), '限流退避按 untested 的限流文案判定')
 ok(/Date\.now\(\) - e\.deep\.checkedAt < 30 \* 60 \* 1000\)\s*\{\s*rlSkip\+\+/.test(hunterSrc4), '限流冷却 30 分钟内跳过无效重试')
 ok(/限流冷却中跳过 \$\{rlSkip\} 条/.test(hunterSrc4), '跳过数进汇总日志可追溯')
+
+console.log('--- ㉑ P-1432 OPT-1：jsjiami 与信任边界解绑 ---')
+const qzFrag = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8').split('function qzHardHits')[1].split('\n}')[0]
+ok(qzFrag.includes('(h.spinLoops || 0) > 0') && qzFrag.includes('(h.evalCalls || 0) > 0') && !qzFrag.includes('jsjiamiMarks'),
+  'qzHardHits 只保留行为特征（jsjiami 移出不可信任名单）')
+ok(/hh\.evalCalls \|\| 0\) > 0`/.test('') || /const hardHit = \(hh\.spinLoops \|\| 0\) > 0 \|\| \(hh\.selfSchedCalls \|\| 0\) > 0 \|\|\s*\n\s*\(hh\.evalCalls \|\| 0\) > 0/.test(hunterSrc3), 'P-1431 自动信任 hardHit 同步解绑')
