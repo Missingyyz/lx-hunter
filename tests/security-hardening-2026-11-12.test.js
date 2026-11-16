@@ -225,4 +225,19 @@ console.log('--- ㉘ P-1433 行为断言：reconcileImported 语义 + 巡检空�
   ok(r3.dropped === 0 && !!store.imported.keep && !!store.imported.gone, '行为：灌入路径对账在列表完整时零误删')
 })()
 
+
+console.log('--- ㉙ P-1433 热修：前端 app.js 语法编译断言（字面 \n 插入事故防再犯）---')
+;(() => {
+  const vm = require('vm')
+  const appJs = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8')
+  try {
+    new vm.Script(appJs, { filename: 'app.js' })
+    ok(true, 'app.js 可被 JS 引擎完整编译（语法零错误——浏览器加载即执行的唯一硬保证）')
+  } catch (e) {
+    ok(false, 'app.js 语法错误：' + String(e.message).slice(0, 120))
+  }
+  const idx = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8')
+  ok(/app\.js\?v=\d+/.test(idx), 'index.html 版本戳存在（缓存失效锚点）')
+})()
+
 console.log(`\nsecurity-hardening: PASS ${pass} / FAIL 0`)
