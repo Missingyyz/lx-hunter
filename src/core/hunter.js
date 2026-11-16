@@ -339,6 +339,9 @@ class Hunter {
     const list = cfg.crawlerBlockPatterns
     const stem = String(e.scriptName || e.name || '').replace(/\.js$/i, '').trim()
     if (!stem || stem.length < 2 || stem.length > 60) return
+    // P-1434 护栏：重度混淆正文的特征提取不可靠（jsjiami 加密后 lx 特征全变密文，
+    // 可能实为真源被误判）——自动学习宁缺毋滥，混淆条目不入册（下次下载成功会重算）
+    if (e.obfLevel === 'high') return
     if (list.some(x => String(x || '').toLowerCase() === stem.toLowerCase())) return
     if (list.length >= 300) {
       this.log(`特征库已达自动学习上限（300 条），本次不自动新增：${stem}`, '采集', 'warn')

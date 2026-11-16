@@ -272,4 +272,8 @@ ok(/cfgCrawlerBlockPatterns/.test(appSrc4) === false || true, '')  // appSrc4 �
 ok(fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8').includes('cfgCrawlerBlockPatterns'), '设置页特征库读写链路')
 ok(/data-act="logs" data-name/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8')), '音源库行「日志」按钮（跳转按源名过滤）')
 
+
+console.log('--- ㉜ P-1434 护栏：自动学习跳过重度混淆条目 ---')
+ok(hunterSrc4.includes(String.fromCharCode(39) + 'high' + String.fromCharCode(39) + ') return'), '自动学习护栏：重度混淆不入册（宁缺毋滥）')
+
 console.log(`\nsecurity-hardening: PASS ${pass} / FAIL 0`)
