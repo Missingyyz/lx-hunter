@@ -240,4 +240,9 @@ console.log('--- ㉙ P-1433 热修：前端 app.js 语法编译断言（字面 \
   ok(/app\.js\?v=\d+/.test(idx), 'index.html 版本戳存在（缓存失效锚点）')
 })()
 
+
+console.log('--- ㉚ P-1433：隔离页过滤已废弃的同内容副本（aya 三发布包实测误导）---')
+const appSrc5 = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8')
+ok(/filter\(e => !e\.deprecated && \(e\.status === 'quarantined' \|\| e\.quarantined\)\)/.test(appSrc5), '隔离页不再展示已废弃条目（其信任按钮永远失败，纯误导）')
+
 console.log(`\nsecurity-hardening: PASS ${pass} / FAIL 0`)

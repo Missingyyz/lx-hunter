@@ -1652,7 +1652,9 @@ function qzDeepSummary(e) {
 }
 
 function renderQuarantine() {
-  const list = (state.sources || []).filter(e => e.status === 'quarantined' || e.quarantined)
+  // P-1433：被同内容去重标废弃的条目不再出现在隔离页——它们的「信任放行」永远失败
+  // （后端正确拒绝废弃条目），继续展示只会误导（2026-11-16 aya 三发布包实测）。
+  const list = (state.sources || []).filter(e => !e.deprecated && (e.status === 'quarantined' || e.quarantined))
   $('qzCount').textContent = list.length + ' 条被隔离'
   $('qzEmpty').hidden = list.length > 0
   $('qzList').innerHTML = list.map(e => {
