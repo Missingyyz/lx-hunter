@@ -194,7 +194,10 @@ class Store {
     for (const s of Object.values(this.db.sources || {})) {
       if (s && s.checking) { delete s.checking; stuckChecking++ }
     }
-    if (stuckChecking) console.log(`[启动] 清扫上次运行中断残留的 checking 标记 ${stuckChecking} 条`)
+    if (stuckChecking) {
+      console.log(`[启动] 清扫上次运行中断残留的 checking 标记 ${stuckChecking} 条`)
+      this._write(this.dbFile, this.db)   // 立即落盘，避免文件与内存长期不一致
+    }
     if (!this.db.patrol) this.db.patrol = { lastRun: 0 }
     // v1.10.2 手动删除记录：被删掉的 id 不再由自动采集加回（见 removeSources）
     if (!Array.isArray(this.db.deletedIds)) this.db.deletedIds = []
