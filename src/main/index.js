@@ -3,6 +3,7 @@ const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { Store } = require('../core/store')
+const { createAppLogWriter } = require('../core/logFile')
 const { Hunter, formatIntervalHours, patrolSchedule } = require('../core/hunter')
 const { getActiveService, resolveService, TYPE_LABELS, NO_ACCOUNT_ERR } = require('../core/services')
 const { DEFAULT_REPOS } = require('../core/crawler')
@@ -10,8 +11,16 @@ const { DEFAULT_REPOS } = require('../core/crawler')
 let win = null
 let store = null
 let hunter = null
-const logs = []
 const MAX_LOGS = 3000
+const logs = []
+// 业务日志落盘（v1.14.0）：与 Web 端共用 core/logFile，重启不丢自动路径日志。
+// 数据目录经 setupPortableMode() 改写 userData，必须在首次 pushLog 时才按 getDataDir() 建 writer，
+// 不能在模块顶层用固定路径初始化。writer 只管内存数组 + JSONL 落盘；IPC 推送仍由 pushLog 负责。
+let appLogWriter = null
+function getAppLogWriter() {
+  if (!appLogWriter) appLogWriter = createAppLogWriter(getDataDir(), { maxLogs: MAX_LOGS })
+  return appLogWriter
+}
 
 // ---- 主进程异常兜底 ----
 // 音源脚本是不可信代码，沙箱内异步回调的极个别异常不应打断主进程（弹系统错误框）。
@@ -50,7 +59,18 @@ process.on('unhandledRejection', err => {
 function pushLog(e) {
   logs.push(e)
   if (logs.length > MAX_LOGS) logs.splice(0, logs.length - MAX_LOGS)
+  try { getAppLogWriter().pushLog(e) } catch (err) {}   // v1.14.0 落盘：失败静默，绝不影响内存日志与 IPC
   if (win && !win.isDestroyed()) win.webContents.send('hunter:log', e)
+}
+
+// R1 聚类日志人话文案（手动/定时共用）：末尾带本周 AI 新归纳的类别 + AI 研究报告。
+function clusterLogMsg(out, trigger) {
+  const r = (out && out.result) || out || {}
+  let msg = 'AI 失败聚类（' + (trigger === 'auto' ? '定期' : '手动') + '）：' + (r.summary || '')
+  const added = Array.isArray(r.newRules) ? r.newRules : []
+  if (added.length) msg += '；本周新增类别 ' + added.join('、') + '（来自 ' + (r.learnedCount || added.length) + ' 条规则归纳）'
+  if (r.report) msg += '\nAI 研究报告：' + r.report
+  return msg
 }
 
 function emitAll(type, payload) {
@@ -244,6 +264,146 @@ ipcMain.handle('config:set', guard((e, patch) => {
   netmod.applyConfig(store.config) // 网络设置改动即时生效
   return store.config
 }))
+
+// ---------------- AI 复检层（v1.14.0，旁路） ----------------
+let aiReviewInstance = null
+function ai() {
+  if (!aiReviewInstance || aiReviewInstance.store !== store) {
+    const { AIReview } = require('../core/aiReview')
+    aiReviewInstance = new AIReview(store)
+  }
+  return aiReviewInstance
+}
+
+ipcMain.handle('ai-review:configGet', guard(() => ({ config: ai().publicConfig() })))
+
+ipcMain.handle('ai-review:configSet', guard((e, p) => {
+  p = p || {}
+  const cur = store.config.aiReview || {}
+  // 白名单与默认值由 core/aiReview.normalizeConfig 统一负责。
+  const next = ai().normalizeConfig(cur, p)
+  store.saveConfig({ aiReview: next })
+  return ai().publicConfig()
+}))
+
+ipcMain.handle('ai-review:test', guard(async () => {
+  const r = await ai().review('你是一个连通性探测助手。', '只回复 OK 两个字母。')
+  return { ok: !!r.ok, message: r.ok ? '连接成功' : (r.error || '连接失败') }
+}))
+
+ipcMain.handle('ai-review:run', guard(async (e, body) => {
+  const a = ai()
+  body = body || {}
+  try {
+    const out = await a.run(String(body.kind || 'R1'), body)
+    // R1 落日志（自动/手动都要记）
+    if (out && out.logged) pushLog({ msg: clusterLogMsg(out, body.trigger === 'auto' ? 'auto' : 'manual'), module: 'AI复检', level: 'info', at: Date.now() })
+    return out
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) }
+  }
+}))
+
+ipcMain.handle('ai-review:suggestions', guard((e, filter) => ({ suggestions: ai().listSuggestions(filter || {}) })))
+
+ipcMain.handle('ai-review:apply', guard((e, body) => {
+  const a = ai(); body = body || {}
+  const APPLYABLE = new Set(['R4', 'R5', 'R6', 'R7'])
+  const s = a.store.db.aiSuggestions[body.id]
+  if (!s) throw new Error('建议不存在：' + body.id)
+  if (!APPLYABLE.has(s.kind)) return { applied: false, reason: '只读结论无需执行' }
+  if (s.kind !== String(body.kind || '')) return { applied: false, reason: 'kind 不匹配' }
+  const g = a.gate(s.kind)
+  if (!g.auto && !body.byUser) return { applied: false, needUserConfirm: true, reason: g.reason }
+  s.status = 'applied'; s.appliedAt = Date.now(); s.appliedBy = body.byUser ? 'user' : 'ai'
+  a.store.saveDb()
+  return { applied: true, suggestion: s }
+}))
+
+ipcMain.handle('ai-review:undo', guard((e, auditId) => {
+  const out = ai().undo(String(auditId || ''))
+  store.saveDb()
+  return out
+}))
+
+// 只读评测报告（与 web.js 镜像）：回放日志 + 样本 → 分层指标 / 数据不足。纯聚合、零副作用。
+ipcMain.handle('ai-review:evalReport', guard(() => {
+  const ec = require('../core/evalCases')
+  const path = require('path')
+  const casesDir = path.join(__dirname, '..', '..', 'tests', 'eval-cases')
+  let cases = []
+  try { cases = ec.loadCases(casesDir) } catch (e) { cases = [] }
+  const logs = Object.keys(store.db.aiEvalLog || {}).map(k => store.db.aiEvalLog[k])
+  const metrics = ec.computeMetrics(logs, cases)
+  return { ok: true, cases: cases.length, logs: logs.length, metrics }
+}))
+
+// 通用自动复检定时器：每小时轮询。R1 失败聚类日志只受总开关 enabled 管（与自动挡解耦），
+// 保持 clusterIntervalHours 每周语义；R3 自动只读复检受 aiSchedulePlan（自动挡）管。
+// 水位：R1 用 db.aiLastClusterAt，R3 用 aiSchedulePlan 内部水位；无论成败都推进，避免刷屏；全程静默。
+setInterval(async () => {
+  try {
+    if (!store) return
+    const cfg = store.config.aiReview || {}
+    const { aiSchedulePlan, selectScope } = require('../core/aiSchedule')
+    const plan = aiSchedulePlan(cfg, store.db.aiAutoReview || {}, Date.now())
+    // ① R1 失败聚类日志：只受 enabled 管，不再被自动挡开关/时段挡住
+    if (cfg.enabled) {
+      const rawHours = cfg.clusterIntervalHours || 168
+      const intervalMs = Math.max(1, Number(rawHours) || 168) * 3600 * 1000
+      const last = Number(store.db.aiLastClusterAt) || 0
+      if (Date.now() - last >= intervalMs) {
+        try {
+          const fail = store.getSources().filter(e => e && (e.error || e.status === 'dead' || e.status === 'quarantined'))
+          const out = await ai().run('R1', { entries: fail, trigger: 'auto', logOnly: true })
+          pushLog({ msg: clusterLogMsg(out, 'auto'), module: 'AI复检', level: 'info', at: Date.now() })
+        } catch (e) {}
+        try { store.db.aiLastClusterAt = Date.now(); store.saveDb() } catch (e) {}
+      }
+    }
+    // ② 自动只读复检：受自动挡开关/到期/时段控制；选范围 → 逐条 R3 只读分析，只产建议、不执行。
+    if (!plan.due || !plan.activeNow) return
+    try {
+      const ids = selectScope(store.getSources(), plan.scope, plan.limit, Date.now()) || []
+      let done = 0, marked = 0
+      for (const id of ids) {
+        try {
+          const src = store.getSources().find(e => e && String(e.id) === String(id)) || {}
+          const text = [src.error, src.status].filter(Boolean).join(' / ')
+          const name = src.name || src.lxName || src.scriptName || ''
+          const r = ai().run('R3', { entryId: id, trigger: 'auto', text, name })
+          if (r && typeof r.then === 'function') awaitIgnore(r)
+          // 自动铺轨：auto 档时对条目产 R4/R5 可执行建议并自动标记（仅标记，不碰业务）。
+          // R6/R7 高危不自动产；评测跑完再考虑接真实动作。
+          if ((cfg.mode || 'off') === 'auto') {
+            const runExec = async () => {
+              const kinds = []
+              if (src.updateUrl) kinds.push('R4')
+              if (src.error || src.status === 'dead') kinds.push('R5')
+              for (const k of kinds) {
+                const rr = await ai().run(k, {
+                  entryId: id, trigger: 'auto',
+                  text: '名称：' + name + '\n状态/错误：' + text + (k === 'R4' ? '\n更新地址：' + src.updateUrl : ''),
+                  evidence: [{ key: 'autoScope', ok: true }]
+                })
+                if (rr && rr.autoMarked) marked++
+              }
+            }
+            const p = runExec(); if (p && typeof p.then === 'function') awaitIgnore(p)
+          }
+          done++
+        } catch (e) {}
+      }
+      pushLog({ msg: 'AI 自动只读复检：本轮处理 ' + done + ' 条' + (marked ? '；自动铺轨标记 ' + marked + ' 条（仅标记，未执行业务）' : ''), module: 'AI复检', level: 'info', at: Date.now() })
+    } catch (e) {} finally {
+      try {
+        store.db.aiAutoReview = Object.assign({}, store.db.aiAutoReview || {}, { lastAttempt: Date.now() })
+        store.saveDb()
+      } catch (e) {}
+    }
+  } catch (e) {}
+}, 60 * 60 * 1000).unref?.()
+function awaitIgnore(p) { try { p.catch(() => {}) } catch (e) {} }
 
 ipcMain.handle('net:test', guard(async (e, opts) => {
   const { testNetwork } = require('../core/net')

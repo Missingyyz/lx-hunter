@@ -678,3 +678,56 @@ body.conn-offline .snap-tag { display: inline-block; }
 details.blocked-details { margin-top: 8px; border: 1px solid var(--line, #e2e2e2); border-radius: 8px; padding: 6px 10px; }
 details.blocked-details > summary { cursor: pointer; user-select: none; font-size: 12px; opacity: .8; line-height: 1.6; }
 details.blocked-details[open] > summary { margin-bottom: 4px; }
+
+/* ---------- AI 复检页（v1.14.0）：.ai-* 专用样式，贴合项目既有卡片/表单风格 ----------
+   配色一律走已有 CSS 变量；需要半透明时用 color-mix(in srgb, var(--x) N%, ...)，
+   保证暗色/亮色主题下都可读。JS 渲染的建议条目用 .ai-suggestion，详情容器用 .ai-detail。 */
+.ai-card > .card-title { display: flex; align-items: baseline; gap: 8px; }
+.ai-card > .card-title .muted { font-size: 12px; font-weight: 400; }
+.ai-mode-fields { align-items: flex-end; margin-top: 2px; }
+.ai-mode-fields .field select.input { width: 100%; }
+.ai-actions { margin-top: 12px; }
+.ai-result { color: var(--text-2); margin: 0 0 0 4px; overflow-wrap: anywhere; }
+
+/* 建议列表：JS（app.js loadSuggestions）把条目写进 #aiSuggestions，
+   这里同时兼容旧的裸 div 结构与新的 .ai-suggestion 条目。 */
+.ai-suggestions { display: flex; flex-direction: column; }
+.ai-suggestions:empty { display: none; }
+.ai-suggestion {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px; margin-bottom: 8px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card-2);
+}
+.ai-suggestion:last-child { margin-bottom: 0; }
+.ai-suggestion-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ai-suggestion-title { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.ai-suggestion-body { color: var(--text-2); font-size: 12.5px; line-height: 1.6; overflow-wrap: anywhere; }
+.ai-suggestion pre, .ai-detail pre {
+  margin: 6px 0 0; padding: 8px 10px; max-height: 260px; overflow: auto;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  color: var(--text-2); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+}
+/* 旧渲染结构：条目是裸 div，用 :not 精准命中，避免误伤后续可能出现的包裹层 */
+.ai-suggestions > div:not(.ai-suggestion) {
+  padding: 10px 12px; margin-bottom: 8px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--card-2);
+}
+.ai-suggestions > div:not(.ai-suggestion):last-child { margin-bottom: 0; }
+.ai-suggestions > div:not(.ai-suggestion) > div { color: var(--text-2); font-size: 12.5px; line-height: 1.6; overflow-wrap: anywhere; }
+
+/* 检测详情容器（#aiDetail，JS 可继续往里填充内容） */
+.ai-detail {
+  min-height: 52px; padding: 12px 14px;
+  border: 1px dashed var(--line); border-radius: 10px;
+  background: var(--card-2); color: var(--text-2);
+  font-size: 12.5px; line-height: 1.7;
+}
+.ai-detail > :first-child { margin-top: 0; }
+.ai-detail > :last-child { margin-bottom: 0; }
+.ai-detail .muted { color: var(--muted); }
+.ai-detail-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.ai-detail-k { color: var(--muted); min-width: 64px; }
+.ai-detail-v { color: var(--text); overflow-wrap: anywhere; }
+.ai-detail-section { margin-top: 10px; }
+.ai-detail-section > strong { color: var(--text); font-size: 12.5px; }

@@ -177,6 +177,38 @@ const DEFAULT_CONFIG = {
   // 背景：lxserver 每次 delete 都会全量重载所有脚本，连续删除会把服务端拖到假死
   // （v1.6.8 教训：12 连删导致 Docker 重启）。留间隔让服务端喘口气。
   serverDeleteIntervalMs: 5000,
+  // ---------------- AI 复检层（旁路，默认全关 v1.14.0） ----------------
+  // 只补规则制判断不了的语义灰区（失败聚类 / 裁决解释 / 意图审查），不参与"能不能用"判定。
+  // provider 完全开放：任何实现 OpenAI /chat/completions 协议的中转站都能接——
+  // baseUrl 填到根（如 https://api.deepseek.com/v1 或自建中转），model 填该中转站支持的模型名，
+  // headers 可填该中转站要求的额外鉴权头（如某些中转用 Authorization 之外的自定义头）。
+  aiReview: {
+    enabled: false,                 // 总开关，默认关（off 档零副作用）
+    mode: 'off',                    // off | assist | auto
+    allowIrreversible: false,       // auto 档下是否放开 R6/R7（第三把锁，默认否）
+    provider: {
+      baseUrl: '',                  // OpenAI 兼容端点根地址，用户自定义（不锁死厂商）
+      apiKey: '',                   // Bearer 密钥；非管理员脱敏（见 web.js sanitizeConfig）
+      model: '',                    // 模型名，按中转站实际支持填写
+      headers: {},                  // 额外请求头（可选），如 { 'X-Api-Key': '...' }
+      timeoutMs: 20000              // 单次超时，超时即放弃、不阻塞主链路
+    },
+    budget: { perItemMs: 20000, perRoundMs: 180000, maxItemsPerRound: 20 },
+    evidencePolicy: 'all-signals',  // 证据门槛：全部满足才允许自动，缺项降级人工
+    // R1 失败聚类周期（小时）：一周一次（168 小时），避免每轮巡检都重算失败根因
+    clusterIntervalHours: 168,
+    // R1 样本驱动语义自生长：本地规则先跑，仅"其他失败"攒够样本才调 AI 归纳新类别
+    clusterLearnEnabled: true,       // 归纳开关（总开关 enabled 关时不学）
+    clusterLearnMinSamples: 5,       // 同类未匹配样本达到此数才归纳，防噪声
+    clusterLearnMaxRules: 40,        // 学到的类别规则上限，防规则表膨胀
+    // ---------------- 自动挡（L1：默认全关，只记日志不自动处置） ----------------
+    autoEnabled: false,              // 自动挡总开关，默认关
+    autoIntervalHours: 24,           // 自动只读复检周期（小时），默认每日；R1 聚类仍用 clusterIntervalHours=168
+    autoScope: 'failed',             // 自动范围：new/failed/quarantined/all，默认仅失败源
+    autoMaxItems: 20,                // 自动每轮上限
+    autoActiveHours: { start: 0, end: 24 },  // 允许时段，默认全天
+    shadowEval: false                // 影子评测开关：AI 决策只记不执行，默认关
+  },
   debugMode: false
 }
 
@@ -189,10 +221,36 @@ class Store {
     this.importedFile = path.join(dir, 'imported.json')
     const rawCfg = this._read(this.configFile)
     this.config = Object.assign({}, DEFAULT_CONFIG, rawCfg)
+    // AI 复检配置深合并：浅合并会让旧配置文件里半截 aiReview 覆盖掉默认 provider 字段，
+    // 导致缺 headers/timeoutMs 等键。逐层补齐默认，且只补缺失键、尊重用户已存值。
+    if (rawCfg && rawCfg.aiReview && typeof rawCfg.aiReview === 'object') {
+      const d = DEFAULT_CONFIG.aiReview
+      const a = this.config.aiReview
+      a.provider = Object.assign({}, d.provider, a.provider || {})
+      a.budget = Object.assign({}, d.budget, a.budget || {})
+      // 新键兜底：浅合并时旧 aiReview 会整体覆盖默认，不在这里补齐的话
+      // 老配置 upgrade 后这些键直接丢失。basic 类型 ==null 补默认，对象用 Object.assign。
+      if (a.clusterIntervalHours == null) a.clusterIntervalHours = d.clusterIntervalHours
+      if (a.clusterLearnEnabled == null) a.clusterLearnEnabled = d.clusterLearnEnabled
+      if (a.clusterLearnMinSamples == null) a.clusterLearnMinSamples = d.clusterLearnMinSamples
+      if (a.clusterLearnMaxRules == null) a.clusterLearnMaxRules = d.clusterLearnMaxRules
+      if (a.autoEnabled == null) a.autoEnabled = d.autoEnabled
+      if (a.autoIntervalHours == null) a.autoIntervalHours = d.autoIntervalHours
+      if (a.autoScope == null) a.autoScope = d.autoScope
+      if (a.autoMaxItems == null) a.autoMaxItems = d.autoMaxItems
+      if (a.shadowEval == null) a.shadowEval = d.shadowEval
+      a.autoActiveHours = Object.assign({}, d.autoActiveHours, a.autoActiveHours || {})
+      if (a.mode !== 'off' && a.mode !== 'assist' && a.mode !== 'auto') a.mode = d.mode
+    }
     // v1.11.0：旧配置只有 forceProxy，按它推导 proxyPolicy，保证升级后行为不变
     if (rawCfg && rawCfg.proxyPolicy == null && rawCfg.forceProxy === true) this.config.proxyPolicy = 'force'
     this.db = this._read(this.dbFile) || { sources: {}, lastCrawl: 0, patrol: { lastRun: 0 } }
     if (!this.db.sources) this.db.sources = {}
+    // AI 复检评测日志集合（与 aiSuggestions/aiAudit 并列；L1 自动挡只记日志不处置）
+    if (!this.db.aiEvalLog) this.db.aiEvalLog = {}
+    // R1 样本驱动自生长：未匹配样本池 + 学到的类别规则表（惰性初始化，沿用旁路容器惯例）
+    if (!this.db.aiClusterSamples) this.db.aiClusterSamples = {}
+    if (!this.db.aiClusterRules) this.db.aiClusterRules = {}
     // P-1432（用户实测截图：检测完成后条目状态卡「检测中…」）：容器重启会打断正在跑的
     // 检测 job，被打断条目的 checking=true 已落盘，重启后永远没人清 → 状态卡死。
     // 启动时清扫：重启后不可能存在正在运行的检测。

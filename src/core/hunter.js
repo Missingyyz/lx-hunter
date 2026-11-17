@@ -328,6 +328,81 @@ class Hunter {
     this.job = { running: false, type: '', cancel: false, progress: {}, step: '' }
   }
 
+  // ---------------- AI 复检旁路钩子（v1.14.0，纯旁路） ----------------
+  // 红线：本段所有方法只写 db 里的 ai* 旁路容器（aiReviewLedger / aiEvalLog / aiSuggestions），
+  // 绝不改 verdict.act / queue / 任何业务字段；全程 try/catch 静默，不阻塞主链路。
+  /** 惰性取 AI 复检单例（仿 main/index.js 的 ai() 写法），失败返回 null。 */
+  _ai() {
+    try {
+      if (!this._aiInstance || this._aiInstance.store !== this.store) {
+        const { AIReview } = require('../core/aiReview')
+        this._aiInstance = new AIReview(this.store)
+      }
+      return this._aiInstance
+    } catch (_) {
+      return null
+    }
+  }
+
+  /**
+   * R2 裁决解释旁路：把 sameNameVerdict 的规则裁决解释成人话，落一条只读建议。
+   * 只产出建议（aiSuggestions），不改裁决结果、不碰 queue。
+   */
+  _aiExplainVerdict(entryId, verdict, ctx) {
+    try {
+      const a = this._ai()
+      if (!a || !a.cfg.enabled) return          // 总开关关闭 → 零副作用
+      const { act, why, whyAi } = a.explainVerdict(verdict, ctx)
+      const db = this.store.db
+      if (!db.aiReviewLedger) db.aiReviewLedger = {}
+      const fp = String(entryId) + '|' + String(act) + '|' + String(why)
+      if (db.aiReviewLedger[fp]) return          // 同一指纹不重复建议
+      a.suggest(entryId, 'R2', whyAi, [], {
+        detail: a.makeDetail('R2', act, '同名裁决自动解释（不改裁决结果）'),
+        trigger: 'event'
+      })
+      db.aiReviewLedger[fp] = true
+    } catch (_) { /* 旁路失败静默，绝不影响主链路 */ }
+  }
+
+  /**
+   * 影子评测旁路：只记录规则裁决的分区快照，本轮不调用 AI（aiAct 留空），零 provider 成本。
+   * 真正的 AI 对拍留给离线评测脚本；此处仅写 db.aiEvalLog 审计容器。
+   */
+  _aiShadowEval(e, srv, code, verdict, cfg, opt) {
+    try {
+      const a = this._ai()
+      if (!a || !a.cfg.enabled || !a.cfg.shadowEval) return   // 影子开关关闭 → 零副作用
+      const snap = require('./evalSnapshot')
+      const entry = e || {}
+      const service = srv || {}
+      const v = verdict || {}
+      const snapshot = typeof snap.buildEvalSnapshot === 'function'
+        ? snap.buildEvalSnapshot(entry, service, code, cfg, opt) : {}
+      // 必须传 ruleAct：否则 danger 恒为 D0，最高危格 GREY×D1 无法被识别。
+      const zone = typeof snap.evidenceClass === 'function'
+        ? snap.evidenceClass(snapshot, v.act) : {}
+      const zoneCodes = zone && zone.codes
+      // 保留 'D0'/'D1' 字符串语义，不能 !! 塌成布尔——否则 makeEvalLog 收 true 会落非预期值。
+      const danger = (zone && zone.danger) || 'D0'
+      const db = this.store.db
+      if (!db.aiEvalLog) db.aiEvalLog = {}
+      const rec = (typeof snap.makeEvalLog === 'function')
+        ? snap.makeEvalLog({
+          phase: 'shadow', entryId: entry.id, srvId: service.id,
+          ruleAct: v.act, ruleWhy: v.why,
+          zone: zone && zone.zone, zoneCodes, danger, executed: false
+        })
+        : {
+          phase: 'shadow', entryId: entry.id, srvId: service.id,
+          ruleAct: v.act, ruleWhy: v.why,
+          zone: zone && zone.zone, zoneCodes, danger,
+          aiAct: '', executed: false, at: Date.now()
+        }
+      db.aiEvalLog[entry.id + '|' + String(rec.at || Date.now()) + '|' + Math.random().toString(36).slice(2, 8)] = rec
+    } catch (_) { /* 旁路失败静默，绝不影响主链路 */ }
+  }
+
   /**
    * P-1434 采集特征库·自动学习：判定「缺少洛雪音源特征」的非音源脚本，
    * 把文件名主干自动加入 crawlerBlockPatterns（去重、上限 300 条防膨胀）。
@@ -3378,6 +3453,7 @@ class Hunter {
         e.deep = r
         this._mergeUpdateTips(e, r.updateTips)
         const v = this.sameNameVerdict(e, srv, code, cfg, { ledger: (p.ledger && p.ledger[e.id]) || null })
+        try { this._aiExplainVerdict(e.id, v, { localVer: e.scriptVersion, srvVer: srv.version }); this._aiShadowEval(e, srv, code, v, cfg, { ledger: (p.ledger && p.ledger[e.id]) || null }); } catch (_) {}
         const note = `（已自动补测全平台：实测 ${usableCount(e)} 个可用）`
         respins++
         if (v.act === 'skip') {
@@ -3468,6 +3544,7 @@ class Hunter {
         e.deep.metrics.tierProbedPlatform = pr.platform
         this.log(`音质档补测：${pr.platform} 可播 ${pr.tier}`, '灌入', 'info')
         const v = this.sameNameVerdict(e, item.renameServer, code, cfg, { ledger: (p.ledger && p.ledger[e.id]) || null })
+        try { this._aiExplainVerdict(e.id, v, { localVer: e.scriptVersion, srvVer: item.renameServer.version }); this._aiShadowEval(e, item.renameServer, code, v, cfg, { ledger: (p.ledger && p.ledger[e.id]) || null }); } catch (_) {}
         item.why = `同名裁决：${v.why}（已补测音质档 ${pr.tier}@${pr.platform}）`
         if (v.act === 'replace') {
           this.log(`补测后改判：留本地（删旧装新）—— ${v.why}`, '灌入', 'info')
@@ -3537,6 +3614,7 @@ class Hunter {
       const srv = (snap && !snap.stale) ? Object.assign({}, srvRaw, { qualityProxy: snap }) : srvRaw
       const code = codeCache[e.id]
       const v = this.sameNameVerdict(e, srv, code, cfg, { ledger: ledger[e.id] || null })
+      try { this._aiExplainVerdict(e.id, v, { localVer: e.scriptVersion, srvVer: srv.version }); this._aiShadowEval(e, srv, code, v, cfg, { ledger: ledger[e.id] }); } catch (_) {}
       const baseName = e.lxName || e.scriptName || e.name
       const via = matchedByBase ? `（删版本号后同名，配对到服务端「${srv.name}」）` : ''
       // matchedByBase 留给 UI/日志：用户要能分清「精确同名」与「删版本号后同名」

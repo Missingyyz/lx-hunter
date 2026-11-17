@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "note": "R4-R7 评测台子合成脱敏样本（仅验证链路，非真实标注）。喂数据阶段按此结构追加真实样本。systemPrompt:null 表示用 REVIEW_PROMPTS[kind].system。",
+  "cases": [
+    {
+      "id": "r4-0001",
+      "kind": "R4",
+      "source": "synthetic",
+      "status": "labeled",
+      "frozenAt": 1763000000000,
+      "systemPrompt": null,
+      "input": {
+        "name": "示例聚合音源",
+        "scriptVersion": "2.3.1",
+        "status": "ok",
+        "error": "",
+        "updateUrl": "https://example.invalid/repo/raw/main/src.js",
+        "updateTips": ["v2.4.0 修复搜索", "v2.4.0 需要新版客户端"]
+      },
+      "expected": {
+        "verdict": "follow",
+        "zone": "GREY",
+        "danger": "D0",
+        "criteria": "有明确更新地址且列出实质修复项，值得跟进追更。"
+      },
+      "goldAct": "follow",
+      "annotation": { "annotator": "synthetic", "at": 1763000000000, "blind": true, "note": "合成样例，非真实数据" },
+      "sensitivity": "pii-free"
+    },
+    {
+      "id": "r5-0001",
+      "kind": "R5",
+      "source": "synthetic",
+      "status": "labeled",
+      "frozenAt": 1763000000000,
+      "systemPrompt": null,
+      "input": {
+        "name": "readme-document",
+        "scriptName": "README.md",
+        "status": "suspected",
+        "error": "脚本文本不含音源接口定义",
+        "repository": "example.invalid/tools",
+        "suspected": true,
+        "validTier": "declared",
+        "obfLevel": "none"
+      },
+      "expected": {
+        "verdict": "nonSource",
+        "zone": "HARD",
+        "danger": "D0",
+        "criteria": "明确是 README 文档而非音源脚本，应进特征库屏蔽。"
+      },
+      "goldAct": "nonSource",
+      "annotation": { "annotator": "synthetic", "at": 1763000000000, "blind": true, "note": "合成样例，非真实数据" },
+      "sensitivity": "pii-free"
+    },
+    {
+      "id": "r6-0001",
+      "kind": "R6",
+      "source": "synthetic",
+      "status": "labeled",
+      "frozenAt": 1763000000000,
+      "systemPrompt": null,
+      "input": {
+        "name": "混淆聚合源",
+        "repository": "example.invalid/music",
+        "error": "检测到重度字符串混淆",
+        "obfDomains": ["api.example.invalid", "cdn.example.invalid"],
+        "obfHits": ["eval", "atob", "长十六进制串"],
+        "obfDomainVerdict": "known-cdn",
+        "deepSummary": "外联域名为常见公开 CDN，未见凭据窃取或异常上报特征"
+      },
+      "expected": {
+        "verdict": "trust",
+        "zone": "GREY",
+        "danger": "D1",
+        "criteria": "混淆有合理解释、外联域名可信、无恶意特征，可信任放行。"
+      },
+      "goldAct": "trust",
+      "annotation": { "annotator": "synthetic", "at": 1763000000000, "blind": true, "note": "合成样例，非真实数据" },
+      "sensitivity": "pii-free"
+    },
+    {
+      "id": "r7-0001",
+      "kind": "R7",
+      "source": "synthetic",
+      "status": "labeled",
+      "frozenAt": 1763000000000,
+      "systemPrompt": null,
+      "input": {
+        "name": "长期失效音源",
+        "repository": "example.invalid/old",
+        "status": "dead",
+        "error": "全平台连续不可用",
+        "installed": false,
+        "ledger": { "hash": "a1b2c3d4", "foreign": false },
+        "streak": 12,
+        "validTier": "scored"
+      },
+      "expected": {
+        "verdict": "blacklist",
+        "zone": "GREY",
+        "danger": "D1",
+        "criteria": "本地未灌入且长期全平台失效，可禁；标注为只禁不删。"
+      },
+      "goldAct": "blacklist",
+      "annotation": { "annotator": "synthetic", "at": 1763000000000, "blind": true, "note": "合成样例，非真实数据" },
+      "sensitivity": "pii-free"
+    }
+  ]
+}

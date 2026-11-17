@@ -141,6 +141,16 @@ function pushLog(e) {
   broadcast('log', e)
 }
 
+// R1 聚类日志人话文案（手动/定时共用）：末尾带本周 AI 新归纳的类别 + AI 研究报告。
+function clusterLogMsg(out, trigger) {
+  const r = (out && out.result) || out || {}
+  let msg = 'AI 失败聚类（' + (trigger === 'auto' ? '定期' : '手动') + '）：' + (r.summary || '')
+  const added = Array.isArray(r.newRules) ? r.newRules : []
+  if (added.length) msg += '；本周新增类别 ' + added.join('、') + '（来自 ' + (r.learnedCount || added.length) + ' 条规则归纳）'
+  if (r.report) msg += '\nAI 研究报告：' + r.report
+  return msg
+}
+
 function emitAll(type, payload) {
   if (type === 'log') { pushLog(payload); return }
   broadcast('event', { type, payload })
@@ -253,6 +263,15 @@ function sanitizeConfig(cfg) {
   if (Array.isArray(c.platforms)) {
     c.platforms = c.platforms.map(p => Object.assign({}, p, { password: '' }))
   }
+  // AI 中转站密钥同样是凭据：非管理员 GET 必须脱敏（apiKey + 自定义 headers 里可能的密钥头）
+  if (c.aiReview && c.aiReview.provider) {
+    c.aiReview.provider.apiKey = ''
+    if (c.aiReview.provider.headers && typeof c.aiReview.provider.headers === 'object') {
+      const h = {}
+      for (const k of Object.keys(c.aiReview.provider.headers)) h[k] = ''
+      c.aiReview.provider.headers = h
+    }
+  }
   return c
 }
 
@@ -353,6 +372,96 @@ route('POST', '/api/config', guard(async (req, res, ctx) => {
   updater = null
   updaterKey = ''
   return store.config
+}))
+
+// ---------------- AI 复检层（v1.14.0，旁路） ----------------
+// 懒加载单例：web.js 的 store 在启动时才实例化（见文件末尾），handler 执行时必然已就绪。
+let aiReviewInstance = null
+function ai() {
+  if (!aiReviewInstance || aiReviewInstance.store !== store) {
+    const { AIReview } = require('../core/aiReview')
+    aiReviewInstance = new AIReview(store)
+  }
+  return aiReviewInstance
+}
+
+route('GET', '/api/ai-review/config', guard((req) => ({ config: ai().publicConfig() })))
+
+route('POST', '/api/ai-review/config', guard((req, res, ctx) => {
+  const me = currentUser(req)
+  if (!me || !me.admin) throw new Error('仅管理员可修改 AI 复检配置')
+  const p = ctx.body || {}
+  const cur = store.config.aiReview || {}
+  // 白名单与脱敏由 core/aiReview.normalizeConfig 统一负责；此处只保留管理员校验与脱敏回写。
+  const next = ai().normalizeConfig(cur, p)
+  // apiKey / headers：只有传入非空字符串才覆盖；传空串表示清空（支持脱敏回显后不误覆盖）
+  const incoming = p.provider && typeof p.provider === 'object' ? p.provider : {}
+  if (typeof incoming.apiKey === 'string' && incoming.apiKey && incoming.apiKey !== '******') next.provider.apiKey = incoming.apiKey
+  if (incoming.headers && typeof incoming.headers === 'object') next.provider.headers = incoming.headers
+  store.saveConfig({ aiReview: next })
+  return ai().publicConfig()
+}))
+
+// 测试中转站连通性（设置页「测试连接」按钮）：用当前配置发一条最小请求，不落任何建议
+route('POST', '/api/ai-review/test', guard(async () => {
+  const r = await ai().review('你是一个连通性探测助手。', '只回复 OK 两个字母。')
+  return { ok: !!r.ok, message: r.ok ? '连接成功' : (r.error || '连接失败'), model: (ai().cfg.provider || {}).model || '' }
+}))
+
+route('POST', '/api/ai-review/run', guard(async (req, res, ctx) => {
+  const a = ai()
+  const body = ctx.body || {}
+  try {
+    const out = await a.run(String(body.kind || 'R1'), body)
+    // R1 落日志（自动/手动都要记）
+    if (out && out.logged) pushLog({ msg: clusterLogMsg(out, body.trigger === 'auto' ? 'auto' : 'manual'), module: 'AI复检', level: 'info', at: Date.now() })
+    return out
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+}))
+
+route('GET', '/api/ai-review/suggestions', guard((req, res) => {
+  const q = new URL(req.url, 'http://x').searchParams
+  return { suggestions: ai().listSuggestions({ status: q.get('status') || '', kind: q.get('kind') || '', source: q.get('source') || '' }) }
+}))
+
+route('POST', '/api/ai-review/apply', guard((req, res, ctx) => {
+  const a = ai()
+  const body = ctx.body || {}
+  // 只有可执行类建议能走 apply；R1/R2/R3 等只读结论一律拒绝，防误执行。
+  const APPLYABLE = new Set(['R4', 'R5', 'R6', 'R7'])
+  // P0 阶段只读类建议无副作用落库：标记 status 即视为应用
+  const s = a.store.db.aiSuggestions[body.id]
+  if (!s) throw new Error('建议不存在：' + body.id)
+  if (!APPLYABLE.has(s.kind)) return { applied: false, reason: '只读结论无需执行' }
+  if (s.kind !== String(body.kind || '')) return { applied: false, reason: 'kind 不匹配' }
+  const g = a.gate(s.kind)
+  if (!g.auto && !body.byUser) return { applied: false, needUserConfirm: true, reason: g.reason }
+  s.status = 'applied'
+  s.appliedAt = Date.now()
+  s.appliedBy = body.byUser ? 'user' : 'ai'
+  a.store.saveDb()
+  return { applied: true, suggestion: s }
+}))
+
+route('POST', '/api/ai-review/undo', guard((req, res, ctx) => {
+  const a = ai()
+  const out = a.undo(String((ctx.body || {}).auditId || ''))
+  a.store.saveDb()
+  return out
+}))
+
+// 只读评测报告：回放日志 + 样本 → 分层指标 / 数据不足口径。纯聚合、不写库、不调 AI、不执行任何动作。
+route('GET', '/api/ai-review/eval-report', guard(() => {
+  const ec = require('../core/evalCases')
+  const path = require('path')
+  const casesDir = path.join(__dirname, '..', '..', 'tests', 'eval-cases')
+  let cases = []
+  try { cases = ec.loadCases(casesDir) } catch (e) { cases = [] }
+  const logs = Object.keys(store.db.aiEvalLog || {}).map(k => store.db.aiEvalLog[k])
+  const metrics = ec.computeMetrics(logs, cases)
+  return { ok: true, cases: cases.length, logs: logs.length, metrics }
 }))
 
 // 网络连通性测试（设置页「测试」按钮）：对探针 URL 跑一遍候选链
@@ -1087,4 +1196,71 @@ server.listen(PORT, '0.0.0.0', () => {
       }
     } catch (e) {}
   }, 60 * 1000)
+
+  // 通用自动复检定时器：每小时轮询。R1 失败聚类日志只受总开关 enabled 管（与自动挡解耦），
+  // 保持 clusterIntervalHours 每周语义；R3 自动只读复检受 aiSchedulePlan（自动挡）管。
+  // 水位：R1 用 db.aiLastClusterAt，R3 用 aiSchedulePlan 内部水位；无论成败都推进，避免刷屏；全程静默。
+  setInterval(async () => {
+    try {
+      if (!store) return
+      const cfg = store.config.aiReview || {}
+      const { aiSchedulePlan, selectScope } = require('../core/aiSchedule')
+      const plan = aiSchedulePlan(cfg, store.db.aiAutoReview || {}, Date.now())
+      // ① R1 失败聚类日志：只受 enabled 管，不再被自动挡开关/时段挡住
+      if (cfg.enabled) {
+        const rawHours = cfg.clusterIntervalHours || 168
+        const intervalMs = Math.max(1, Number(rawHours) || 168) * 3600 * 1000
+        const last = Number(store.db.aiLastClusterAt) || 0
+        if (Date.now() - last >= intervalMs) {
+          try {
+            const fail = store.getSources().filter(e => e && (e.error || e.status === 'dead' || e.status === 'quarantined'))
+            const out = await ai().run('R1', { entries: fail, trigger: 'auto', logOnly: true })
+            pushLog({ msg: clusterLogMsg(out, 'auto'), module: 'AI复检', level: 'info', at: Date.now() })
+          } catch (e) {}
+          try { store.db.aiLastClusterAt = Date.now(); store.saveDb() } catch (e) {}
+        }
+      }
+      // ② 自动只读复检：受自动挡开关/到期/时段控制；选范围 → 逐条 R3 只读分析，只产建议、不执行。
+      if (!plan.due || !plan.activeNow) return
+      try {
+        const ids = selectScope(store.getSources(), plan.scope, plan.limit, Date.now()) || []
+        let done = 0, marked = 0
+        for (const id of ids) {
+          try {
+            const src = store.getSources().find(e => e && String(e.id) === String(id)) || {}
+            const text = [src.error, src.status].filter(Boolean).join(' / ')
+            const name = src.name || src.lxName || src.scriptName || ''
+            const r = ai().run('R3', { entryId: id, trigger: 'auto', text, name })
+            if (r && typeof r.then === 'function') awaitIgnore(r)
+            // 自动铺轨：auto 档时对条目产 R4/R5 可执行建议并自动标记（仅标记，不碰业务）。
+            // R6/R7 高危不自动产；评测跑完再考虑接真实动作。
+            if ((cfg.mode || 'off') === 'auto') {
+              const runExec = async () => {
+                const kinds = []
+                if (src.updateUrl) kinds.push('R4')
+                if (src.error || src.status === 'dead') kinds.push('R5')
+                for (const k of kinds) {
+                  const rr = await ai().run(k, {
+                    entryId: id, trigger: 'auto',
+                    text: '名称：' + name + '\n状态/错误：' + text + (k === 'R4' ? '\n更新地址：' + src.updateUrl : ''),
+                    evidence: [{ key: 'autoScope', ok: true }]
+                  })
+                  if (rr && rr.autoMarked) marked++
+                }
+              }
+              const p = runExec(); if (p && typeof p.then === 'function') awaitIgnore(p)
+            }
+            done++
+          } catch (e) {}
+        }
+        pushLog({ msg: 'AI 自动只读复检：本轮处理 ' + done + ' 条' + (marked ? '；自动铺轨标记 ' + marked + ' 条（仅标记，未执行业务）' : ''), module: 'AI复检', level: 'info', at: Date.now() })
+      } catch (e) {} finally {
+        try {
+          store.db.aiAutoReview = Object.assign({}, store.db.aiAutoReview || {}, { lastAttempt: Date.now() })
+          store.saveDb()
+        } catch (e) {}
+      }
+    } catch (e) {}
+  }, 60 * 60 * 1000).unref?.()
+  function awaitIgnore(p) { try { p.catch(() => {}) } catch (e) {} }
 })

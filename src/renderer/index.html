@@ -26,6 +26,7 @@
       <button class="nav-item" data-view="quarantine"><span class="ni">⛨</span>混淆隔离</button>
       <button class="nav-item" data-view="collections"><span class="ni">⇉</span>采集源</button>
       <button class="nav-item" data-view="settings"><span class="ni">⚙</span>设置</button>
+      <button class="nav-item" data-view="ai-review"><span class="ni">✦</span>AI 复检</button>
       <button class="nav-item" data-view="logs"><span class="ni">▤</span>日志</button>
     </nav>
     <div class="sidebar-foot">
@@ -93,6 +94,7 @@
           <button class="btn ghost" id="btnHashDedupe" title="只下载并计算内容指纹（不进沙箱），先按内容去重，检测时直接跳过重复项">快速去重（内容指纹）</button>
           <button class="btn ghost" id="btnUndedupe" title="有勾选 → 只撤销勾选的废弃条目；没勾选 → 恢复全部废弃条目为候选（保留检测结果，可重新去重）">撤销去重</button>
           <button class="btn ghost" id="btnFullPlat" title="深度检测（打分）：对已可用的音源跑五平台真实取链，补齐快速模式下没测的平台，并产出「可用平台数 + p50 延迟」作为综合排序依据（不测音质）">深度检测（打分）</button>
+          <button class="btn ghost" id="btnAiCheck" title="✦AI 复检选中：有勾选时只复检勾选的音源，没勾选时复检当前筛选结果；AI 建议只标在音源旁，不改能不能用的判定">✦AI 复检选中</button>
           <button class="btn danger-ghost" id="btnDeleteSel" title="把勾选的音源从本地音源库删除（不影响服务端已灌入的脚本）；删掉的条目会记入「不再自动采集」名单，可在设置页清除记录后重新爬取">删除选中</button>
           <button class="btn ghost" id="btnClearSel">清空选择</button>
         </div>
@@ -271,6 +273,87 @@
       <div class="card">
         <div id="qzList"></div>
         <div class="empty" id="qzEmpty">隔离区是空的 —— 没有被隔离的混淆脚本</div>
+      </div>
+    </section>
+
+    <!-- ===== AI 复检 ===== -->
+    <section class="view" id="view-ai-review">
+      <header class="view-head">
+        <div>
+          <h1>AI 复检</h1>
+          <p class="sub">旁路语义分析层，只补规则制判断不了的灰区，<strong>不参与"能不能用"判定、不改同名裁决、不改灌入</strong>。默认关闭，零副作用。可对接任意 OpenAI 兼容中转站。</p>
+        </div>
+        <div class="head-actions">
+          <span class="badge gray" id="aiStatus">未启用</span>
+        </div>
+      </header>
+
+      <div class="card ai-card">
+        <h3 class="card-title">运行模式</h3>
+        <div class="field-row ai-mode-fields">
+          <label class="chk" title="总开关：关闭时 AI 复检完全不介入，零副作用"><input type="checkbox" id="aiEnabled"><span>启用 AI 复检（总开关）</span></label>
+          <label class="field" style="min-width:260px"><span>档位</span>
+            <select class="input" id="aiMode">
+              <option value="off">off — 全部人工</option>
+              <option value="assist">assist — 只读类自动</option>
+              <option value="auto">auto — 中风险也自动（须证据全绿）</option>
+            </select>
+          </label>
+          <label class="chk" title="高风险操作（混淆信任放行 / 拉黑删源），即使 auto 档也需显式开启"><input type="checkbox" id="aiAllowIrrev"><span>允许高风险自动（第三把锁）</span></label>
+        </div>
+        <p class="hint">三把锁逐级递进：总开关 → auto 档 → 高风险第三锁。即使全开，AI 也不得判定音源"能不能用"。</p>
+        <p class="hint">档位说明：<code>off</code> 全部人工复核；<code>assist</code> 仅只读类结论可自动；<code>auto</code> 中风险也可自动，但必须证据全绿。</p>
+      </div>
+
+      <div class="card ai-card">
+        <h3 class="card-title">自动挡设置</h3>
+        <p class="hint">自动挡只在后台悄悄做「只读复检」：AI 看一遍音源和失败记录，把建议标在条目旁，不改任何判定、不自动放行。下面的开关都关着时，AI 完全不主动干活。</p>
+        <div class="grid-form">
+          <label class="chk" title="总开关：打开后 AI 才会按下面的周期自动复检；只给建议，不动你的音源"><input type="checkbox" id="aiAutoEnabled"><span>开启自动只读复检（总开关）</span></label>
+          <label class="field"><span>自动周期（小时）</span><input class="input" type="number" id="aiAutoInterval" value="24" min="1"><span class="hint">自动挡开着时，AI 每隔多久悄悄看一次（默认 24 小时，即一天一次）</span></label>
+          <label class="field"><span>复检范围</span>
+            <select class="input" id="aiAutoScope">
+              <option value="failed">仅失败源</option>
+              <option value="new">仅新增</option>
+              <option value="quarantined">仅隔离区</option>
+              <option value="all">全部源</option>
+            </select>
+            <span class="hint">每一轮自动复检查哪些音源：默认只看失败的，也可以只看新来的、隔离区的或全部</span>
+          </label>
+          <label class="field"><span>每轮上限（条）</span><input class="input" type="number" id="aiAutoMax" value="20" min="1"><span class="hint">一次最多复检多少条，别太多免得占用机器和影响接口额度（默认 20 条）</span></label>
+          <label class="field"><span>允许时段（起）</span><input class="input" type="number" id="aiAutoHourStart" value="0" min="0" max="24"><span class="hint">只在这个时间段里自动复检，0 表示从零点开始</span></label>
+          <label class="field"><span>允许时段（止）</span><input class="input" type="number" id="aiAutoHourEnd" value="24" min="0" max="24"><span class="hint">到这个点就不再自动复检，24 表示一直到午夜；起止相同表示全天都可以</span></label>
+          <label class="chk" title="影子评测：AI 的结论只记下来对比，绝不当真执行，适合先观察 AI 准不准"><input type="checkbox" id="aiShadowEval"><span>影子评测（AI 只记录不执行）</span></label>
+        </div>
+        <p class="hint">影子评测开着时，AI 的判断只写到日志里供你观察准不准，不会真的按它说的做——想先试试水就打开它。</p>
+      </div>
+
+      <div class="card ai-card">
+        <h3 class="card-title">AI 中转站（OpenAI 兼容）</h3>
+        <p class="hint">填任意实现了 <code>POST /chat/completions</code> 的服务：DeepSeek、智谱、Kimi、自建中转站均可。地址填到版本根（如 <code>https://api.deepseek.com/v1</code>）。</p>
+        <div class="grid-form">
+          <label class="field"><span>Base URL</span><input class="input" type="text" id="aiBaseUrl" placeholder="https://api.deepseek.com/v1"></label>
+          <label class="field"><span>模型名</span><input class="input" type="text" id="aiModel" placeholder="deepseek-chat"></label>
+          <label class="field"><span>API Key</span><input class="input" type="password" id="aiApiKey" placeholder="留空表示不修改已存密钥"></label>
+          <label class="field"><span>超时(ms)</span><input class="input" type="number" id="aiTimeout" value="20000" min="1000"></label>
+        </div>
+        <label class="field" style="margin-top:12px"><span>额外请求头（JSON 对象，可选，中转站特殊鉴权用）</span>
+          <textarea class="input" id="aiHeaders" rows="2" placeholder='{"X-Api-Key":"..."}'></textarea>
+        </label>
+        <div class="row-form ai-actions">
+          <button class="btn primary" id="btnAiSave">保存配置</button>
+          <button class="btn ghost" id="btnAiTest">测试连接</button>
+          <span id="aiTestResult" class="hint ai-result"></span>
+        </div>
+      </div>
+
+      <div class="card ai-card">
+        <h3 class="card-title">日志与总览</h3>
+        <p class="hint">失败聚类每周自动记录到日志，可手动立即分析；AI 结论已标注在音源库与隔离区对应条目上，此处只做设置。</p>
+        <div class="row-form ai-actions">
+          <button class="btn" id="btnAiCluster">立即分析一次（记入日志）</button>
+          <span id="aiClusterResult" class="hint ai-result"></span>
+        </div>
       </div>
     </section>
 
@@ -647,6 +730,7 @@
             <option value="error">error</option>
           </select>
         </label>
+        <button class="btn ghost" id="btnAiClusterLog" title="立即对失败音源做一次 AI 聚类分析，结果只记入运行日志，不改音源状态">✦立即聚类分析（记入日志）</button>
         <label class="chk lb-item"><input type="checkbox" id="logAutoRefresh" checked><span>自动刷新（进入本页后每 5 秒拉取新日志）</span></label>
         <span class="lb-hint" id="logShownCount"></span>
       </div>
@@ -742,7 +826,7 @@
 
 <div class="toast" id="toast" hidden></div>
 <script src="sorters.js?v=27"></script>
-<script src="web-bridge.js?v=57"></script>
-<script src="app.js?v=78"></script>
+<script src="web-bridge.js?v=58"></script>
+<script src="app.js?v=81"></script>
 </body>
 </html>
