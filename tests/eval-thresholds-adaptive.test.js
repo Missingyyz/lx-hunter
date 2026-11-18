@@ -36,33 +36,36 @@ console.log('\n=== ① 危险层硬门槛：不随样本量浮动 ===')
   ok('【核心】R5|D1 不算危险层（判非音源可撤销）', isDangerStratum('R5', 'D1') === false)
   ok('R6|D0 不算危险层', isDangerStratum('R6', 'D0') === false)
 
-  // 无论样本多少，危险层门槛恒定
+  // v1.13.9 用户拍板「门槛按现有真实数据走，R6/R7/R4 同理」：
+  // 危险层不再恒定 380/100，与其他层一致自适应（n×1.0，下限 20）。
+  // 安全边界由比率门槛守（R7|D1 误判率≤1%、R6|D1 准确率≥95%）。
   for (const n of [0, 1, 5, 15, 100, 193, 1000, 100000]) {
-    ok('R7|HARD|D1 n=' + n + ' → 380（恒定）', thresholdFor('R7|HARD|D1', null, n) === 380, String(thresholdFor('R7|HARD|D1', null, n)))
-    ok('R6|GREY|D1 n=' + n + ' → 100（恒定）', thresholdFor('R6|GREY|D1', null, n) === 100, String(thresholdFor('R6|GREY|D1', null, n)))
+    const want = Math.max(20, n)
+    ok('R7|HARD|D1 n=' + n + ' → ' + want + '（自适应）', thresholdFor('R7|HARD|D1', null, n) === want, String(thresholdFor('R7|HARD|D1', null, n)))
+    ok('R6|GREY|D1 n=' + n + ' → ' + want + '（自适应）', thresholdFor('R6|GREY|D1', null, n) === want, String(thresholdFor('R6|GREY|D1', null, n)))
   }
 })()
 
 // ============================================================
-console.log('\n=== ② 可逆层自适应：max(下限, 样本数 × 系数) ===')
+console.log('\n=== ② 所有层统一自适应：max(下限, 样本数 × 系数) ===')
 ;(() => {
-  ok('系数为 0.8', ADAPT_RATIO === 0.8, String(ADAPT_RATIO))
-  ok('可逆层下限为 20', MIN_SAMPLES.reversible === 20, String(MIN_SAMPLES.reversible))
+  ok('系数为 1.0（门槛=现有样本数）', ADAPT_RATIO === 1.0, String(ADAPT_RATIO))
+  ok('下限为 20', MIN_SAMPLES.reversible === 20, String(MIN_SAMPLES.reversible))
 
-  ok('n=70 → 56（70×0.8）', thresholdFor('R4|GREY|D0', null, 70) === 56, String(thresholdFor('R4|GREY|D0', null, 70)))
-  ok('n=100 → 80', thresholdFor('R5|GREY|D0', null, 100) === 80)
-  ok('n=57 → 45（向下取整）', thresholdFor('R6|GREY|D0', null, 57) === 45, String(thresholdFor('R6|GREY|D0', null, 57)))
+  ok('n=70 → 70', thresholdFor('R4|GREY|D0', null, 70) === 70, String(thresholdFor('R4|GREY|D0', null, 70)))
+  ok('n=100 → 100', thresholdFor('R5|GREY|D0', null, 100) === 100)
+  ok('n=57 → 57', thresholdFor('R6|GREY|D0', null, 57) === 57, String(thresholdFor('R6|GREY|D0', null, 57)))
 
   // 下限保护：样本很少时不会塌成 0/个位数
   ok('【核心】n=0 → 20（不塌成 0，否则 0 条样本也算够格）', thresholdFor('R4|GREY|D0', null, 0) === 20, String(thresholdFor('R4|GREY|D0', null, 0)))
   ok('n=1 → 20', thresholdFor('R4|GREY|D0', null, 1) === 20)
-  ok('n=5 → 20（5×0.8=4 < 20）', thresholdFor('R4|GREY|D0', null, 5) === 20)
-  ok('n=17 → 20（17×0.8=13 < 20）', thresholdFor('R4|GREY|D0', null, 17) === 20)
-  ok('n=25 → 20（25×0.8=20，正好等于下限）', thresholdFor('R4|GREY|D0', null, 25) === 20)
+  ok('n=5 → 20（5 < 下限 20）', thresholdFor('R4|GREY|D0', null, 5) === 20)
+  ok('n=17 → 20（17 < 下限 20）', thresholdFor('R4|GREY|D0', null, 17) === 20)
+  ok('n=25 → 25（25 > 下限 20）', thresholdFor('R4|GREY|D0', null, 25) === 25)
 
   // HARD 区的可逆层也走自适应（不是走旧的 HARD=500）
   ok('R4|HARD|D0 n=5 → 20（不再固定 500）', thresholdFor('R4|HARD|D0', null, 5) === 20, String(thresholdFor('R4|HARD|D0', null, 5)))
-  ok('R7|HARD|D0 n=5 → 20（D0 可逆，不走删源门槛）', thresholdFor('R7|HARD|D0', null, 5) === 20)
+  ok('R7|HARD|D0 n=5 → 20（D0 可逆，走自适应）', thresholdFor('R7|HARD|D0', null, 5) === 20)
 })()
 
 // ============================================================
@@ -72,7 +75,7 @@ console.log('\n=== ③ 不硬编码：样本变化时门槛自动跟着变 ===')
   const a = thresholdFor('R5|GREY|D0', null, 70)
   const b = thresholdFor('R5|GREY|D0', null, 200)
   const c = thresholdFor('R5|GREY|D0', null, 500)
-  ok('同一层 n=70/200/500 → 门槛 56/160/400（随样本变）', a === 56 && b === 160 && c === 400, [a, b, c].join('/'))
+  ok('同一层 n=70/200/500 → 门槛 70/200/500（随样本变）', a === 70 && b === 200 && c === 500, [a, b, c].join('/'))
   ok('门槛随样本单调不减', a <= b && b <= c)
 
   // 源码里不得出现「把某层样本数写死成门槛」的常量
@@ -94,8 +97,10 @@ console.log('\n=== ④ 向后兼容：不传现有样本数时保持旧值 ===')
   ok('R5|GREY|D1 = 200（旧行为：D1 全走 DANGER，这里退回 GREY）', thresholdFor('R5|GREY|D1') === 200, String(thresholdFor('R5|GREY|D1')))
   ok('R6|HARD|D1 = 100', thresholdFor('R6|HARD|D1') === 100)
   ok('opts.thresholds 覆盖仍生效', thresholdFor('R4|GREY|D0', { GREY: 3 }) === 3)
-  ok('opts.thresholds + existing 同时给：覆盖优先于自适应',
-    thresholdFor('R4|GREY|D0', { minReversible: 7 }, 100) === 80, String(thresholdFor('R4|GREY|D0', { minReversible: 7 }, 100)))
+  ok('opts.thresholds + existing 同时给：minReversible 只影响下限，n×系数仍生效',
+    thresholdFor('R4|GREY|D0', { minReversible: 7 }, 100) === 100, String(thresholdFor('R4|GREY|D0', { minReversible: 7 }, 100)))
+  ok('minReversible 生效场景：样本低于自定义下限时取该下限',
+    thresholdFor('R4|GREY|D0', { minReversible: 7 }, 5) === 7, String(thresholdFor('R4|GREY|D0', { minReversible: 7 }, 5)))
 })()
 
 // ============================================================
@@ -111,17 +116,27 @@ console.log('\n=== ⑤ 接入 computeMetrics：每层用自己的样本数算门
       r.need === expect, r.need + ' vs ' + expect)
   }
 
-  // needBasis 要能解释「为什么是这个数」
-  const danger = m.table.filter(r => isDangerStratum(r.kind, r.danger))
-  const rev = m.table.filter(r => !isDangerStratum(r.kind, r.danger))
-  ok('危险层 needBasis 写明硬门槛', danger.length > 0 && danger.every(r => /硬门槛/.test(r.needBasis)), danger.map(r => r.needBasis).join('|'))
-  ok('可逆层 needBasis 写明自适应', rev.length > 0 && rev.every(r => /自适应/.test(r.needBasis)))
+  // 危险层与可逆层现在同一套自适应规则，差别只在**比率门槛**（见 stratumRule），
+  // 不在样本量。needBasis 要如实反映是「撞了下限」还是「按样本自适应」。
+  ok('所有层 needBasis 只说明下限或自适应，不得再出现「硬门槛」字样',
+    m.table.every(r => !/硬门槛/.test(r.needBasis || '')), m.table.map(r => r.needBasis).join('|'))
+  ok('低于下限的层 needBasis 说明「下限 N 条」',
+    m.table.filter(r => r.n < 20).every(r => /下限 20 条/.test(r.needBasis)),
+    m.table.filter(r => r.n < 20).map(r => r.stratum + ':' + r.needBasis).join('|'))
+  ok('达到下限的层 needBasis 说明「按现有样本自适应」',
+    m.table.filter(r => r.n >= 20).every(r => /自适应/.test(r.needBasis)),
+    m.table.filter(r => r.n >= 20).map(r => r.stratum + ':' + r.needBasis).join('|'))
 
-  // 危险层在真实数据下全部仍数据不足（这是设计要的保守）
-  ok('【核心】真实数据下 R7|D1 仍数据不足（193 < 380，宁可不给结论）',
-    m.table.filter(r => r.kind === 'R7' && r.danger === 'D1').every(r => r.verdict === '数据不足'))
-  ok('【核心】真实数据下 R6|D1 仍数据不足（15/9 < 100）',
-    m.table.filter(r => r.kind === 'R6' && r.danger === 'D1').every(r => r.verdict === '数据不足'))
+  // 危险层在真实数据下：样本量其实够了（need=max(20,n)），仍是「数据不足」的
+  // **唯一原因是 0 回放**——这正是降低门槛要暴露的东西，不能再把它写成「因为 380/100」。
+  ok('【核心】真实数据下 R7|D1 样本量已够（need=193），数据不足只因 0 回放',
+    m.table.filter(r => r.kind === 'R7' && r.danger === 'D1')
+      .every(r => r.sufficient === true && /没有回放记录/.test(r.reason)),
+    m.table.filter(r => r.kind === 'R7' && r.danger === 'D1').map(r => r.reason).join('|'))
+  ok('【核心】真实数据下 R6|D1 低于下限 20，数据不足因样本不足',
+    m.table.filter(r => r.kind === 'R6' && r.danger === 'D1')
+      .every(r => r.sufficient === false && /< 门槛 20/.test(r.reason)),
+    m.table.filter(r => r.kind === 'R6' && r.danger === 'D1').map(r => r.reason).join('|'))
 })()
 
 // ============================================================

@@ -330,17 +330,22 @@ console.log('--- ⑪ R4-R7 指标 + 数据不足（评测台子；产建议链�
   ok(m.overall.verdict === '数据不足', '样本量未达门槛 → overall 判「数据不足」而非通过')
   ok(m.table.length >= 4 && m.table.filter(r => r.insufficient).length >= 4,
     '存在多个分层标数据不足（' + m.table.filter(r => r.insufficient).length + '/' + m.table.length + ' 层）')
-  ok(m.table.filter(r => ['R6', 'R7'].indexOf(r.kind) !== -1 && r.danger === 'D1').every(r => r.insufficient === true),
-    '危险层（R6|D1 信任放行 / R7|D1 删源）仍全部数据不足——不随样本降门槛')
+  // v1.13.9 用户拍板「门槛按现有真实数据走，R6/R7/R4 同理」：
+  // 危险层不再设 380/100 硬门槛，样本量门槛与其他层一样自适应（n×1.0，下限 20）。
+  // 安全边界改由**比率门槛**守（R7|D1 误判率≤1%、R6|D1 准确率≥95%），
+  // 样本量只决定「能不能算」，比率才决定「算出来够不够好」。
+  // 注意：样本数低于下限 20 的层仍会 need=20 > n（下限保护生效），这是有意的。
+  ok(m.table.filter(r => ['R6', 'R7'].indexOf(r.kind) !== -1 && r.danger === 'D1').every(r => r.need === Math.max(20, r.n)),
+    '危险层样本量门槛 = max(下限20, n)，不再固定 380/100')
   ok(m.table.every(r => r.accuracy === 1 && r.readonlyOk === true), '桩回放 accuracy=1 且全部只读')
-  // 门槛：v1.13.9 B 批起「样本量门槛」改为自适应（危险层硬门槛、可逆层按现有样本数），
-  // 不传 existing 时仍返回旧的退路值，保证本断言与历史行为一致。
+  // 门槛：v1.13.9 B 批起「样本量门槛」改为自适应。
+  // 不传 existing 时仍返回旧退路值，保证不传样本数的旧调用方行为不变。
   ok(ec.thresholdFor('R7|GREY|D1') === 380 && ec.thresholdFor('R4|GREY|D0') === 200,
     '门槛退路值：R7 删源=380，灰区=200（不传现有样本数时）')
-  // 传了现有样本数就走自适应：可逆层按 0.8 系数、下限 20；危险层不动。
-  ok(ec.thresholdFor('R4|GREY|D0', null, 70) === 56, '可逆层自适应：n=70 → need=56（70×0.8）')
-  ok(ec.thresholdFor('R4|GREY|D0', null, 5) === 20, '可逆层下限保护：n=5 → need=20（不塌到 4）')
-  ok(ec.thresholdFor('R7|HARD|D1', null, 1000) === 380, '危险层不随样本浮动：n=1000 仍是 380')
+  // 传了现有样本数就走自适应：门槛 = max(下限 20, n×1.0)。所有层（含危险层）一致。
+  ok(ec.thresholdFor('R4|GREY|D0', null, 70) === 70, '自适应：n=70 → need=70（n×1.0）')
+  ok(ec.thresholdFor('R4|GREY|D0', null, 5) === 20, '下限保护：n=5 → need=20（不塌到 5）')
+  ok(ec.thresholdFor('R7|HARD|D1', null, 1000) === 1000, '危险层同样自适应：n=1000 → need=1000')
   // 样本补齐到门槛后应给出比率结论，证明「数据不足」不是写死
   const many = []
   for (let i = 0; i < 210; i++) many.push(Object.assign({}, cases[0], { id: 'r4-' + i, expected: Object.assign({}, cases[0].expected) }))
@@ -353,4 +358,46 @@ console.log('--- ⑪ R4-R7 指标 + 数据不足（评测台子；产建议链�
     '样本达 200 → R4 分层可评估（数据不足非写死），实际 verdict=' + (r4 && r4.verdict))
 })()
 
-console.log('\nai-eval-replay: PASS ' + pass + ' / FAIL 0')
+// ============================================================
+console.log('\n=== 回放脚本 live 入口：必须调 run()，不能调 suggest() ===')
+// 回归：replay-eval.js 的 live 分支曾写成 await aiReview.suggest(c.kind, inp)。
+// suggest(entryId, kind, conclusion, evidence, extra) 只是同步写库、**不调模型**，
+// 于是 live 模式每条都报「AI 未给出合法 verdict」，即使 apiKey/model 全填对也 0 成功。
+// 这里守住「入口是 run + mock 中转站能拿到 verdict」这条链，防止又被改回去。
+function checkLiveEntry () {
+  const { runOne } = require(path.join(ROOT, 'tests', 'tools', 'replay-eval.js'))
+  const src = fs.readFileSync(path.join(ROOT, 'tests', 'tools', 'replay-eval.js'), 'utf8')
+  ok(/aiReview\.run\(c\.kind/.test(src), 'live 分支调用 aiReview.run(kind, params)')
+  // 注释里也会出现 suggest 字样（解释为什么不能用它），故只匹配「真实调用」形态：
+  // aiReview.suggest( 前面不能是反引号或空白缩进的注释行内容。
+  ok(!/aiReview\.suggest\s*\(\s*c\.kind/.test(src), 'live 分支不再调用 suggest（它不调模型）')
+
+  const store = new Store(fs.mkdtempSync(path.join(os.tmpdir(), 'lxh-replay-')))
+  store.config.aiReview = Object.assign({}, store.config.aiReview, {
+    enabled: true, mode: 'off',
+    provider: { baseUrl: 'https://mock.invalid/v1', apiKey: 'mock', model: 'mock-model', headers: {}, timeoutMs: 1000 }
+  })
+  const ai = new AIReview(store)
+  // 假中转站：按 system prompt 首句区分 R4-R7，回合法 verdict
+  ai.fetchImpl = async (url, init) => {
+    const sys = (JSON.parse(init.body || '{}').messages || [{}])[0].content || ''
+    let v = 'keep'
+    if (sys.indexOf('更新提示审查') !== -1) v = 'ignore'
+    else if (sys.indexOf('真伪审查') !== -1) v = 'source'
+    else if (sys.indexOf('混淆音源安全审查') !== -1) v = 'reject'
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify({ verdict: v, reason: 'mock' }) } }] }) }
+  }
+  const cases = require(core('evalCases')).loadCases(path.join(ROOT, 'tests', 'eval-cases'))
+  const picked = {}
+  for (const c of cases) if (!picked[c.kind]) picked[c.kind] = c
+  const kinds = Object.keys(picked)
+  const jobs = kinds.map(k => runOne(ai, picked[k], 'live', {}).then(r => ({ k, r })))
+  return Promise.all(jobs)
+    .then(rs => rs.forEach(({ k, r }) => ok(r.ok === true && !!r.aiAct,
+      'mock 中转站下 ' + k + ' 能取到合法 verdict（' + (r.aiAct || r.error) + '）')))
+    .finally(() => { try { fs.rmSync(store.dir, { recursive: true, force: true }) } catch (e) {} })
+}
+
+checkLiveEntry()
+  .then(() => console.log('\nai-eval-replay: PASS ' + pass + ' / FAIL 0'))
+  .catch(e => { console.error('FAIL: ' + ((e && e.stack) || e)); process.exit(1) })

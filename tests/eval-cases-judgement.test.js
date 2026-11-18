@@ -65,9 +65,14 @@ console.log('\n=== ① A1：thresholdFor 门槛覆盖（向后兼容 + 覆盖生
   ok('【核心】默认自适应门槛：仍有分层 insufficient（危险层 + 小样本层）',
     strict.table.length >= 12 && strict.table.some(r => r.insufficient === true),
     'len=' + strict.table.length + ' insufficient=' + strict.table.filter(r => r.insufficient).length)
-  ok('【核心】自适应门槛下 R7|D1 / R6|D1 仍 insufficient（危险层不降）',
-    strict.table.filter(r => ['R6', 'R7'].indexOf(r.kind) !== -1 && r.danger === 'D1').every(r => r.insufficient === true),
-    strict.table.filter(r => r.danger === 'D1').map(r => r.stratum + '=' + r.insufficient).join(','))
+  // v1.13.9 用户拍板「门槛按现有真实数据走，R6/R7/R4 同理」：
+  // 危险层不再保留 380/100 硬门槛，样本量门槛与其他层一致（n×1.0，下限 20）。
+  // 安全边界由比率门槛守（见 stratumRule）：R7|D1 误判率≤1%、R6|D1 准确率≥95%。
+  // 因此这里断言的是「门槛随样本自适应」，而不是「危险层恒不足」。
+  // 注意：n<20 的层仍 insufficient（下限保护），所以不能断言全部达标。
+  ok('【核心】危险层样本量门槛随样本自适应（= max(下限20, n)），不再固定 380/100',
+    strict.table.filter(r => ['R6', 'R7'].indexOf(r.kind) !== -1 && r.danger === 'D1').every(r => r.need === Math.max(20, r.n)),
+    strict.table.filter(r => ['R6', 'R7'].indexOf(r.kind) !== -1 && r.danger === 'D1').map(r => r.stratum + ' n=' + r.n + ' need=' + r.need).join(','))
   ok('【核心】opts.thresholds 全 1 后：0 层 insufficient（原来这里恒 12，覆盖无效）',
     loose.table.every(r => r.insufficient === false), loose.table.filter(r => r.insufficient).map(r => r.stratum).join(','))
   ok('【核心】opts.thresholds 真生效后 need 字段跟着变', loose.table.every(r => r.need === 1))

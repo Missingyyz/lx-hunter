@@ -29,44 +29,56 @@ const DANGERS = ['D0', 'D1']
  * 1 条样本也算「够格」——正是刚修完的「把没跑说成通过」的变体（把「只有 3 条」
  * 说成「够格」）。所以设计成三条规则叠加：
  *
- *   1. **危险层硬门槛**（R6+R7 的 D1：信任放行 / 删源）
- *      不随样本量浮动。理由不是数字科学，是**代价不对称**：
- *      用户最高准则「误伤好源代价远大于漏判」，这两层一旦给假绿灯就是把混淆源
- *      放进库、把好源删掉，不可撤销。所以宁可一直「数据不足」，也不按现有样本降。
+ *   1. **危险层（R6+R7 的 D1：信任放行 / 删源）不设硬门槛，同样自适应**
+ *      （2026-11-19 用户最终拍板：「门槛按现有的走，R6/R7/R4 同理」）。
+ *      关键论证：样本量门槛设多高都不会让错判变得安全，而降低它反而**能让问题暴露**。
+ *      R7|D1 有 193 条、旧门槛 380 ⇒ 永远「数据不足」⇒「AI 在删源上误判 100%」
+ *      这个真实问题被「数据不足」掩盖。门槛降到 193 后，它会算出真实误判率并判
+ *      「未达标」——这才是我们要的结论。
+ *      安全边界改由**比率门槛**守（见 stratumRule）：R7|D1 误判率 ≤1%、
+ *      R6|D1 准确率 ≥95%。样本量只决定「能不能算」，比率才决定「算出来够不够好。
  *
- *   2. **可逆层自适应**：门槛 = max(该层最小可信样本数, 该层现有样本数 × COVERAGE_RATIO)
+ *   2. **所有分层统一自适应**：门槛 = max(该层最小可信样本数, 该层现有样本数 × ADAPT_RATIO)
  *      - 现有样本数**由调用方传入**（computeMetrics 自己数），不写死任何数字。
- *        以后样本从 17 涨到 200，门槛自动跟着涨到 200×ratio，不会停留在 17。
- *      - COVERAGE_RATIO < 1 是为了「新增一点样本不会立刻把已达标层打回数据不足」，
- *        同时又保证「样本涨了门槛也涨」，不会出现「拿 17 条的结论去代表 200 条」。
+ *        以后样本从 17 涨到 200，门槛自动跟着涨到 200，不会停留在 17。
+ *      - ADAPT_RATIO = 1.0 的语义是「这层有多少就认多少」，不做打折。
  *
  *   注：`danger=D1` 并不等于不可逆。R4→follow（追更提示）、R5→nonSource（判非音源）
- *   也标了 D1，但它们都能撤销，所以归可逆层。旧版把它们一律按 DANGER(100) 算，
- *   现在按可逆层自适应（下限 20）——这是**有意的语义修正**，不是悄悄放宽门槛：
+ *   也标了 D1，但它们都能撤销。旧版把它们一律按 DANGER(100) 算，
+ *   现在与其他层一样自适应（下限 20）——这是**有意的语义修正**，不是悄悄放宽门槛：
  *   R4/R5 的 D1 样本本来就少（15/11 条），旧逻辑让它们永远数据不足，而它们做的事
  *   改错了能回退，不配上和删源同级的门槛。
  *
- *   3. **下限保护** MIN_SAMPLES：防样本归零时门槛也归零。
+ *   3. **下限保护** MIN_SAMPLES.reversible：防样本归零时门槛也归零。
  *      这个下限**不是拍脑袋**，是「该层要观测到 1 次错误也至少需要多少条」：
- *      - 可逆层要证明 accuracy ≥ 85%，用 rule-of-three 的粗算，
- *        95% 置信下「零错误」至少要 n≈3/(1-0.85)≈20 条才能把 85% 说出口；
- *        取 20 作为可逆层下限。
- *      - 危险层沿用硬门槛，不走这条。
+ *      - 要证明 accuracy ≥ 85%，用 rule-of-three 的粗算，
+ *        95% 置信下「零错误」至少要 n≈3/(1-0.85)≈20 条才能把 85% 说出口。
+ *      - 所有分层共用这个下限 20。
  */
 const MIN_SAMPLES = {
-  // 可逆层：要能把「准确率 ≥85%」说出口，零错误样本下需 ≈ 3/(1-0.85) ≈ 20 条
+  // 要能把「准确率 ≥85%」说出口，零错误样本下需 ≈ 3/(1-0.85) ≈ 20 条
   reversible: 20,
-  // 危险层：不随样本浮动（见上面第 1 条）。这两个数字与 EVAL_THRESHOLDS 的危险层一致，
-  // 保留在这里是为了让「危险层不参与自适应」这件事在代码里显式可见。
+  // danger / blacklist 两个键**已不再参与计算**（危险层改为与可逆层一致的自适应），
+  // 保留仅为兼容仍按旧键读取的外部代码。新代码请只看 reversible + ADAPT_RATIO。
   danger: 100,
   blacklist: 380
 }
 /**
  * 自适应系数：门槛 = max(MIN, 现有样本数 × RATIO)。
- * 取 0.8 而不是 1.0 —— 1.0 会让「样本数刚好等于门槛」的层在样本微调后反复翻转；
- * 0.8 的语义是「这层已标注样本覆盖到门槛的 8 成」即可，留 2 成给后续补样。
+ *
+ * 取 **1.0**（用户 2026-11-19 拍板「门槛就按现有的走」）：
+ * 现有样本有多少，门槛就定多少——这一层的数据量就是当前能拿到的最全样本。
+ *
+ * 为什么不取 <1（比如 0.8）：`n >= 0.8n` 对任何 n 恒成立，等于样本量校验
+ * 在 n ≥ 下限之后**完全失效**（1 条样本也能"达标"）。那正是「把没跑说成通过」
+ * 的另一副面孔——「把只有 3 条说成够格」。取 1.0 时 `n >= n` 也恒成立，但
+ * 语义是「这层有多少就认多少」，且下限保护仍然拦住样本过少的情形；
+ * 真正兜底的是**比率门槛**（stratumRule），不是样本量。
+ *
+ * 0.8 还带来一个副作用：样本微调时已达标层会反复翻转（n=70 门槛 56 达标，
+ * 样本掉到 69 门槛 55 仍达标，但门槛值一直在动，指标不稳定）。
  */
-const ADAPT_RATIO = 0.8
+const ADAPT_RATIO = 1.0
 
 // 方案文档门槛（2026-11-17 定为常量；2026-11-19 起**样本量部分改为自适应**，
 // 这里的数字只在「不传现有样本数」时作为退路，保证旧调用与测试不炸）。
@@ -81,8 +93,8 @@ const ADAPT_RATIO = 0.8
 const EVAL_THRESHOLDS = {
   HARD: 500,          // 强证据区样本量（退路值；实际由 sampleNeedFor 自适应）
   GREY: 200,          // 灰区样本量（退路值）
-  DANGER: 100,        // 危险动作样本量（硬门槛）
-  BLACKLIST: 380,     // 删源样本量（硬门槛）
+  DANGER: 100,        // 危险动作样本量（退路值；实际由 sampleNeedFor 自适应）
+  BLACKLIST: 380,     // 删源样本量（退路值；实际由 sampleNeedFor 自适应）
   // ADVERSARIAL：对抗样本量。**当前预留、未启用**——它统计的对象不是 R4-R7 的普通样本，
   // 而是 AI自动挡与评测方案.md:105 列的 8 类对抗样本（深检 0 样本、等长改动、账本指向外来条目、
   // 平台零交集、只有声明值、版本不可比、混淆脚本缺双锁、引用幻觉诱导），AI 对这些应当弃权或保守应对。
@@ -201,24 +213,33 @@ function isDangerStratum (kind, danger) {
  */
 function sampleNeedFor (kind, zone, danger, existing, th) {
   const T = (th && typeof th === 'object') ? th : EVAL_THRESHOLDS
-  const k = String(kind || '').toUpperCase()
-  const d = String(danger || '')
-  // ---- 危险层：硬门槛，不随样本浮动（理由见 MIN_SAMPLES 上方注释）----
-  if (k === 'R7' && d === 'D1') return _num(T.BLACKLIST !== undefined ? T.BLACKLIST : MIN_SAMPLES.blacklist, MIN_SAMPLES.blacklist)
-  if (isDangerStratum(k, d)) return _num(T.DANGER !== undefined ? T.DANGER : MIN_SAMPLES.danger, MIN_SAMPLES.danger)
   // ---- 显式要求「固定门槛」时走旧的四档逻辑（测试与临时对比用）----
-  // opts.thresholds.fixedSampleTh = true 表示「别自适应，就按 HARD/GREY 常量判」。
+  // opts.thresholds.fixedSampleTh = true 表示「别自适应，就按 HARD/GREY/DANGER/BLACKLIST 常量判」。
   if (T.fixedSampleTh === true) {
+    const k = String(kind || '').toUpperCase()
+    const d = String(danger || '')
+    if (k === 'R7' && d === 'D1') return _num(T.BLACKLIST, EVAL_THRESHOLDS.BLACKLIST)
+    if (isDangerStratum(k, d)) return _num(T.DANGER, EVAL_THRESHOLDS.DANGER)
     if (String(zone) === 'HARD') return _num(T.HARD, EVAL_THRESHOLDS.HARD)
     return _num(T.GREY, EVAL_THRESHOLDS.GREY)
   }
   // ---- 不传现有样本数：退回旧固定值，行为与改动前一致 ----
   const hasExisting = Number.isFinite(Number(existing)) && Number(existing) >= 0
   if (!hasExisting) {
+    const k = String(kind || '').toUpperCase()
+    const d = String(danger || '')
+    if (k === 'R7' && d === 'D1') return _num(T.BLACKLIST, EVAL_THRESHOLDS.BLACKLIST)
+    if (isDangerStratum(k, d)) return _num(T.DANGER, EVAL_THRESHOLDS.DANGER)
     if (String(zone) === 'HARD') return _num(T.HARD, EVAL_THRESHOLDS.HARD)
     return _num(T.GREY, EVAL_THRESHOLDS.GREY)
   }
-  // ---- 可逆层自适应：max(下限, 现有样本 × 系数) ----
+  // ---- 所有分层统一自适应：max(下限, 现有样本 × 系数) ----
+  // 危险层（R6|D1 信任放行 / R7|D1 删源）**不在这里设硬门槛**：
+  // 用户 2026-11-19 明确要求「门槛按现有真实数据走，R6/R7/R4 同理」。
+  // 安全边界不靠样本量守，靠**比率门槛**守（见 stratumRule：
+  // R7|D1 要求误判率 ≤1%、R6|D1 要求准确率 ≥95%）——样本量只决定「能不能算」，
+  // 比率才决定「算出来够不够好」。样本量门槛设多高都不会让错判变得安全，
+  // 而降低它反而能让「AI 在 R7 上误判率 100%」这类问题暴露出来而不是被"数据不足"掩盖。
   const floor = _num(T.minReversible, MIN_SAMPLES.reversible)
   const ratio = _num(T.adaptRatio, ADAPT_RATIO)
   const adapted = Math.floor(Number(existing) * ratio)
@@ -227,15 +248,15 @@ function sampleNeedFor (kind, zone, danger, existing, th) {
 
 /**
  * 取某分层所需**样本量**门槛。
- * 规则：删源(R7+D1) 用 BLACKLIST，其余危险层（R6+D1）用 DANGER，
- *       可逆层按「现有样本数 × 系数，且有下限保护」自适应（见 sampleNeedFor）。
+ * 规则：所有分层统一「现有样本数 × ADAPT_RATIO，且有下限保护」自适应（见 sampleNeedFor）。
+ *   不传 existing 时退回旧固定值（HARD/GREY/DANGER/BLACKLIST），只为向后兼容。
  *
  * @param {string|object} caseOrKey 分层 key（'R4|GREY|D0'）或样本对象
  * @param {object} [th] 门槛覆盖表（通常来自 computeMetrics 合并后的 th）。
  *   **不传时读模块级 EVAL_THRESHOLDS，行为与 v1.13.9 之前完全一致**（向后兼容）。
  *   传了就用传入值——这修的是原来 computeMetrics 算了 th 却没用、导致
  *   `opts.thresholds` 覆盖完全无效的缺陷（传 {HARD:1} 仍判 12 层数据不足）。
- * @param {number} [existing] 该层当前真实样本数；给了就按自适应算可逆层门槛。
+ * @param {number} [existing] 该层当前真实样本数；给了就按自适应算门槛。
  */
 function thresholdFor(caseOrKey, th, existing) {
   const c = typeof caseOrKey === 'string' ? (() => {
@@ -344,7 +365,7 @@ function computeMetrics(logs, cases, opts) {
   for (const key of Object.keys(groups).sort()) {
     const cs = groups[key]
     const n = cs.length
-    // 样本量门槛：把该层现有样本数传进去，可逆层据此自适应（危险层仍走硬门槛）。
+    // 样本量门槛：把该层现有样本数传进去，所有分层按自身样本量自适应（见 sampleNeedFor）。
     const need = thresholdFor(key, th, n)
     const stratumLogs = (Array.isArray(logs) ? logs : []).filter(l => cs.some(c => c.id === l.entryId || c.id === l.caseId))
     const withAi = stratumLogs.filter(l => l.aiAct != null && l.aiAct !== '')
@@ -359,9 +380,10 @@ function computeMetrics(logs, cases, opts) {
       danger: key.split('|')[2],
       n, need, sufficient,
       // 门槛来源，让用户看懂「为什么是这个数」（前端/日志可直接用）
-      needBasis: isDangerStratum(key.split('|')[0], key.split('|')[2])
-        ? '危险层硬门槛（不随样本浮动）'
-        : '按现有样本自适应',
+      // 危险层与可逆层现在走同一套自适应规则，差别只在比率门槛（见 stratumRule）。
+      needBasis: need === _num(th.minReversible, MIN_SAMPLES.reversible)
+        ? '下限 ' + need + ' 条（样本低于最小可信样本数）'
+        : '按现有样本自适应（' + n + ' 条 × ' + _num(th.adaptRatio, ADAPT_RATIO) + '）',
       // 分母说明：用的是**回放日志条数**，不是样本数。没回放的层会显示 0%，
       // 此时 insufficient 已经为 true，不会被当成「准确率 0」下结论。
       coverage: stratumLogs.length ? withAi.length / stratumLogs.length : 0,

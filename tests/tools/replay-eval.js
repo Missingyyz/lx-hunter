@@ -142,9 +142,25 @@ function inputFor (c) {
 async function runOne (aiReview, c, mode, deps) {
   if (mode === 'stub') return { ok: true, aiAct: c.expected.verdict, aiWhy: 'stub: 用 goldAct 冒充 aiAct' }
   if (mode === 'mockops') return { ok: true, aiAct: mockAiAct(c), aiWhy: 'mockops: 按历史回放形态构造' }
-  // live：走 aiReview.suggest（内部拼 prompt、调 provider、解析 JSON）
+  // live：走 aiReview.run(kind, params) —— 这是**唯一**真正拼 prompt、调 provider、
+  // 解析 JSON 出 verdict 的入口（通用分支 R4-R7 见 aiReview.js run()）。
+  //
+  // 注意：不要用 aiReview.suggest()。suggest 的签名是
+  //   suggest(entryId, kind, conclusion, evidence, extra)
+  // 它只是「把一条建议写进 db.aiSuggestions」的同步函数，**完全不调模型**。
+  // 之前这里把 kind 传给了 suggest 的位置（参数错位，且 suggest 不调模型），
+  //   ① 参数错位（kind 被当成 entryId，inp 对象被当成 kind）；
+  //   ② suggest 不返回 Promise、也不含 result.eval，
+  // 于是每条都落到「AI 未给出合法 verdict」分支 → live 模式 0 成功，
+  // 且即使 apiKey/model 全填对也照样 0 成功。已修正。
   const inp = inputFor(c)
-  const r = await withRetry(() => aiReview.suggest(c.kind, inp), {
+  const r = await withRetry(() => aiReview.run(c.kind, {
+    // 样本 input 里已有 name/status/deep/ledger 等，buildText 直接吃这些字段
+    ...inp,
+    entryId: c.id,
+    trigger: 'manual',
+    detailAction: '回放评测（只读，不写业务状态）'
+  }), {
     attempts: 3,
     baseMs: 800,
     sleep: deps && deps.sleep,
