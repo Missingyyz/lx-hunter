@@ -252,6 +252,15 @@ console.log('--- ⑨ 呈现范式契约：内联 chip / 按钮分流 / R1 日志
   ok(/id="aiBaseUrl"/.test(html) && /id="aiMode"/.test(html), 'AI 页保留中转站/档位配置')
   ok(/马上归类一次/.test(html), 'AI 页聚类按钮改为「马上归类一次」（大白话）')
   ok(/id="aiDetail"/.test(html) === false, 'AI 页已移除 #aiDetail 详情卡')
+  // v1.13.9：随容器移除一并清掉死代码，防止后来人"补回来"一个永远显示不了的渲染函数
+  const appSrc9 = app
+  const cssSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'styles.css'), 'utf8')
+  ok(!/function renderDetail\b/.test(appSrc9), '死代码 renderDetail 已移除（容器早已不存在）')
+  ok(!/function renderOffHint\b/.test(appSrc9), '死代码 renderOffHint 已移除')
+  ok(!/function offHintHtml\b/.test(appSrc9), '死代码 offHintHtml 已移除')
+  ok(!/btnAiRefresh/.test(appSrc9), '#btnAiRefresh 死绑定已移除')
+  ok(!/^\s*\.ai-suggestion[\s{,]/m.test(cssSrc) && !/^\s*\.ai-detail[\s{,]/m.test(cssSrc), '无对应容器的 .ai-suggestion* / .ai-detail* CSS 已清理')
+  ok(!/_coldStartClassifySources/.test(fs.readFileSync(path.join(ROOT, 'src', 'core', 'hunter.js'), 'utf8')), 'hunter 死代码 _coldStartClassifySources 已移除')
   // v1.10.8：新增 #aiSummaryCard 替代不存在的 #aiSuggestions（用户拍板：不做建议列表页）
   ok(/id="aiSummaryCard"/.test(html), 'AI 页有统计卡 #aiSummaryCard 替代建议列表')
   ok(/id="aiSuggestions"/.test(html) === false, 'AI 页仍无 #aiSuggestions 列表容器')

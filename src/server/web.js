@@ -408,7 +408,7 @@ route('POST', '/api/config', guard(async (req, res, ctx) => {
 let aiReviewInstance = null
 function ai() {
   if (!aiReviewInstance || aiReviewInstance.store !== store) {
-    const { AIReview } = require('../core/aiReview')
+    const { AIReview, RISK } = require('../core/aiReview')
     aiReviewInstance = new AIReview(store)
   }
   return aiReviewInstance
@@ -427,12 +427,18 @@ route('POST', '/api/ai-review/config', guard((req, res, ctx) => {
   const p = ctx.body || {}
   const cur = store.config.aiReview || {}
   // 白名单与脱敏由 core/aiReview.normalizeConfig 统一负责；此处只保留管理员校验与脱敏回写。
-  const next = ai().normalizeConfig(cur, p)
+  // 超限数值会被收敛到上限，这里显式记一条日志（不静默改，用户要知道配置没按原值生效）。
+  const next = ai().normalizeConfig(cur, p, (clamps) => {
+    const desc = clamps.map(x => `${x.key} ${x.from}→${x.to}`).join('；')
+    pushLog({ msg: 'AI 复检配置有数值超出上限，已收敛：' + desc, module: 'AI复检', level: 'warn', at: Date.now() })
+  })
   // apiKey / headers：只有传入非空字符串才覆盖；传空串表示清空（支持脱敏回显后不误覆盖）
   const incoming = p.provider && typeof p.provider === 'object' ? p.provider : {}
   if (typeof incoming.apiKey === 'string' && incoming.apiKey && incoming.apiKey !== '******') next.provider.apiKey = incoming.apiKey
   if (incoming.headers && typeof incoming.headers === 'object') next.provider.headers = incoming.headers
-  store.saveConfig({ aiReview: next })
+  // 写盘失败必须报出来：saveConfig 返回 false 表示磁盘满/权限不足，原来一律当成功，
+  // 用户以为配置存下了，重启后又回到旧值（v1.13.9 修静默失效）。
+  if (store.saveConfig({ aiReview: next }) === false) throw new Error('配置写盘失败（磁盘空间或目录权限），这次修改没有保存成功')
   return ai().publicConfig()
 }))
 
@@ -482,7 +488,20 @@ route('POST', '/api/ai-review/apply', guard((req, res, ctx) => {
   if (!APPLYABLE.has(s.kind)) return { applied: false, reason: '只读结论无需执行' }
   if (s.kind !== String(body.kind || '')) return { applied: false, reason: 'kind 不匹配' }
   const g = a.gate(s.kind)
-  if (!g.auto && !body.byUser) return { applied: false, needUserConfirm: true, reason: g.reason }
+  // v1.13.9 收窄 byUser 语义：原来 `!g.auto && !body.byUser` 让前端传 byUser:true
+  // 一票绕过**全部三把锁**（enabled / mode=auto / allowIrreversible），门控形同虚设。
+  // 现在 byUser 只能替代「档位」这一把（用户手动确认确实该允许），不能替代：
+  //   - enabled（总开关关着就不该执行任何 AI 动作，哪怕用户手动点）
+  //   - allowIrreversible（高危不可逆操作必须先去设置里显式打开）
+  // 高危类判定复用 core 的 RISK 表（与 aiReview 同一份，避免在前端层手抄 kind 白名单）。
+  const needIrrev = !!(RISK[s.kind] && RISK[s.kind].needsIrreversible)
+  if (!g.auto) {
+    if (needIrrev && !a.cfg.allowIrreversible) {
+      return { applied: false, needSetting: 'allowIrreversible', reason: '这是不可逆操作，需要先在设置里打开「允许不可逆操作」' }
+    }
+    if (!a.cfg.enabled) return { applied: false, needSetting: 'enabled', reason: 'AI 复检总开关未开启，不能执行任何 AI 动作' }
+    if (!body.byUser) return { applied: false, needUserConfirm: true, reason: g.reason }
+  }
   s.status = 'applied'
   s.appliedAt = Date.now()
   s.appliedBy = body.byUser ? 'user' : 'ai'
@@ -514,17 +533,29 @@ route('POST', '/api/ai-review/undo', guard((req, res, ctx) => {
 }))
 
 // 只读评测报告：回放日志 + 样本 → 分层指标 / 数据不足口径。纯聚合、不写库、不调 AI、不执行任何动作。
+// 样本读取失败必须显式暴露：原来 catch 吞成 cases=[] 后与「确实没有样本」同症状，
+// 评测静默失效（部署环境未带 tests/eval-cases 时永远「无样本」而无人察觉）。
+// 该端点是 GET 且被页面每次加载都调，同一错误只记一条日志（内存去重，不落盘）。
+let _evalCasesErrLogged = ''
 route('GET', '/api/ai-review/eval-report', guard(() => {
   const ec = require('../core/evalCases')
   const path = require('path')
   const casesDir = path.join(__dirname, '..', '..', 'tests', 'eval-cases')
-  let cases = []
-  try { cases = ec.loadCases(casesDir) } catch (e) { cases = [] }
+  const load = ec.tryLoadCases(casesDir)
+  const cases = load.cases
+  if (load.error && load.error !== _evalCasesErrLogged) {
+    _evalCasesErrLogged = load.error
+    pushLog({ msg: '评测样本读取失败，评测结果不可信：' + load.error, module: 'AI评测', level: 'warn', at: Date.now() })
+  }
   const logs = Object.keys(store.db.aiEvalLog || {}).map(k => store.db.aiEvalLog[k])
   const metrics = ec.computeMetrics(logs, cases)
   const a = ai()
   // 反馈闭环（只读、零 AI）：采纳率统计 + 影子日志自检，纯本地聚合，不调 provider。
-  return { ok: true, cases: cases.length, logs: logs.length, metrics, feedbackStats: a.feedbackStats(), selfCheck: a.selfCheck() }
+  return {
+    ok: true, cases: cases.length, logs: logs.length, metrics,
+    casesError: load.error || '',      // 空串=样本读取正常；非空=读坏了/没打进产物
+    feedbackStats: a.feedbackStats(), selfCheck: a.selfCheck()
+  }
 }))
 
 // P1-3 服务端画像只读端点（与 main/index.js 镜像）：仅回读落盘画像，零请求、零副作用。

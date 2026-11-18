@@ -310,7 +310,10 @@ async function collectFromHubs(o) {
     perHub.push({ id: hub.id, name: hub.name, ok: true, total: r.total, usable: r.usable, added: conv.items.length, known: conv.skippedKnown })
     log(`采集站「${hub.name || hub.url}」：可用 ${r.usable} 条，新增 ${conv.items.length} 条（已有 ${conv.skippedKnown}，站内重复 ${conv.skippedDup}，无哈希 ${conv.skippedNoHash}）`, '采集')
   }
-  if (store.saveDb) store.saveDb()
+  if (store.saveDb) {
+    // 采集站结果写盘失败必须留痕：否则用户以为「采集完成 N 条」，重启后全没了。
+    if (store.saveDb() === false) log('采集站结果写盘失败（磁盘空间或目录权限不足），新增的条目可能在重启后丢失', '采集', 'error')
+  }
   if (store.saveConfig) store.saveConfig({ hubs: cfg.hubs })
   return { added, perHub, hubsDone: hubs.length, hubTotal: hubs.length }
 }

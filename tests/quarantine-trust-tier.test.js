@@ -179,8 +179,39 @@ ok(worth.length === 2, `26 条里只有 ${worth.length} 条值得提醒（期望
 ok(worth.every(s => s.kind === 'R3'), '2 条都是 R3 命名异常')
 ok(real.filter(s => s.kind === 'R2' && worthNotifying(s)).length === 0, 'R2 全部降级为日志（0 条进界面）')
 
+console.log('\n=== ④c 真实部署形态（eval 缺失 / evidence 为空）回归 ===')
+// 8197 实测：所有建议 verdict 恒为 null（R3 的 prompt 输出 suspicious 不是 verdict），
+// evidence 在某些路径上为空。原判据在这种形态下把所有 R3 判成 false，误杀 2 条命名异常。
+const realShape = []
+for (let i = 0; i < 14; i++) realShape.push({ kind: 'R2', conclusion: '保留服务端更优版本：服务端 5 个平台 > 本地 3 个', evidence: [] })
+for (let i = 0; i < 4; i++) realShape.push({ kind: 'R3', conclusion: '命名未见明显异常（本地规则提示，仅供参考）', evidence: [] })
+realShape.push({ kind: 'R3', conclusion: '混杂多种特殊同形字符伪装英文，疑似乱码混淆命名。', evidence: [] })
+realShape.push({ kind: 'R3', conclusion: '含"二改整合版"，明显是二次修改/整合的衍生版本，有多版本副本嫌疑。', evidence: [] })
+for (let i = 0; i < 3; i++) realShape.push({ kind: 'R5', conclusion: '拿不准，按从宽处理 source', evidence: [] })
+for (let i = 0; i < 3; i++) realShape.push({ kind: 'R7', conclusion: '状态为ok，无错误或连续失效记录；缺乏有害或长期失效证据。', evidence: [] })
+const realWorth = realShape.filter(worthNotifying)
+ok(realShape.length === 26, '构造 26 条真实部署形态（无 eval、evidence 空）')
+ok(realWorth.length === 2, `worthOnly 过滤后正好 2 条（实际 ${realWorth.length}）`)
+ok(realWorth.every(s => /乱码混淆命名|二改整合版/.test(s.conclusion)), '残留的 2 条正是那两条命名异常')
+ok(realShape.filter(s => s.kind === 'R7' && worthNotifying(s)).length === 0, 'R7 keep（证据不足保留）全部不提醒')
+ok(realShape.filter(s => s.kind === 'R5' && worthNotifying(s)).length === 0, 'R5 source（按从宽处理）全部不提醒')
+ok(realShape.filter(s => s.kind === 'R3' && /未见明显异常/.test(s.conclusion) && worthNotifying(s)).length === 0,
+  'R3「命名未见明显异常」全部不提醒（含"异常"二字但不误判）')
+
+console.log('\n=== ④d R3 判据优先级 ===')
+ok(worthNotifying({ kind: 'R3', conclusion: '名字看着没问题（本地快速判断，仅供参考）', evidence: [] }) === false,
+  'R3 本地兜底结论"名字看着没问题" → 不提醒')
+ok(worthNotifying({ kind: 'R3', conclusion: '随便', evidence: [{ key: 'nameHeuristic', ok: true }] }) === true,
+  'R3 evidence.nameHeuristic.ok=true → 提醒')
+ok(worthNotifying({ kind: 'R3', conclusion: '重复副本', evidence: [{ key: 'nameHeuristic', ok: false }] }) === true,
+  'R3 ok=false 但结论说重复副本 → 提醒（本地正则看不到同形字符，听模型）')
+ok(worthNotifying({ kind: 'R3', conclusion: '名字一般', evidence: [{ key: 'nameHeuristic', ok: false }] }) === false,
+  'R3 ok=false 且结论中性 → 不提醒')
+ok(worthNotifying({ kind: 'R3', conclusion: '疑似乱码混淆命名', eval: { verdict: 'x' }, evidence: [] }) === true,
+  'R3 即使有无关 verdict 也不影响文本兜底')
+
 console.log('\n=== ④b 门槛口径全组合 ===')
-const combo = [
+const combo2 = [
   ['R7 blacklist → 提醒', sug('R7', 'blacklist', '多条失效证据'), true],
   ['R7 keep → 不提醒', sug('R7', 'keep', '保留'), false],
   ['R5 nonSource → 提醒', sug('R5', 'nonSource', '不是音源脚本'), true],
@@ -191,13 +222,33 @@ const combo = [
   ['R6 trust → 提醒', sug('R6', 'trust', '干净'), true],
   ['R2 任意 → 不提醒', sug('R2', null, '保留服务端更优版本'), false],
   ['R1 → 不提醒', sug('R1', null, '连接超时 5'), false],
-  ['R3 未知 kind → 不提醒', sug('R9', null, '啥'), false],
+  ['未知 kind → 不提醒', sug('R9', null, '啥'), false],
   ['R3 无 evidence 且说"未见异常" → 不提醒', sug('R3', null, '命名未见明显异常'), false],
   ['R3 无 evidence 且说"重复副本" → 提醒', sug('R3', null, '疑似重复副本'), true]
 ]
+const combo = combo2
 let comboBad = 0
 for (const [d, s, exp] of combo) { const g = worthNotifying(s); if (g !== exp) { comboBad++; console.log('  BAD ' + d + ' → ' + g) } }
 ok(comboBad === 0, '13 条门槛边界全对')
+
+console.log('\n=== ④e 前后端口径一致（aiWorthNotifyingLocal vs worthNotifying）===')
+// 从 app.js 抽出前端兜底函数并执行，逐条比对两端口径
+const vm = require('vm')
+const fnStart = appSrc.indexOf('\n  function aiWorthNotifyingLocal(s) {')
+let localFn = null
+if (fnStart > 0) {
+  const body = appSrc.slice(fnStart, appSrc.indexOf('\n  }\n', fnStart) + 4)
+  try {
+    localFn = vm.runInNewContext('(' + body.trim() + ')', {})
+  } catch (e) { localFn = null }
+}
+ok(typeof localFn === 'function', '能从 app.js 抽出 aiWorthNotifyingLocal')
+if (typeof localFn === 'function') {
+  let mismatch = 0
+  const samples = realShape.concat(combo.map(([, s]) => s))
+  for (const s of samples) if (!!localFn(s) !== !!worthNotifying(s)) { mismatch++; console.log('  MISMATCH ' + s.kind + ' ' + String(s.conclusion).slice(0, 30)) }
+  ok(mismatch === 0, `前后端判定完全一致（${samples.length} 条样本，不一致 ${mismatch}）`)
+}
 
 // ---------- ⑤ 三处副本已收敛 ----------
 console.log('\n=== ⑤ 判据单一来源（三处副本已清零）===')

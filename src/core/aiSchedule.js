@@ -15,7 +15,13 @@ const SCOPE_LABEL = {
   all: '全部音源'
 }
 
-/** 归一化小时段 [start,end)；end=24 表示到午夜。缺省全天。 */
+/**
+ * 归一化小时段 [start,end)：
+ *  - start < end：普通区间（例 9→18）
+ *  - start > end：**跨午夜区间**（例 22→6 = 晚 22 点到次日早 6 点）
+ *  - end = 24：到午夜（例 22→24 = 晚 22 点到零点），保持 v1.13.8 之前的旧语义
+ *  - start === end：零长度无意义，按全天兜底（宁可全天，也不要永远判时段外）
+ */
 function _activeHours(cfg) {
   const h = (cfg && cfg.autoActiveHours) || {}
   let start = Number(h.start)
@@ -24,16 +30,18 @@ function _activeHours(cfg) {
   if (!Number.isFinite(end)) end = 24
   start = Math.max(0, Math.min(24, Math.floor(start)))
   end = Math.max(0, Math.min(24, Math.floor(end)))
-  if (end <= start) { start = 0; end = 24 }   // 非法区间按全天兜底，避免永远判时段外
+  if (start === end) { start = 0; end = 24 }   // 零长度区间按全天兜底，避免永远判时段外
   return { start, end }
 }
 
-/** 当前小时是否在允许时段 [start,end) 内（end=24 表示全天）。 */
+/** 当前小时是否在允许时段 [start,end) 内（end=24 表示到午夜；start>end 表示跨午夜）。 */
 function getActiveHoursOk(cfg, now) {
   const t = Number(now)
   const d = Number.isFinite(t) ? new Date(t) : new Date()
   const hour = d.getHours()
   const { start, end } = _activeHours(cfg)
+  // 跨午夜：22→6 表示 hour>=22 或 hour<6
+  if (start > end) return hour >= start || hour < end
   return hour >= start && hour < end
 }
 
@@ -50,7 +58,12 @@ function aiSchedulePlan(cfg, aiState, now) {
   const c = cfg || {}
   const st = aiState || {}
   const t = Number(now) || Date.now()
-  const intervalHours = Math.max(1, Number(c.autoIntervalHours) || 24)
+  // v1.13.9：这里必须**再收敛一次**。normalizeConfig 只在「保存配置」时生效，
+  // 老库里已存着 autoMaxItems=5000 的话，直读路径会照跑 5000 次 AI 调用。
+  // 上限值与 aiReview.CFG_LIMITS 保持一致（此处硬编码避免循环依赖：aiReview 依赖 aiSchedule 的反向不存在）。
+  const MAX_ITEMS = 200
+  const MAX_INTERVAL_HOURS = 720
+  const intervalHours = Math.min(MAX_INTERVAL_HOURS, Math.max(1, Number(c.autoIntervalHours) || 24))
   const intervalMs = intervalHours * 3600 * 1000
   // 失败退避：短于主间隔才生效（与 patrolSchedule 同口径，退避不超过主间隔）
   const retryMinutes = Math.max(1, Math.min(intervalMs / 60000,
@@ -59,7 +72,7 @@ function aiSchedulePlan(cfg, aiState, now) {
   const failed = !!st.lastError
   const gapMs = failed ? Math.min(intervalMs, retryMinutes * 60000) : intervalMs
   const scope = c.autoScope || 'new'
-  const limit = Math.max(1, Number(c.autoMaxItems) || 20)
+  const limit = Math.min(MAX_ITEMS, Math.max(1, Number(c.autoMaxItems) || 20))
   const activeNow = getActiveHoursOk(c, t)
   const elapsed = t - last
 

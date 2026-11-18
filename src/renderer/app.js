@@ -76,7 +76,7 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&a
 // 音源库行 chip 与隔离区 AI 行共用这一份索引：entryId(String) -> 最新一条 pending 建议。
 // loadSources() 成功后刷新；AI 复检页确认执行 / 本地忽略后也刷新。
 const aiHintByEntry = new Map()
-const aiIgnoredIds = new Set()   // 本地「忽略」的建议 id：没有后端忽略接口时只做本地隐藏
+const aiIgnoredIds = new Set()   // 本地「忽略」的建议 id：仅本次会话有效（刷新即复位），见 markAiIgnored 注释
 // v1.10.8：标签从技术黑话换成大白话（用户拍板「前端大白话」）。
 // 注意这是**审查任务的名称**，不是结论——结论见 AI_VERDICT_PHRASE。
 const AI_HINT_KINDS = { R1: '同类归组', R2: '结论', R3: '建议名称', R4: '更新判断', R5: '是否音源', R6: '信任判断', R7: '删除判断' }
@@ -136,22 +136,25 @@ async function loadAiHints() {
   } catch (e) { /* AI 旁路失败静默，不影响音源库 / 隔离区 */ }
 }
 
-/** 本地忽略：标记建议状态、撤掉 chip；后端若有专用忽略接口才调用，没有就不硬改后端 */
+/**
+ * 本地忽略（v1.14 改为「本次会话」语义，用户 2026-11-18 拍板）：
+ * 只在当前页面会话里隐藏这条建议，**不再调用后端 dismiss**。
+ *
+ * 为什么改：原先这里会调 api.aiSuggestionIgnore 把 status 落成 'ignored' 持久化，
+ * 效果是「点一次忽略，这条建议永远不再出现」——用户反馈这是隐性的不可逆动作：
+ * 一条被误忽略的建议（比如后来标准变严了、或手滑点错）再也没有入口找回来，
+ * 而界面既不提示它被永久忽略，也没有「恢复」入口。
+ *
+ * 现在的口径：忽略 = 本次会话不再打扰。刷新页面 / 重开应用后建议会重新出现，
+ * 用户仍有处置机会；想彻底不再提示就按正常流程处理掉那条音源。
+ * 后端 aiSuggestions 的 status 保持 'pending' 不动，采纳率统计也不受这次点击影响
+ * （避免把「不想看」误记成「不采纳」）。
+ */
 function markAiIgnored(s) {
   if (!s || s.id == null) return
   const id = String(s.id)
   aiIgnoredIds.add(id)
-  s.status = 'ignored'
-  // 反馈闭环：先调后端 dismiss 持久化采纳意愿（乐观更新，不 await 不卡 UI，失败静默）。
-  // 本地 Set / status / chip 隐藏逻辑保持原样，网络问题不影响即时反馈。
-  try {
-    if (typeof api !== 'undefined' && api) {
-      let p = null
-      if (typeof api.aiSuggestionIgnore === 'function') p = api.aiSuggestionIgnore({ id: s.id, byUser: true })
-      else if (typeof api.aiIgnore === 'function') p = api.aiIgnore({ id: s.id, byUser: true })
-      if (p && typeof p.catch === 'function') p.catch(() => {})
-    }
-  } catch (e) {}
+  s.status = 'ignored'   // 仅内存态，供本次会话渲染判断，不写后端
   const key = s.entryId == null ? '' : String(s.entryId)
   if (key && aiHintByEntry.get(key) === s) aiHintByEntry.delete(key)
   refreshAiHintUi()
@@ -262,7 +265,7 @@ function aiHintChipHtml(e) {
       (aiActionable(s)
         ? '<button type="button" class="btn sm ai-apply-btn" data-ai-apply="' + esc(s.id) + '" data-ai-apply-kind="' + esc(s.kind) + '" style="margin-top:6px">就按这个处理</button>'
         : '') +
-      '<button type="button" class="btn sm ghost" data-ai-ignore="' + esc(s.id) + '" data-ai-entry="' + esc(String(e.id)) + '" style="margin-top:6px">不用看这条</button>' +
+      '<button type="button" class="btn sm ghost" data-ai-ignore="' + esc(s.id) + '" data-ai-entry="' + esc(String(e.id)) + '" title="本次不再显示这条提醒。刷新页面后如果它还在，会重新出现——想彻底不再提示就按正常流程处理掉这条音源" style="margin-top:6px">本次不用看</button>' +
     '</div></details>'
 }
 
@@ -284,7 +287,22 @@ document.addEventListener('click', async ev => {
       const r = await api.aiApply({ id: sid, kind, byUser: true })
       const d = (r && r.data) || r || {}
       if (r && r.ok === false) { toast('没处理成：' + (r.error || ''), 'err'); return }
-      if (d.applied === false) { toast('没处理成：' + (d.reason || '等你自己处理'), 'warn'); return }
+      if (d.applied === false) {
+        // 被门控挡下时给出可执行的下一步，不只是报个失败：
+        // needSetting 说明用户得先去设置打开某个开关（不可逆操作 / 总开关），
+        // 直接把设置页打开并滚到那块，省得用户找。
+        if (d.needSetting === 'allowIrreversible') {
+          const go = window.confirm('这条是不可逆操作（会改音源状态、删了就回不来）。\n\n要先去设置里打开「允许不可逆操作」才能处理。\n现在就去打开吗？')
+          if (go) { if (typeof window.__openAiSettings === 'function') window.__openAiSettings(); else toast('请到「设置 → AI 复检」打开「允许不可逆操作」', 'warn') }
+          return
+        }
+        if (d.needSetting === 'enabled') {
+          const go = window.confirm('AI 复检总开关是关着的，关着的时候不能执行任何 AI 动作。\n\n现在去设置里打开吗？')
+          if (go) { if (typeof window.__openAiSettings === 'function') window.__openAiSettings(); else toast('请到「设置 → AI 复检」打开总开关', 'warn') }
+          return
+        }
+        toast('没处理成：' + (d.reason || '等你自己处理'), 'warn'); return
+      }
       toast('已按 AI 的看法处理', 'ok')
       if (typeof loadAiHints === 'function') await loadAiHints()
       if (typeof loadSources === 'function') await loadSources()
@@ -438,6 +456,20 @@ function toast(msg, kind) {
 }
 
 // ---------------- 视图 ----------------
+/**
+ * 跳到「设置」页并滚到 AI 复检那一块。
+ * 供 chip 浮层的门控提示复用：被 allowIrreversible / enabled 挡下时，
+ * 直接带用户去要打开的那个开关，而不是只弹一句失败（用户会找不到去哪开）。
+ */
+window.__openAiSettings = function () {
+  const nav = document.querySelector('.nav-item[data-view="settings"]')
+  if (nav) nav.click()
+  const anchor = document.getElementById('aiEnabled') || document.getElementById('aiAllowIrrev')
+  const card = anchor && anchor.closest ? anchor.closest('.card, .panel, section, div') : null
+  const target = card || anchor
+  if (target && target.scrollIntoView) { try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }) } catch (e) {} }
+  if (anchor && anchor.focus) { try { anchor.focus() } catch (e) {} }
+}
 document.querySelectorAll('.nav-item').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'))
@@ -4085,7 +4117,7 @@ async function boot() {
         const c = it.candidate || {}
         const sig = (it.signals || []).map(x => x.type).join(' / ')
         return '<div style="padding:7px 0;border-bottom:1px solid rgba(128,128,128,.25)">' +
-          '<span style="color:' + (COLOR[it.verdict] || '#B4B2A9') + '">[' + (LABEL[it.verdict] || it.verdict) + ']</span> ' +
+          '<span style="color:' + (COLOR[it.verdict] || '#B4B2A9') + '">[' + esc(LABEL[it.verdict] || it.verdict) + ']</span> ' +
           '<b>' + esc(it.name || it.id) + '</b> ' +
           '<span class="muted">owner=' + esc(it.owner) + ' · ' + esc(it.evidence && it.evidence.serverVersion || '-') +
           ' → ' + esc(it.evidence && it.evidence.candidateVersion || '-') +
@@ -4115,10 +4147,8 @@ async function boot() {
   let loaded = false
   // 当前生效配置（供详情提示与确认执行按钮判断档位）
   let currentConfig = { enabled: false, mode: 'off' }
-  // 已加载的建议列表与当前选中 id（renderDetail 从缓存里取，避免重复 IPC）
+  // 已加载的建议列表（统计卡渲染用；详情卡与选中态已移除，见文件末尾清理说明）
   let suggestions = []
-  let selectedId = null
-  const OFF_HINT = '当前是「全部人工」档：AI 只会看并给建议，不会自己动手。要不要处理由你决定。'
 
   async function load() {
     try {
@@ -4158,69 +4188,10 @@ async function boot() {
     el.className = 'badge' + (on ? ' ok' : '')
   }
 
-  // off 档醒目提示：详情已在显示时不覆盖内容，只把提示插到顶部
-  function offHintHtml() {
-    if ((currentConfig.mode || 'off') !== 'off') return ''
-    return '<div class="hint ai-off-hint" style="color:#d97706;font-weight:600;margin-bottom:10px;padding:8px 10px;border:1px solid rgba(217,119,6,.45);border-radius:6px;background:rgba(217,119,6,.08)">' + esc(OFF_HINT) + '</div>'
-  }
-  function renderOffHint() {
-    const box = $('aiDetail')
-    if (!box) return
-    let hint = box.querySelector('.ai-off-hint')
-    if ((currentConfig.mode || 'off') !== 'off') { if (hint) hint.remove(); return }
-    if (!hint) {
-      hint = document.createElement('div')
-      hint.className = 'hint ai-off-hint'
-      hint.style.cssText = 'color:#d97706;font-weight:600;margin-bottom:10px;padding:8px 10px;border:1px solid rgba(217,119,6,.45);border-radius:6px;background:rgba(217,119,6,.08)'
-      hint.textContent = OFF_HINT
-      box.insertBefore(hint, box.firstChild)
-    }
-  }
-
-  // 完整检测详情：从已加载建议里按 id 取，逐字段 esc() 转义
-  function renderDetail(id) {
-    const box = $('aiDetail')
-    if (!box) return
-    const s = suggestions.find(x => String(x && x.id) === String(id))
-    if (!s) {
-      selectedId = null
-      box.innerHTML = offHintHtml() + '<div class="muted">请选择一条建议以查看检测详情。</div>'
-      return
-    }
-    selectedId = String(s.id)
-    const d = (s.detail && typeof s.detail === 'object') ? s.detail : {}
-    const g = d.gate && typeof d.gate === 'object' ? d.gate : {}
-    const ts = s.createdAt ? new Date(s.createdAt).toLocaleString() : ''
-    const evidence = Array.isArray(s.evidence) ? s.evidence : []
-    const evHtml = evidence.length
-      ? '<ul style="margin:6px 0 0;padding-left:20px">' + evidence.map(function (e) {
-          const item = (e && typeof e === 'object') ? e : { detail: e }
-          const key = item.key != null ? esc(aiEvidenceKeyUi(item.key)) + '：' : ''
-          let val = item.detail != null ? item.detail : (item.count != null ? item.count : '')
-          if (val == null || val === '') val = item.ok === true ? '是' : (item.ok === false ? '否' : '')
-          return '<li style="margin-bottom:4px">' + key + '<span class="muted">' + esc(aiEvidenceValUi(val)) + '</span>' +
-            (item.ok === true ? ' <span class="badge ok">是</span>' : (item.ok === false ? ' <span class="badge">否</span>' : '')) + '</li>'
-        }).join('') + '</ul>'
-      : '<div class="muted">没有更多依据</div>'
-    const phrase = aiVerdictPhrase(s)
-    box.innerHTML = offHintHtml() +
-      '<div style="padding:10px 0">' +
-        '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">' +
-          '<span class="badge' + (g.auto ? ' ok' : '') + '">' + esc(AI_STATUS_UI[s.status] || s.status || '待处理') + '</span>' +
-          '<strong>' + esc(phrase || s.conclusion || '') + '</strong>' +
-          '<span class="muted" style="font-size:11px">' + esc(aiKindLabel(s.kind)) + '（' + esc(s.kind || '') + '）</span>' +
-        '</div>' +
-        (phrase && s.conclusion ? '<div class="muted" style="margin-bottom:8px">依据：' + esc(s.conclusion) + '</div>' : '') +
-        '<dl style="margin:0;line-height:1.9">' +
-          '<div><dt class="muted" style="display:inline-block;min-width:110px">该怎么处理</dt><dd style="display:inline;margin:0">' + esc(d.actionUi || d.action || '—') + '</dd></div>' +
-          '<div><dt class="muted" style="display:inline-block;min-width:110px">会不会自动执行</dt><dd style="display:inline;margin:0">' + (g.auto ? '会' : '不会（等你自己处理）') + '</dd></div>' +
-          '<div><dt class="muted" style="display:inline-block;min-width:110px">送进去的内容</dt><dd style="display:inline;margin:0">' + esc(d.inputDigest || '—') + '</dd></div>' +
-          '<div><dt class="muted" style="display:inline-block;min-width:110px">用的模型</dt><dd style="display:inline;margin:0">' + esc(s.model || '—') + '</dd></div>' +
-          '<div><dt class="muted" style="display:inline-block;min-width:110px">什么时候算的</dt><dd style="display:inline;margin:0">' + esc(ts || '—') + '</dd></div>' +
-        '</dl>' +
-        '<div style="margin-top:10px"><span class="muted">判断依据（' + evidence.length + '）</span>' + evHtml + '</div>' +
-      '</div>'
-  }
+  // v1.13.9 清理：已移除 offHintHtml / renderOffHint / renderDetail 及建议选中态。
+  // 它们服务的容器 #aiDetail 在「建议列表+详情卡」方案被否决时就已从页面移除
+  // （见 AI复检入口-呈现方案修订纪要.md:42-46），因此这三个函数永远不会显示任何东西。
+  // 现在 AI 结论只在两处呈现：音源库行 chip 浮层（结论优先）与 AI 页统计卡。
 
   async function save() {
     try {
@@ -4371,24 +4342,40 @@ async function boot() {
   }
 
   /**
-   * 前端兜底版「值不值得提醒」（与后端 aiReview.worthNotifying 同口径）。
+   * 前端兜底版「值不值得提醒」（与后端 aiReview.worthNotifying **逐条同口径**）。
    * 只在后端老数据没有 worthNotifying 字段时用；口径一致性由测试守住。
+   *
+   * v1.10.10：与后端同步修复——R3 的模型输出是 {suspicious} 不是 verdict，
+   * 且 evidence 可能为空，原写法在实测数据上把所有 R3 判成 false，误杀了该提醒的命名异常。
    */
   function aiWorthNotifyingLocal(s) {
     const kind = String((s && s.kind) || '').toUpperCase()
     const v = s && s.eval && s.eval.verdict ? String(s.eval.verdict) : ''
     const text = String((s && s.conclusion) || '')
+    const ev = Array.isArray(s && s.evidence) ? s.evidence : []
     if (kind === 'R1' || kind === 'R2') return false
-    if (kind === 'R4') return v === 'follow'
-    if (kind === 'R5') return v ? v === 'nonSource' : /不是音源|非音源|不像音源/.test(text)
-    if (kind === 'R7') return v ? v === 'blacklist' : /建议删除|应删除|拉黑/.test(text)
-    if (kind === 'R6') return v ? (v === 'trust' || v === 'reject') : true
+    if (kind === 'R4') {
+      if (v) return v === 'follow'
+      return /实质|修复|新功能|新增|恢复|改进|扩容/.test(text) && !/催更|仅版本号|无实质/.test(text)
+    }
+    if (kind === 'R5') {
+      if (v) return v === 'nonSource'
+      return /不是音源|非音源|不像音源|不是.{0,4}脚本/.test(text) && !/按从宽|拿不准|当音源/.test(text)
+    }
+    if (kind === 'R7') {
+      if (v) return v === 'blacklist'
+      return /建议删除|应删除|该删|拉黑/.test(text) && !/证据不足|保留|不用删|不建议删除/.test(text)
+    }
+    if (kind === 'R6') return true
     if (kind === 'R3') {
-      const ev = Array.isArray(s && s.evidence) ? s.evidence : []
+      // ① 文本明确「没问题」先判（「未见明显异常」里含"异常"，顺序不能反）
+      if (/未见明显异常|未见异常|看着没问题|无明显异常|语义正常|正常命名|未见可疑/.test(text)) return false
+      // ② 本地规则 ok=true（只用于真，不用 false 否决——本地正则看不到同形字符/二改整合）
       const nh = ev.find(x => x && x.key === 'nameHeuristic')
-      if (nh && typeof nh.ok === 'boolean') return nh.ok
-      if (/未见明显异常|未见异常|看着没问题|正常|无明显异常/.test(text)) return false
-      return /异常|可疑|乱码|同形|二改|整合|重复|副本|临时|测试/.test(text)
+      if (nh && nh.ok === true) return true
+      // ③ 文本可疑词
+      if (/乱码|混淆命名|同形字符|同形|伪装|二改|二次修改|二次改|整合版|整合|重复|副本|多版本|临时|测试|tmp|test/i.test(text)) return true
+      return false
     }
     return false
   }
@@ -4398,7 +4385,7 @@ async function boot() {
   if ($('btnAiCluster')) $('btnAiCluster').addEventListener('click', cluster)
   // 日志页入口复用同一套 cluster()：调 aiRun R1 + logOnly，提示框在 AI 页不存在时判空跳过
   if ($('btnAiClusterLog')) $('btnAiClusterLog').addEventListener('click', cluster)
-  if ($('btnAiRefresh')) $('btnAiRefresh').addEventListener('click', loadSuggestions)
+  // 刷新按钮随详情卡一起移除（页面已无该元素），刷新入口是 __aiRefreshSuggestions
   // 供音源库批量 AI 复检后刷新 chip / 统计卡（这个入口是活的，音源库批量复检依赖它）
   window.__aiRefreshSuggestions = function () { return loadSuggestions() }
   window.__aiReviewLoad = function () { if (!loaded) { load(); loadFeedbackStats() } }
@@ -4421,6 +4408,14 @@ async function boot() {
       const f = d.feedbackStats || {}
       const sc = d.selfCheck || {}
       const parts = []
+      // 样本读取失败必须顶到最前面且说清后果：原来「读坏了」和「没喂样本」同样显示「数据不足」，
+      // 用户以为只是样本少，实际是评测根本没跑起来（部署未带 tests/eval-cases、或样本 JSON 坏了）。
+      if (d.casesError) {
+        parts.push('<b style="color:#e05252">评测没跑起来，现在这些数字不能当准</b>：' + esc(d.casesError))
+        parts.push('要修的是打包/数据：要么构建产物没带上评测样本，要么样本文件内容坏了。修好后这行会消失。')
+      } else if (!d.cases) {
+        parts.push('评测结果：样本是空的但读取正常（目录在、没样本文件），所以判断不了准不准。')
+      }
       if (f.dataInsufficient) parts.push('采纳率：数据还不够（至少要有 5 条你表过态的）')
       else parts.push('采纳率：' + (f.overallRate == null ? '—' : f.overallRate + '%') + '（你说「就按这个处理」' + f.adopt + ' 条 / 你说「不用看」' + f.dismiss + ' 条，共 ' + f.decided + ' 条）')
       const rows = Array.isArray(f.byKind) ? f.byKind.slice(0, 8) : []

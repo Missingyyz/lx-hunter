@@ -269,7 +269,7 @@ ipcMain.handle('config:set', guard((e, patch) => {
 let aiReviewInstance = null
 function ai() {
   if (!aiReviewInstance || aiReviewInstance.store !== store) {
-    const { AIReview } = require('../core/aiReview')
+    const { AIReview, RISK } = require('../core/aiReview')
     aiReviewInstance = new AIReview(store)
   }
   return aiReviewInstance
@@ -281,8 +281,14 @@ ipcMain.handle('ai-review:configSet', guard((e, p) => {
   p = p || {}
   const cur = store.config.aiReview || {}
   // 白名单与默认值由 core/aiReview.normalizeConfig 统一负责。
-  const next = ai().normalizeConfig(cur, p)
-  store.saveConfig({ aiReview: next })
+  // 超限数值会被收敛到上限，这里显式记一条日志（与 web.js 同口径，不静默改）。
+  const next = ai().normalizeConfig(cur, p, (clamps) => {
+    const desc = clamps.map(x => `${x.key} ${x.from}→${x.to}`).join('；')
+    pushLog({ msg: 'AI 复检配置有数值超出上限，已收敛：' + desc, module: 'AI复检', level: 'warn', at: Date.now() })
+  })
+  // 写盘失败必须抛出来：saveConfig 返回 false 表示磁盘满/权限不足，原来一律当成功，
+  // 用户以为配置存下了、重启又回旧值（v1.13.9 修静默失效，与 web.js 同口径）。
+  if (store.saveConfig({ aiReview: next }) === false) throw new Error('配置写盘失败（磁盘空间或目录权限），这次修改没有保存成功')
   return ai().publicConfig()
 }))
 
@@ -313,7 +319,16 @@ ipcMain.handle('ai-review:apply', guard((e, body) => {
   if (!APPLYABLE.has(s.kind)) return { applied: false, reason: '只读结论无需执行' }
   if (s.kind !== String(body.kind || '')) return { applied: false, reason: 'kind 不匹配' }
   const g = a.gate(s.kind)
-  if (!g.auto && !body.byUser) return { applied: false, needUserConfirm: true, reason: g.reason }
+  // 与 web.js 同口径（v1.13.9）：byUser 只替代「档位」这一把锁，
+  // 不能替代 enabled（总开关）与 allowIrreversible（高危不可逆操作）。
+  const needIrrev = !!(RISK[s.kind] && RISK[s.kind].needsIrreversible)
+  if (!g.auto) {
+    if (needIrrev && !a.cfg.allowIrreversible) {
+      return { applied: false, needSetting: 'allowIrreversible', reason: '这是不可逆操作，需要先在设置里打开「允许不可逆操作」' }
+    }
+    if (!a.cfg.enabled) return { applied: false, needSetting: 'enabled', reason: 'AI 复检总开关未开启，不能执行任何 AI 动作' }
+    if (!body.byUser) return { applied: false, needUserConfirm: true, reason: g.reason }
+  }
   s.status = 'applied'; s.appliedAt = Date.now(); s.appliedBy = body.byUser ? 'user' : 'ai'
   s.feedback = { action: 'adopt', at: Date.now(), by: body.byUser ? 'user' : 'ai' }
   a.store.saveDb()
@@ -338,17 +353,29 @@ ipcMain.handle('ai-review:undo', guard((e, auditId) => {
 }))
 
 // 只读评测报告（与 web.js 镜像）：回放日志 + 样本 → 分层指标 / 数据不足。纯聚合、零副作用。
+// 样本读取失败必须显式暴露（与 web.js 同口径）：原来 catch 吞成 cases=[] 后
+// 「样本读坏了」与「确实没样本」同症状，评测静默失效。
+// 该 IPC 每次打开 AI 页都会被调，同一错误只记一条日志（内存去重，不落盘）。
+let _evalCasesErrLogged = ''
 ipcMain.handle('ai-review:evalReport', guard(() => {
   const ec = require('../core/evalCases')
   const path = require('path')
   const casesDir = path.join(__dirname, '..', '..', 'tests', 'eval-cases')
-  let cases = []
-  try { cases = ec.loadCases(casesDir) } catch (e) { cases = [] }
+  const load = ec.tryLoadCases(casesDir)
+  const cases = load.cases
+  if (load.error && load.error !== _evalCasesErrLogged) {
+    _evalCasesErrLogged = load.error
+    pushLog({ msg: '评测样本读取失败，评测结果不可信：' + load.error, module: 'AI评测', level: 'warn', at: Date.now() })
+  }
   const logs = Object.keys(store.db.aiEvalLog || {}).map(k => store.db.aiEvalLog[k])
   const metrics = ec.computeMetrics(logs, cases)
   const a = ai()
   // 与 web.js 镜像：反馈闭环只读聚合，零 AI、零副作用。
-  return { ok: true, cases: cases.length, logs: logs.length, metrics, feedbackStats: a.feedbackStats(), selfCheck: a.selfCheck() }
+  return {
+    ok: true, cases: cases.length, logs: logs.length, metrics,
+    casesError: load.error || '',      // 空串=样本读取正常；非空=读坏了/没打进产物
+    feedbackStats: a.feedbackStats(), selfCheck: a.selfCheck()
+  }
 }))
 
 // P1-3 服务端画像只读端点（与 web.js 镜像）：仅回读落盘画像，不计算、不请求、不驱动任何行为。

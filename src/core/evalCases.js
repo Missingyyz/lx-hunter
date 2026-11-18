@@ -71,6 +71,31 @@ function loadCases(dirOrFile) {
   return out
 }
 
+/**
+ * 不抛版本：返回 `{ cases, error }`，供服务端/桌面端在读取失败时**把原因报给界面**。
+ *
+ * 为什么需要它（v1.13.9）：调用点原来写成
+ *   `try { cases = loadCases(dir) } catch (e) { cases = [] }`
+ * 于是「目录不存在」「样本 JSON 坏了」「样本缺字段」三种故障与「确实没有样本」
+ * 产生**完全相同的症状**——界面显示「无样本」，用户/我们无从分辨是没喂数据
+ * 还是数据读坏了。评测因此在没有验尺的情况下静默失效（部署后 8197 实测发现）。
+ *
+ * @param {string} dirOrFile 目录或单个文件
+ * @returns {{cases:Array, error:string}} error 为空串表示成功；失败时 cases 恒为 []
+ */
+function tryLoadCases(dirOrFile) {
+  const p = String(dirOrFile || '')
+  if (!p) return { cases: [], error: '未配置样本目录' }
+  let exists = false
+  try { exists = fs.existsSync(p) } catch (e) { return { cases: [], error: '样本路径不可访问：' + p + '：' + ((e && e.message) || e) } }
+  if (!exists) return { cases: [], error: '样本目录不存在：' + p + '（构建产物未包含 tests/eval-cases）' }
+  try {
+    return { cases: loadCases(p), error: '' }
+  } catch (e) {
+    return { cases: [], error: String((e && e.message) || e) }
+  }
+}
+
 /** 分层：kind × zone × danger，返回 { 'R4|GREY|D1': [case,...] } */
 function groupByStratum(cases) {
   const g = {}
@@ -147,4 +172,4 @@ function computeMetrics(logs, cases, opts) {
   }
 }
 
-module.exports = { KINDS, ZONES, DANGERS, EVAL_THRESHOLDS, validateCase, loadCases, groupByStratum, thresholdFor, computeMetrics }
+module.exports = { KINDS, ZONES, DANGERS, EVAL_THRESHOLDS, validateCase, loadCases, tryLoadCases, groupByStratum, thresholdFor, computeMetrics }

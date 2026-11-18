@@ -98,7 +98,11 @@ for (const [name, src] of [['web', webSrc], ['main', mainSrc]]) {
   ok(/feedbackStats: a\.feedbackStats\(\), selfCheck: a\.selfCheck\(\)/.test(src), name + ' evalReport 追加 feedbackStats+selfCheck')
 }
 ok(/aiSuggestionIgnore: .*ai-review\/dismiss|aiSuggestionIgnore: .*ai-review:dismiss/.test(preSrc + bridgeSrc), '两桥 aiSuggestionIgnore 指向 dismiss')
-ok(/api\.aiSuggestionIgnore\(\{ id: s\.id, byUser: true \}\)/.test(appSrc), 'app.js 忽略动作调后端 dismiss')
-ok(/\.catch\(\(\) => \{\}\)/.test(appSrc), 'app.js 忽略调用失败静默（catch）')
+// v1.14（用户 2026-11-18 拍板）：忽略改为「本次会话」语义——只做本地隐藏，不再调后端 dismiss。
+// 原先这里断言 app.js 必须调 api.aiSuggestionIgnore 持久化，那正好是本次要去掉的行为：
+// 持久化会让一次误点变成不可逆（建议永远不再出现，且界面无「恢复」入口）。
+// 后端的 dismiss 路由与统计仍保留（供采纳率口径与将来可能的显式入口使用），只是 UI 不再自动触发。
+ok(!/api\.aiSuggestionIgnore\(\{ id: s\.id, byUser: true \}\)/.test(appSrc), 'app.js 忽略动作不再调后端 dismiss（会话级）')
+ok(/aiIgnoredIds\.add\(id\)/.test(appSrc), 'app.js 忽略只记本地集合（会话级生效）')
 
 console.log(`\n反馈闭环 MVP 回归全部通过（${pass} 项）`)

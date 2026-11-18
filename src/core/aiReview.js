@@ -95,49 +95,64 @@ function obfHitsText (hits) {
  * 降级为只写日志，不进界面。**本函数不改任何判定结果、不删任何数据**，
  * 日志与 aiReviewLedger 全量保留。
  *
- * 口径（kind + verdict + 结论性质三重判断）：
+ * 口径（每类都按「结构化字段 → 文本兜底」两级判断，缺字段不静默 false）：
  *  - R1 同类归组：失败聚类总览，日常不需要用户做什么 → 不提醒
  *  - R2 结论解释：解释「为什么这么自动判」，已做完的决定，用户无需操作 → **全部不提醒**（用户已同意）
- *  - R3 命名：只有「确实可疑」才提醒（同形字符伪装/乱码/二改整合/重复副本…）；「未见异常」不提醒
- *  - R4 更新：只有 follow（建议追更）提醒；ignore（不用管）不提醒
- *  - R5 音源：只有 nonSource（判为非音源，真需处置）提醒；source/拿不准不提醒
- *  - R6 信任：trust / reject 都是需要用户决策的结论 → 都提醒
- *  - R7 删除：只有 blacklist（建议删，高危不可逆）提醒；keep/证据不足不提醒
+ *  - R3 命名：**注意 R3 的模型输出是 `{suspicious:boolean}`，不是 `verdict`**，
+ *        所以 s.eval 恒为空——必须走 evidence.nameHeuristic.ok（本地规则）→ 结论文本 两级兜底
+ *  - R4 更新：follow 提醒；ignore/缺字段 不提醒
+ *  - R5 音源：nonSource 提醒；source 不提醒；缺字段按文本兜底
+ *  - R6 信任：trust / reject 都提醒（隔离区信任意见一律值得看）
+ *  - R7 删除：blacklist 提醒；keep 不提醒；缺字段按文本兜底
  *
- * verdict 缺失时（模型没按 JSON 返回 / 本地降级路径）退回结论文本启发式，
- * 宁可少提醒也不把"一切正常"糊到界面上。
+ * v1.10.10 修复（部署实测发现）：R3 的判据原来只看 `evidence.nameHeuristic.ok` 与文本，
+ * 而前端拿到的建议对象在部分路径上 evidence 为空、eval 也为空（R3 本就不产 verdict），
+ * 导致 26 条真实数据**全部返回 false**——该提醒的 2 条命名异常被静默吃掉。
+ * 现在每一类都补了「取不到结构化字段时按文本判」的兜底，并在 R3 上把可疑词表显式列全
+ * （同形字符/乱码/二改/整合/副本/重复/测试/临时）；只有明确命中「正常」表述才判 false。
  *
- * @param {object} s 建议对象 {kind, conclusion, eval:{verdict}, evidence}
+ * @param {object} s 建议对象 {kind, conclusion, eval?:{verdict}, evidence?:[], detail?}
  * @returns {boolean}
  */
 function worthNotifying(s) {
   const kind = String((s && s.kind) || '').toUpperCase()
   const verdict = s && s.eval && s.eval.verdict ? String(s.eval.verdict) : ''
   const text = String((s && s.conclusion) || '')
+  const ev = Array.isArray(s && s.evidence) ? s.evidence : []
 
   if (kind === 'R2') return false   // 已自动做完的决定解释，用户无动作可做
   if (kind === 'R1') return false   // 失败聚类总览，只写日志
-  if (kind === 'R4') return verdict === 'follow'
+
+  if (kind === 'R4') {
+    if (verdict) return verdict === 'follow'
+    // 没有 verdict 时看结论：明确"有实质修复/新功能"才提醒
+    return /实质|修复|新功能|新增|恢复|改进|扩容/.test(text) && !/催更|仅版本号|无实质/.test(text)
+  }
   if (kind === 'R5') {
     if (verdict) return verdict === 'nonSource'
-    return /不是音源|非音源|不像音源/.test(text)
+    return /不是音源|非音源|不像音源|不是.{0,4}脚本/.test(text) && !/按从宽|拿不准|当音源/.test(text)
   }
   if (kind === 'R7') {
     if (verdict) return verdict === 'blacklist'
-    return /建议删除|应删除|拉黑/.test(text)
+    return /建议删除|应删除|该删|拉黑/.test(text) && !/证据不足|保留|不用删|不建议删除/.test(text)
   }
   if (kind === 'R6') {
-    if (verdict) return verdict === 'trust' || verdict === 'reject'
-    return true   // 隔离区信任意见一律值得看
+    // 隔离区信任意见一律值得看（这是唯一的"有真实动作"入口）
+    return true
   }
   if (kind === 'R3') {
-    // 本地规则的「可疑」标记优先（evidence.nameHeuristic.ok），它比模型措辞稳定
-    const ev = Array.isArray(s && s.evidence) ? s.evidence : []
+    // R3 的模型输出是 {suspicious}，不是 verdict，所以 s.eval 恒为空；判据分三级：
+    // ① 文本明确「没问题」→ 立刻 false（必须在可疑词之前，因为「未见明显异常」含"异常"）
+    if (/未见明显异常|未见异常|看着没问题|无明显异常|语义正常|正常命名|未见可疑/.test(text)) return false
+    // ② 结构化：本地规则的「可疑」标记（由 name/tmp/test 等硬正则得出，最可靠）
+    //    注意本地规则只覆盖"重复/测试/临时"这一族，覆盖不到乱码/同形字符/二改整合，
+    //    所以这里**只用于 true 判定，不用 false 否决**——ok=false 但模型说"乱码混淆"时
+    //    应当听模型的（本地正则看不到同形字符）。
     const nh = ev.find(x => x && x.key === 'nameHeuristic')
-    if (nh && typeof nh.ok === 'boolean') return nh.ok
-    // 没有标记时看结论：明确说"没问题/未见异常"就不提醒
-    if (/未见明显异常|未见异常|看着没问题|正常|无明显异常/.test(text)) return false
-    return /异常|可疑|乱码|同形|二改|整合|重复|副本|临时|测试/.test(text)
+    if (nh && nh.ok === true) return true
+    // ③ 文本可疑词：乱码/同形字符/二改/整合/副本/重复/测试/临时…
+    if (/乱码|混淆命名|同形字符|同形|伪装|二改|二次修改|二次改|整合版|整合|重复|副本|多版本|临时|测试|tmp|test/i.test(text)) return true
+    return false
   }
   return false   // 未知 kind 默认不打扰
 }
@@ -317,6 +332,26 @@ const AI_REVIEW_DEFAULTS = {
   budget: { perItemMs: 20000, perRoundMs: 180000, maxItemsPerRound: 20 }
 }
 
+/**
+ * 配置数值上限（v1.13.9）。
+ *
+ * 为什么必须有：`posInt` 原来只校验 >=1，配置填多大就按多大跑。
+ *   - `autoMaxItems=5000` ⇒ 自动复检循环逐条 run('R3')，一轮 5000 次 LLM 调用（真金白银）；
+ *   - `timeoutMs=1e9` ⇒ 单次请求挂 11.5 天，前端看着像卡死；
+ *   - 周期类字段填天文数字 ⇒ 自动挡永不触发，属于另一种静默失效；
+ *   - `clusterLearnMinSamples` 填过大 ⇒ 永远学不出规则（静默停摆）；
+ *   - `clusterLearnMaxRules` 无上限 ⇒ 每条规则都跑正则，规则表膨胀拖慢聚类。
+ * 上限取「功能仍可用」的宽松值，宁可放宽也不误伤正常配置。
+ */
+const CFG_LIMITS = {
+  autoMaxItems: { max: 200 },
+  timeoutMs: { max: 120000 },
+  autoIntervalHours: { max: 720 },        // 30 天：再长等于自动挡名存实亡
+  clusterIntervalHours: { max: 720 },     // 同上
+  clusterLearnMinSamples: { max: 50 },    // 再高就永远攒不够，自生长静默停摆
+  clusterLearnMaxRules: { max: 200 }
+}
+
 function now() { return Date.now() }
 function uid(prefix) { return prefix + '_' + now().toString(36) + '_' + Math.random().toString(36).slice(2, 8) }
 function deepClone(o) { return o == null ? o : JSON.parse(JSON.stringify(o)) }
@@ -346,24 +381,47 @@ class AIReview {
    * 供 web.js / main/index.js 的 configSet 调用，消除两处手抄白名单逻辑。
    * 规则：patch 有合法值则用 patch，否则保留 cur，再否则用默认；
    *       非法枚举/数值保留 cur（autoScope 非法固定回 'failed'）。
+   *
+   * v1.13.9 加上限：原来 posInt 只校验 >=1，没有上限，
+   *   `autoMaxItems` 填 5000 ⇒ 自动复检逐条 run('R3')，一轮 5000 次 LLM 调用（烧钱）；
+   *   `provider.timeoutMs` 更严重——它走 Object.assign 深合并，**完全不校验**，
+   *   填 1e9 会真的等 11.5 天（aiProvider.js:57 只判 >0）。
+   *   现在超限一律**收敛到上限**并进 `onClamp` 列表，由调用方写日志（不静默改）。
+   *   normalizeConfig 保持纯函数：不新增返回字段，clamp 信息只走回调。
+   *
    * @param {object} cur  当前 aiReview 配置
    * @param {object} patch 前端提交的配置（部分字段）
+   * @param {function} [onClamp] 收敛回调，收到 [{key, from, to}]（仅当确有收敛时调用）
    * @returns {object} 合并后的完整 aiReview 配置（新对象）
    */
-  normalizeConfig(cur, patch) {
+  normalizeConfig(cur, patch, onClamp) {
     const c = cur && typeof cur === 'object' ? cur : {}
     const p = patch && typeof patch === 'object' ? patch : {}
     const d = AI_REVIEW_DEFAULTS
+    const clamps = []
     const bool = (key) => {
       if (typeof p[key] === 'boolean') return p[key]
       if (typeof c[key] === 'boolean') return c[key]
       return d[key]
     }
+    // 有上下限的正整数：超界收敛到边界并记入 clamps（不是静默丢弃，也不是静默接受）
     const posInt = (key) => {
-      const n = Number(p[key])
-      if (Number.isFinite(n) && n >= 1) return Math.floor(n)
-      const cn = Number(c[key])
-      if (Number.isFinite(cn) && cn >= 1) return Math.floor(cn)
+      const lim = CFG_LIMITS[key]
+      const pick = (raw) => {
+        const n = Number(raw)
+        if (!Number.isFinite(n) || n < 1) return null
+        let v = Math.floor(n)
+        if (lim) {
+          const hi = Math.min(v, lim.max)
+          if (hi !== v) clamps.push({ key, from: v, to: hi })
+          v = hi
+        }
+        return v
+      }
+      const fromPatch = pick(p[key])
+      if (fromPatch != null) return fromPatch
+      const fromCur = pick(c[key])
+      if (fromCur != null) return fromCur
       return d[key]
     }
     const next = {
@@ -388,13 +446,37 @@ class AIReview {
         const a = p.autoActiveHours && typeof p.autoActiveHours === 'object' ? p.autoActiveHours
           : (c.autoActiveHours && typeof c.autoActiveHours === 'object' ? c.autoActiveHours : d.autoActiveHours)
         const s = Number(a.start), e = Number(a.end)
-        return (Number.isFinite(s) && Number.isFinite(e) && s >= 0 && e <= 24 && s < e)
-          ? { start: s, end: e }
-          : Object.assign({}, d.autoActiveHours, c.autoActiveHours && typeof c.autoActiveHours === 'object' ? c.autoActiveHours : {})
+        // v1.13.9 支持跨午夜：start > end 表示 22→6 这种跨零点区间。
+        // 原来要求 s < e，填 22→6 会被**静默回落到全天**（用户以为限制了，其实没限）。
+        // 必须保住 end=24 的旧语义（start=22,end=24 = 到午夜），所以上限仍是 24。
+        const inRange = (v) => Number.isFinite(v) && v >= 0 && v <= 24 && v === Math.floor(v)
+        if (inRange(s) && inRange(e) && s !== e) return { start: s, end: e }
+        // s === e 是零长度区间，无意义 → 按全天兜底（宁可全天，也不要永远触发不了）
+        const fb = c.autoActiveHours && typeof c.autoActiveHours === 'object' ? c.autoActiveHours : {}
+        const bs = Number(fb.start), be = Number(fb.end)
+        if (inRange(bs) && inRange(be) && bs !== be) return { start: bs, end: be }
+        return Object.assign({}, d.autoActiveHours)
       })()
     }
     // provider / budget：Object.assign 深合并（仿 store），只覆盖传入的键
     next.provider = Object.assign({}, d.provider, c.provider || {}, p.provider && typeof p.provider === 'object' ? p.provider : {})
+    // timeoutMs 是唯一会被真正「等待」的数值：非有限值/越界一律收敛，避免 1e9 把请求挂 11 天。
+    // 走 provider 深合并故必须在此单独校验（Object.assign 不会过滤任何值）。
+    {
+      const rawT = next.provider.timeoutMs != null ? next.provider.timeoutMs : d.provider.timeoutMs
+      const n = Number(rawT)
+      const lim = CFG_LIMITS.timeoutMs
+      if (!Number.isFinite(n) || n < 1) {
+        // 非数字/负数/0：回落到默认（不是收敛——这种值本身没有意义）
+        next.provider.timeoutMs = d.provider.timeoutMs
+        clamps.push({ key: 'timeoutMs', from: String(rawT), to: d.provider.timeoutMs })
+      } else {
+        const v = Math.floor(n)
+        const hi = Math.min(v, lim.max)
+        if (hi !== v) clamps.push({ key: 'timeoutMs', from: v, to: hi })
+        next.provider.timeoutMs = hi
+      }
+    }
     // apiKey：仅当 patch 显式给了非空、非脱敏占位字符串才覆盖
     const inKey = p.provider && p.provider.apiKey
     if (typeof inKey === 'string' && inKey && inKey !== '******') next.provider.apiKey = inKey
@@ -402,6 +484,9 @@ class AIReview {
     const inHeaders = p.provider && p.provider.headers
     if (inHeaders && typeof inHeaders === 'object') next.provider.headers = inHeaders
     next.budget = Object.assign({}, d.budget, c.budget || {}, p.budget && typeof p.budget === 'object' ? p.budget : {})
+    if (typeof onClamp === 'function' && clamps.length) {
+      try { onClamp(clamps) } catch (e) {}
+    }
     return next
   }
 
@@ -531,6 +616,14 @@ class AIReview {
   /**
    * 客观证据门槛：全部 ok 才允许自动；缺项返回缺项 key 列表。
    * signals: [{key, source, ok, detail}] —— source 标记来源，便于复盘。
+   *
+   * ⚠ 设计意图 vs 当前实际（v1.13.9 核实）：本函数是模块头红线第 12 行
+   * 「置信度 = 客观证据项 AND，缺项降级人工，不用模型自报分数」的**唯一预期落地**，
+   * 但**生产链路从未调用它** —— 自动是否放行实际只由 gate() 的
+   * `mode × RISK × 三把锁(enabled/mode=auto/allowIrreversible)` 决定，
+   * **完全不看 evidence 是否齐全**。即「证据全绿才自动」这条红线当前没有守住。
+   * 保留而不接入/删除的原因：接入会改变判定语义（本轮明确禁止），删除会丢掉
+   * 设计意图的活文档与 5 条既有断言。下一步应当由「自动挡是否接证据门槛」单独评审。
    */
   evaluateGate(signals) {
     const arr = Array.isArray(signals) ? signals : []
@@ -538,7 +631,14 @@ class AIReview {
     return { pass: missing.length === 0, missing }
   }
 
-  /** 校验 AI 引用是否可逐字定位于输入片段（防"我引用了"式幻觉） */
+  /**
+   * 校验 AI 引用是否可逐字定位于输入片段（防"我引用了"式幻觉）。
+   *
+   * ⚠ 同 evaluateGate：**生产链路从未调用**（仅测试引用）。设计意图是给
+   * evidence.quote 做幻觉守卫，但 suggest() 把 evidence 原样存下就完事，
+   * 没有任何一处校验"AI 声称引用的片段是否真的在输入里"。
+   * 当前实际防线只有 prompt 约束 + 人工确认，没有代码级守卫。
+   */
   quoteLocatable(evidence, inputText) {
     const q = evidence && evidence.quote
     if (!q || typeof q !== 'string') return false
@@ -1308,4 +1408,4 @@ class AIReview {
   }
 }
 
-module.exports = { AIReview, RISK, AUTO_READONLY_KINDS, REVIEW_PROMPTS, worthNotifying }
+module.exports = { AIReview, RISK, AUTO_READONLY_KINDS, REVIEW_PROMPTS, CFG_LIMITS, worthNotifying }

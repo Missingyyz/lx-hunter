@@ -578,24 +578,6 @@ class Hunter {
   }
 
   /**
-   * 突破项①阶段2：新源入库后的冷启动语义预判（只产独立字段，供 UI 徽章/深检 tie-break）。
-   * 返回 { [id]: {class, reason} }；失败 → {}（不预判）。不写 store、不进判定链。
-   * @param {Array} entries [{id,name,apiHosts?,platformCount?}]
-   */
-  async _coldStartClassifySources(entries) {
-    try {
-      const a = this._ai()
-      if (!a || !a.cfg.enabled) return {}
-      const list = (Array.isArray(entries) ? entries : []).filter(e => e && e.id != null).map(e => ({
-        id: e.id, name: e.lxName || e.scriptName || e.name,
-        apiHosts: e.apiHosts, platformCount: e.platformCount || (Array.isArray(e.supportedSources) ? e.supportedSources.length : 0)
-      }))
-      if (!list.length) return {}
-      return await a.classifyColdStart(list, 'source')
-    } catch (e) { return {} }
-  }
-
-  /**
    * R2 裁决解释旁路：把 sameNameVerdict 的规则裁决解释成人话，落一条只读建议。
    * 只产出建议（aiSuggestions），不改裁决结果、不碰 queue。
    */
@@ -1950,6 +1932,12 @@ class Hunter {
   // 条目仍留在音源库中可见。用户在隔离页对「无恶意硬特征」的脚本点「信任」后，按 contentHash
   // 记入 cfg.trustedObfHashes，检测/灌入两道闸共用本函数放行；内容一变哈希就变，重新被隔离
   // ——信任不跟随未知的新版本。返回 {rejected, trusted}；codeOf 返回空串/null 表示拿不到脚本正文（放行）。
+  //
+  // 【为什么拿不到正文就放行】本函数是「按内容判安全」的闸门，没有内容就没有判据可依，
+  // 此时放行不是「跳过检查」而是「此题无解」：条目若真要被使用，必须先有正文（下载/重爬），
+  // 而正文落库后一定会再走一次本函数重评。因此隔离态在无正文时无法成立——对历史残留的
+  // quarantined 状态，这里会主动清回 ok 并要求重新检测（见下方 !code 分支），避免出现
+  // 「既没法复评、也没法信任」的死条目。
   applyObfGate(list, codeOf, phase) {
     const cfg = this.store.config
     if (!cfg.excludeHighRiskObfuscated) return { rejected: 0, trusted: 0 }
@@ -2710,12 +2698,20 @@ class Hunter {
     }
     await Promise.all(Array.from({ length: Math.min(4, targets.length) }, () => dlWorker()))
 
-    // 混淆隔离闸门（v1.9.5 引入，v1.10.7 改为隔离+可信任）：灌入前按当前设置再过一遍高危混淆/反调试特征。    // 检测阶段（runCheck）已经过一轮，但有两条路径会绕开它：
+    // 混淆隔离闸门（v1.9.5 引入，v1.10.7 改为隔离+可信任）：灌入前按当前设置再过一遍高危混淆/反调试特征。
+    // 检测阶段（runCheck）已经过一轮，但有两条路径会绕开它：
     //  ① 库里的老条目 —— 当初检测时这个开关还没开（或从没重新检测过）；
     //  ② 用户手动勾选直接灌入 —— 压根没过检测。
     // 用户要求「勾选后每次灌入都自动隔离」，所以这里兜底，判级与检测阶段完全同一标准
     // （obfuscationRisk：密度超高阈值，或命中空转死循环/混淆自调度/jsjiami 标识）。
     // 「混淆隔离」页信任过的条目（trustedObfHashes 按 contentHash）在这里放行。
+    //
+    // 【已知边界·不检查的情形】上面 2674-2711 的下载步骤是 best-effort：crawlFetch 遇到
+    // 超时/断网/404 时只记一条 warn，不中断灌入。因此「这次下载失败 + 本地也没有存量正文」
+    // 的条目会带着空 code 走到这里，被 applyObfGate 的 !code 分支放行（见 :1969）。
+    // 这不算跳过检查：条目本身没有可灌的内容，applyObfGate 对这类条目还会顺手清掉历史残留的
+    // 隔离态（:1970-1976）；真正要灌必须等正文成功下载后重走本闸门。换句话说
+    // 「每次灌入都过闸门」在**有正文的条目**上恒成立；无正文条目不构成灌入动作。
     const obfGate = this.applyObfGate(targets, (e) => codeCache[e.id] || (typeof e.code === 'string' && e.code ? e.code : '') || '', '灌入前')
     obfRejected = obfGate.rejected
     if (!targets.length) {
@@ -2815,7 +2811,11 @@ class Hunter {
       const prof = mainList ? profileServerFleet(mainList.serverList, this.store.imported, this.store.db.veto) : null
       if (prof) this.store.db.serverFleetProfile = prof
     }
-    this.store.saveDb()
+    // 灌入收尾落盘：写失败必须留痕。原来丢弃返回值，界面照报「灌入完成 N 条」，
+    // 但重启后这些灌入记录（imported / 账本 hash）全没了，用户看到的是「明明灌过又变未灌入」。
+    if (this.store.saveDb() === false) {
+      this.log('灌入结果写盘失败（磁盘空间或目录权限不足）：本轮记录可能在重启后丢失，请检查数据目录', '灌入', 'error')
+    }
     const ok = results.filter(r => r.status === 'success' || r.status === 'replaced').length
     const replaced = results.filter(r => r.status === 'replaced').length
     const synced = results.filter(r => r.status === 'synced').length
@@ -3349,7 +3349,14 @@ class Hunter {
       const hit = pid === platformId ||
         (Array.isArray(rec.importedTo) && rec.importedTo.some(x => x && x.platformId === platformId && x.lxId != null))
       if (!hit) continue
-      out[eid] = { hash: rec.contentHash, lxId: rec.lxId, name: rec.name || '' }
+      // v1.13.9（A 案）：必须按**平台**取 lxId，不能直取顶层 rec.lxId。
+      // 上面 hit 已经允许「靠 importedTo 命中平台」，此时顶层 rec.lxId 属于另一个平台，
+      // 账本会因此带着别的平台的 id 去做强证据对账 ⇒ 多账号下强证据静默失效。
+      // 取不到本平台 id 就**不入账本**：宁可退回 size 弱判据（保守方向），
+      // 也不要用错平台的 id 去「证明」内容没变。
+      const lxId = this._recLxIdOn(rec, platformId, activeId)
+      if (lxId == null) continue
+      out[eid] = { hash: rec.contentHash, lxId, name: rec.name || '' }
     }
     return out
   }

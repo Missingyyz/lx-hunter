@@ -13,6 +13,10 @@ WORKDIR /app
 # 只拷贝运行所需：core 业务模块 + web 服务端 + renderer 静态资源 + package.json（读版本号）
 COPY src ./src
 COPY package.json ./package.json
+# 评测样本：/api/ai-review/eval-report 读 ../../tests/eval-cases。
+# 不带进来时评测恒「无样本」，等于在没有验尺的情况下上线 AI 判定（v1.13.9 修）。
+# 只拷这一个数据目录，测试脚本本身（tests/*.js）不进产物。
+COPY tests/eval-cases ./tests/eval-cases
 
 # 数据目录（挂载卷）：提前建好并交给非 root 的 node 用户
 RUN mkdir -p /data && chown -R node:node /data /app
