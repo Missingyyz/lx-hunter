@@ -61,8 +61,9 @@ console.log('=== A. 列表接口剥离脚本正文（载荷 14.3MB → 2.7MB） 
   // v1.13.0 起 /api/sources 先把 publicSourceList 的结果存进 list（要在返回前补 veto 标记），
   // 断言相应放宽成「先剥正文、再按 list 返回」，仍然守住「写了工具必须真的被调用」这个目的。
   ok('/api/sources 走 publicSourceList',
-    /publicSourceList\(store\.getSources\(\)\)/.test(webSrc) && /sources:\s*list\b/.test(webSrc))
-  ok('桌面版 sources:get 也剥正文', /publicSourceList\(store\.getSources\(\)\)/.test(mainSrc))
+    // v1.10.8：publicSourceList 需要第二个参数 cfg（算隔离区 qzLevel），断言放宽为「带 getSources() 调用」
+    /publicSourceList\(store\.getSources\(\)/.test(webSrc) && /sources:\s*list\b/.test(webSrc))
+  ok('桌面版 sources:get 也剥正文', /publicSourceList\(store\.getSources\(\)/.test(mainSrc))
 }
 
 console.log('=== B. 采集层候选预过滤（路径 + 体积） ===')

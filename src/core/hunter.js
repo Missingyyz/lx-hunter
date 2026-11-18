@@ -4,7 +4,7 @@ const { crawl, checkQuota, filterDeadRepos, DEFAULT_REPOS, setCrawlBlockPatterns
 const { crawlWebSite, isWebRepo, probeExternalSource, normalizeExternalUrl } = require('./websource')
 const { fetchCommunityRepos } = require('./community')
 const { collectFromHubs } = require('./hubfeed')
-const { checkBasic, deepCheck, extractMeta, sha256Str, usableCount, stoppable, isLocalNetworkIssue, patrolJudge, obfuscationRisk, obfuscationTip, obfDomains, applyProbeRecord, probeApiHosts, apiDownVerdict, passedPlatforms, regressionJudge, probeTopTier } = require('./checker')
+const { checkBasic, deepCheck, extractMeta, sha256Str, usableCount, stoppable, isLocalNetworkIssue, patrolJudge, obfuscationRisk, obfuscationTip, obfDomains, obfDomainVerdict, applyProbeRecord, probeApiHosts, apiDownVerdict, passedPlatforms, regressionJudge, probeTopTier, classifyQuarantineTrust } = require('./checker')
 const { crawlFetch, readText, sleep } = require('./net')
 const { getActiveService, getService, getBatchImportAccounts, getIsolations, NO_ACCOUNT_ERR, resolveEnableAfterImport } = require('./services')
 const { Store } = require('./store')
@@ -13,10 +13,10 @@ const { Store } = require('./store')
 const { versionKey: versionNum, cmpVersion, verLabel } = require('./version')
 const { normName, candidateRepo, serverRepo, baseNameKey, pickHighestVersion, weakNameKey } = require('./identity')
 // v1.13.0：服务端动作（禁用 / 单平台禁用 / 隔离 / 删除）→ 本地冻结标记，防止「删了又灌回来」
-const { computeVeto, isFrozen, vetoReason, splitFrozen, VETO_PRIORITY } = require('./serverVeto')
+const { computeVeto, isFrozen, vetoReason, splitFrozen, VETO_PRIORITY, profileServerFleet } = require('./serverVeto')
 // v1.13.0：定时爬取的下次允许时间（配额 → 代理/镜像 → 指数退避，纯函数）
 const { planNextCrawl, describeNextCrawl } = require('./crawlSchedule')
-const { compareVerdict, describeQuality, profile: qualityProfile } = require('./quality')
+const { compareVerdict, describeQuality, profile: qualityProfile, compareImportQuality } = require('./quality')
 
 // normName 已统一到 src/core/identity.js（hunter / sourceUpdate 必须完全同口径），
 // 这里通过顶部 require 引入；module.exports 继续导出同名符号，外部调用不受影响。
@@ -49,6 +49,70 @@ function buildRepoSeeds(cfg) {
     if (n && out.indexOf(n) === -1) out.push(n)
   }
   return out
+}
+
+/**
+ * P1-2 仓库采集排序（纯函数，只改采集先后，不改判重/验真/时间窗）。
+ *
+ * score = 历史 usable 产出 + 新鲜度（仓内最新源 addedAt 越近越高）
+ *         + hub 加权 − deadRepos.hits×权重。全部来自本地 db，0 新请求。
+ *
+ * 防饥饿（方案采纳前置条件，二者叠加）：
+ *   ①冷启动保底分 = 当前有历史仓的中位数 score（无历史仓视为该分，不按 0）；
+ *   ③每轮强制 N 名额（默认 2）轮转给「无历史产出」的新仓/未采过仓，排在有历史仓之前。
+ * 这样即使老仓 score 都 >0，新仓每轮也必拿到采集机会，不会被永久压在队尾。
+ *
+ * @param {string[]} repos 已定稿的 owner/repo 或站点 URL
+ * @param {object} ctx { sources, deadRepos, hubRepos, now, newQuota }
+ * @returns {{ordered:string[], scores:object}}
+ */
+function rankRepoSeeds(repos, ctx) {
+  const c = ctx || {}
+  const now = Number(c.now) || Date.now()
+  const sources = Array.isArray(c.sources) ? c.sources : []
+  const dead = c.deadRepos && typeof c.deadRepos === 'object' ? c.deadRepos : {}
+  const hub = c.hubRepos && typeof c.hubRepos === 'object' ? c.hubRepos : {}
+  const norm = r => { try { return normalizeRepo(r) || String(r || '') } catch (e) { return String(r || '') } }
+
+  // 按仓库聚合本地历史：产出数（usable）、最新入库时间（新鲜度代理）
+  const stat = {}
+  for (const e of sources) {
+    const repo = e && e.repo ? norm(e.repo) : ''
+    if (!repo) continue
+    const s = stat[repo] || (stat[repo] = { usable: 0, latest: 0, total: 0 })
+    s.total++
+    if (e.usable === true) s.usable++
+    const at = Number(e.addedAt) || 0
+    if (at > s.latest) s.latest = at
+  }
+  const scored = repos.filter(r => stat[norm(r)] && stat[norm(r)].total > 0)
+  const rawScore = r => {
+    const k = norm(r), s = stat[k]
+    if (!s) return null                              // 无历史仓：走保底/轮转，不按 0
+    const freshness = s.latest ? Math.max(0, 30 - (now - s.latest) / 86400000) : 0 // 30 天内线性衰减
+    const hubBonus = hub[k] ? 3 : 0
+    const deadPenalty = Number(dead[k] && dead[k].hits) || 0
+    return s.usable * 2 + freshness + hubBonus - deadPenalty * 2
+  }
+  // ①冷启动保底分 = 有历史仓 score 的中位数（无历史仓不入池）
+  const histScores = scored.map(rawScore).filter(v => v !== null).sort((a, b) => a - b)
+  const median = histScores.length
+    ? histScores[Math.floor((histScores.length - 1) / 2)]
+    : 0
+  const finalScore = r => { const v = rawScore(r); return v === null ? median : v }
+
+  const withSrc = repos.map((r, i) => ({ r, i, hasHist: !!(stat[norm(r)] && stat[norm(r)].total > 0) }))
+  // 有历史的按 score 降序；同分按原顺序（稳定）。无历史的单独成组。
+  const old = withSrc.filter(x => x.hasHist).sort((a, b) => finalScore(b.r) - finalScore(a.r) || a.i - b.i)
+  const fresh = withSrc.filter(x => !x.hasHist).sort((a, b) => a.i - b.i)
+  // ③每轮强制 N 名额轮转给新仓：把前 N 个无历史仓提到最前
+  const quota = Math.max(0, Number(c.newQuota) || 2)
+  const promote = fresh.slice(0, quota)
+  const restFresh = fresh.slice(quota)
+  const ordered = promote.concat(old, restFresh).map(x => x.r)
+  const scores = {}
+  for (const x of withSrc) scores[x.r] = finalScore(x.r)
+  return { ordered, scores }
 }
 
 // 「弱文件名」：纯数字 / 通用名 / 过短。这类名字在不同目录下几乎必然是不同内容
@@ -276,7 +340,7 @@ function planBaseDedupe(targets, cfg) {
     if (rows.some(r => !r.v)) continue                        // 有取不到版本的 → 不猜
     if (new Set(rows.map(r => r.v)).size < 2) continue         // 版本全同 → 不是「多版本」，不去重
     rows.sort((x, y) => -cmpVersion(x.v, y.v) ||
-      usableCount(y.e) - usableCount(x.e) ||
+      compareImportQuality(x.e, y.e) ||
       (y.e.lastModified || 0) - (x.e.lastModified || 0) ||
       String(x.e.id).localeCompare(String(y.e.id)))
     const win = rows[0].e
@@ -300,13 +364,20 @@ function planBaseDedupe(targets, cfg) {
  * @param {object} imported store.imported（srcId -> { lxId, ... }）
  * @param {object} sources store.db.sources（srcId -> entry）
  * @param {Set<string>|Array<string>} aliveLxIds 服务端现存的 lxId
- * @returns {Array<{srcId:string, e:object, rec:object}>}
+ * @param {string} [platformId] 当前巡检账号 id（多账号时按账号取 lxId，见 _recLxIdOn）
+ * @param {string} [activeId] 当前选中账号 id（老记录 platformId 为空时归它）
+ * @returns {Array<{srcId:string, e:object, rec:object, lxId:string}>}
  */
-function buildPatrolItems(imported, sources, aliveLxIds) {
+function buildPatrolItems(imported, sources, aliveLxIds, platformId, activeId) {
   const alive = aliveLxIds instanceof Set ? aliveLxIds : new Set(aliveLxIds || [])
   const items = []
   for (const [srcId, rec] of Object.entries(imported || {})) {
-    if (!rec || !rec.lxId || !alive.has(rec.lxId)) continue   // 服务端已不在（被手动删除）
+    if (!rec) continue
+    // T2-4：多账号不能只看顶层 rec.lxId —— 顶层指向的是「最近一次灌入的账号」，
+    // 巡检针对的是当前账号（aliveLxIds 来自它的列表），要按账号取对应那份 lxId。
+    // 不传 platformId/activeId 时退回顶层 lxId（老调用/单测口径不变）。
+    const lxId = platformId ? recLxIdOn(rec, platformId, activeId) : rec.lxId
+    if (lxId == null || !alive.has(String(lxId))) continue   // 服务端已不在（被手动删除）
     const e = (sources || {})[srcId]
     if (!e) continue
     if (e.private) continue                                   // v1.10.2：私人音源不参与巡检
@@ -316,9 +387,22 @@ function buildPatrolItems(imported, sources, aliveLxIds) {
     // 原来只判 `typeof e.code !== 'string'`，空串也能过（`typeof '' === 'string'`），
     // 结果那条音源进了巡检却永远测不出东西，白占每轮预算。
     if (!e.url && !(typeof e.code === 'string' && e.code)) continue
-    items.push({ srcId, e, rec })
+    items.push({ srcId, e, rec, lxId: String(lxId) })
   }
   return items
+}
+
+/** 记录在当前账号上那份的服务端 id（与 Hunter._recLxIdOn 同口径；buildPatrolItems 是模块级纯函数故在此复用） */
+function recLxIdOn(rec, pid, activeId) {
+  if (!rec) return null
+  const to = Array.isArray(rec.importedTo) ? rec.importedTo.find(x => x && x.platformId === pid) : null
+  if (to) return to.lxId == null ? null : to.lxId
+  const top = rec.platformId == null ? (activeId || pid) : rec.platformId
+  if (top === pid) return rec.lxId == null ? null : rec.lxId
+  // 老记录没有账号字段、也没有 importedTo，且当前巡检账号与 activeId 不一致时：
+  // 它本就是「按服务端 lxId 记账」的单账号旧数据，沿用顶层 lxId（向后兼容）。
+  if (rec.platformId == null && !Array.isArray(rec.importedTo)) return rec.lxId == null ? null : rec.lxId
+  return null
 }
 
 class Hunter {
@@ -326,6 +410,11 @@ class Hunter {
     this.store = store
     this.emit = emit || function () {}
     this.job = { running: false, type: '', cancel: false, progress: {}, step: '' }
+    // AI 旁路在途去重集合（C 复核 §2 缺陷④）：键 `kind:id`（kind=cold|tips），
+    // 只表示"这条源当前正在判"，**不持久化、重启即空**；worker 结算（finally）时必删。
+    // 说明：字段（sourceAiClass/updateTipsAiClass）仍是"要不要判"的唯一依据，
+    // 本集合只挡"在途窗口内重复入队"，不改变幂等语义。
+    this._bypassInFlight = new Set()
   }
 
   // ---------------- AI 复检旁路钩子（v1.14.0，纯旁路） ----------------
@@ -342,6 +431,168 @@ class Hunter {
     } catch (_) {
       return null
     }
+  }
+
+  /**
+   * 后台调度钩子（可注入，供测试同步执行）：默认微任务调度，测试注入 `fn => fn()` 并可 await。
+   * 用于把 AI 旁路分类推到主流程之外，避免主链路等待。
+   */
+  _aiBackground(fn) {
+    if (typeof this._aiBackgroundImpl === 'function') return this._aiBackgroundImpl(fn)
+    return Promise.resolve().then(fn)
+  }
+
+  /**
+   * 把本批的两处 AI 旁路分类（项①阶段2 冷启动 + 项② R4 更新语义）入后台执行，runImport 不再等。
+   *
+   * C 终审 §4 加固五件套：
+   *  1) 按 id 重取引用再写字段：worker 完成时 `db.sources[id]` 重取，源已删除则不写回（不复活条目）；
+   *  2) worker 自行 await saveDb()：主流程早已 saveDb 完，晚到字段需自己落盘（tmp+rename 原子，并发安全）；
+   *  3) this.log 记录一条结果日志（不碰 UI/缓存戳）；
+   *  4) 队列不持久化：仅内存，进程重启即丢——靠"字段没写 → 下次 !e.sourceAiClass/===undefined 命中自动重算"天然幂等；
+   *  5) 通过 _aiBackground 可注入同步执行，测试可 await，避免 sleep 赌运气。
+   *
+   * **本方法同步返回、不 await 后台**（否则就不算转后台）。后台 job 由 _aiBackground 调度。
+   * 旁路铁律不变：只写独立字段（sourceAiClass/updateTipsAiClass），不进判定链/act/三锁/gold/默认安全态。
+   * @param {Array} targets 本批 entry 引用（仅用于取 id 与输入快照，写回时按 id 重取）
+   * @returns {Promise} 仅供测试 await 的 job 句柄（生产调用方勿 await）
+   */
+  _queueBypassClassify(targets) {
+    const list = Array.isArray(targets) ? targets : []
+    const a = this._ai()
+    if (!a || !a.cfg.enabled) return Promise.resolve()   // 总开关关 → 零调用、零入队
+    // 入队前过滤在途项：同一条源正在判（字段还没写、worker 没结算）→ 本次不再排队，避免重复调 AI 花钱。
+    // 键 `kind:id` 让项①(cold) 与项②(tips) 各自独立：同一 id 两种 kind 互不干扰，可各自排队。
+    const inFlight = this._bypassInFlight || (this._bypassInFlight = new Set())
+    // 入队时快照输入（id + 名字 + apiHosts + tips），不持有后续会变的引用内容
+    const coldItems = list.filter(e => e && e.id != null && !e.sourceAiClass && !inFlight.has('cold:' + e.id)).map(e => ({
+      id: String(e.id), name: e.lxName || e.scriptName || e.name, apiHosts: e.apiHosts,
+      platformCount: Array.isArray(e.supportedSources) ? e.supportedSources.length : 0
+    }))
+    const tipItems = list.filter(e => e && e.id != null && Array.isArray(e.updateTips) && e.updateTips.length &&
+      e.updateTipsAiClass === undefined && !inFlight.has('tips:' + e.id)).map(e => ({
+      id: String(e.id), name: e.lxName || e.scriptName || e.name,
+      tips: e.updateTips.map(t => String((t && t.msg) || '')).filter(Boolean)
+    }))
+    if (!coldItems.length && !tipItems.length) return Promise.resolve()
+    // 标记在途（必须在调度 worker 之前同步加入）
+    const inFlightKeys = coldItems.map(it => 'cold:' + it.id).concat(tipItems.map(it => 'tips:' + it.id))
+    for (const k of inFlightKeys) inFlight.add(k)
+
+    const worker = async () => {
+      try {
+        let coldDone = 0, tipDone = 0
+        // stats 由 classify* 的返回值带出（withStats），不读实例属性 → 并发 worker 不会互相覆盖
+        const acc = { retries: 0, retriedOk: 0, dropped: 0, droppedIds: 0, throttled: 0 }
+        const takeStats = s => {
+          if (!s) return
+          acc.retries += s.retries || 0
+          acc.retriedOk += s.retriedOk || 0
+          acc.dropped += s.dropped || 0
+          acc.droppedIds += s.droppedIds || 0
+          acc.throttled += s.throttled || 0
+        }
+        if (coldItems.length) {
+          try {
+            const res = await a.classifyColdStart(coldItems, 'source', { withStats: true })
+            takeStats(res && res.stats)
+            const cls = (res && res.map) || {}
+            for (const it of coldItems) {
+              const c = cls && cls[it.id]
+              if (!c) continue
+              const e = this.store.db.sources[it.id]      // 按 id 重取（不持旧引用）
+              if (!e) continue                             // 源已删除 → 不写回、不复活
+              e.sourceAiClass = c.class; e.sourceAiReason = c.reason
+              coldDone++
+            }
+          } catch (_) { /* 单批失败：该批不写，其余照常 */ }
+        }
+        if (tipItems.length) {
+          try {
+            const res = await a.classifyUpdateTips(tipItems, { withStats: true })
+            takeStats(res && res.stats)
+            const cls = (res && res.map) || {}
+            for (const it of tipItems) {
+              const c = cls && cls[it.id]
+              if (!c) continue
+              const e = this.store.db.sources[it.id]
+              if (!e) continue
+              if (c.substantive !== 'uncertain') { e.updateTipsAiClass = c.substantive; e.updateTipsAiReason = c.reason }
+              else { e.updateTipsAiClass = 'uncertain'; e.updateTipsAiReason = c.reason }
+              tipDone++
+            }
+          } catch (_) {}
+        }
+        if (coldDone || tipDone) {
+          try { await this.store.saveDb() } catch (_) {}   // worker 自行落盘
+        }
+        // 重试/放弃情况一并进日志（真实实测：4 批连跑 45-50s 时必断一批，重试后仍有放弃要可见）
+        const hasRetry = acc.dropped || acc.retries
+        const retryNote = hasRetry
+          ? `（重试 ${acc.retries} 次、救回 ${acc.retriedOk} 批` +
+            (acc.dropped ? `、放弃 ${acc.dropped} 批 ${acc.droppedIds} 条` : '') +
+            (acc.throttled ? `、限流 ${acc.throttled} 批` : '') + '）'
+          : ''
+        if (coldDone || tipDone || hasRetry) {
+          this.log(`AI 旁路预判完成：项① 冷启动 ${coldDone} 条 / 项② 更新语义 ${tipDone} 条${retryNote}（已落盘，下批排序生效）`, 'AI旁路', 'info')
+        }
+      } finally {
+        // 无论成功/失败/异常，都在结算时移除在途标记——否则失败的 id 会永久卡住、再也不重判
+        for (const k of inFlightKeys) inFlight.delete(k)
+      }
+    }
+    // 关键：用 _aiBackground 调度，**不 await**；捕获异常不外泄到主流程。
+    let handle
+    try {
+      handle = Promise.resolve(this._aiBackground(worker)).catch(() => {})
+    } catch (_) {
+      // 调度器本身同步抛错（worker 从未执行 → 其 finally 不会跑）：这里兜住清理，避免永久卡住
+      for (const k of inFlightKeys) inFlight.delete(k)
+      handle = Promise.resolve()
+    }
+    return handle
+  }
+
+  /**
+   * 突破项①阶段1：新仓验真前的冷启动语义预判（只排序，不删不拉黑）。
+   * 返回「原集合的重排」；AI 未启用/失败/解析失败 → 原序（旁路降级）。
+   * @param {string[]} repos 原始仓库名数组
+   * @param {object} meta repo -> {id,name,description,topics}
+   */
+  async _coldStartPrioritizeRepos(repos, meta) {
+    const arr = Array.isArray(repos) ? repos.slice() : []
+    if (arr.length < 2) return arr
+    try {
+      const a = this._ai()
+      if (!a || !a.cfg.enabled) return arr                 // 总开关关 → 零 AI、零副作用
+      const items = arr.map(r => (meta && meta[r]) || { id: r, name: r })
+      // Step1（C 终审 §2）：全兜底态（没有任何仓库带 description/topics，只有仓库名）→
+      // 预判无区分度、白花钱零收益，直接原序、不调用 AI。真实搜索链路凡入列必写 meta，此为防御保险。
+      const usable = items.some(it => it && (it.description || (Array.isArray(it.topics) && it.topics.length)))
+      if (!usable) return arr
+      const cls = await a.classifyColdStart(items, 'repo')
+      if (!cls || !Object.keys(cls).length) return arr      // 不预判 → 原序
+      const { classifyReposPure } = require('./coldStart')
+      return classifyReposPure(arr, cls)                    // 稳定重排，元素一个不少（low-value 延后不拉黑）
+    } catch (e) { return arr }
+  }
+
+  /**
+   * 突破项①阶段2：新源入库后的冷启动语义预判（只产独立字段，供 UI 徽章/深检 tie-break）。
+   * 返回 { [id]: {class, reason} }；失败 → {}（不预判）。不写 store、不进判定链。
+   * @param {Array} entries [{id,name,apiHosts?,platformCount?}]
+   */
+  async _coldStartClassifySources(entries) {
+    try {
+      const a = this._ai()
+      if (!a || !a.cfg.enabled) return {}
+      const list = (Array.isArray(entries) ? entries : []).filter(e => e && e.id != null).map(e => ({
+        id: e.id, name: e.lxName || e.scriptName || e.name,
+        apiHosts: e.apiHosts, platformCount: e.platformCount || (Array.isArray(e.supportedSources) ? e.supportedSources.length : 0)
+      }))
+      if (!list.length) return {}
+      return await a.classifyColdStart(list, 'source')
+    } catch (e) { return {} }
   }
 
   /**
@@ -564,7 +815,9 @@ class Hunter {
             // v1.9.14 内容验真：搜索命中只保证「名字/描述像音源仓库」，不保证真有脚本。
             // 逐个拉文件树抽检 .js（scoreEntry>=4），并放行压缩包分发与 Release 资产分发的仓库。
             verify: cfg.searchVerify !== false,
-            verifyConcurrency: 4
+            verifyConcurrency: 4,
+            // 突破项①阶段1：验真前批量语义预判，只把像真音源仓的排前面（低价值只延后不拉黑）
+            prioritize: (repos, meta) => this._coldStartPrioritizeRepos(repos, meta)
           })
           // 黑名单里的仓库（曾判定为非音源后被清理）直接丢弃，不再回填清单
           const dReposNew = d.repos.filter(n => !blockedRepos.has(String(normalizeRepo(n) || n).toLowerCase()))
@@ -668,6 +921,17 @@ class Hunter {
           this.log(`跳过 ${fr.skipped.length} 个 3 天内已确认 404 的仓库（省探测配额；仓库恢复或被改名后会自动回来）`, '爬取', 'warn')
           repos = fr.keep
         }
+      }
+      // P1-2：按本地历史产出/新鲜度/健康度排序，并强制防饥饿（新仓每轮保底名额）。
+      // onlyRepos / reposOverride 定向分支不排序；deadRepos TTL 过滤已在上方完成、此处不碰。
+      if (!(Array.isArray(cfg.reposOverride) && cfg.reposOverride.length)) {
+        const ranked = rankRepoSeeds(repos, {
+          sources: this.store.getSources(),
+          deadRepos: dead,
+          hubRepos: (Array.isArray(cfg.hubs) ? cfg.hubs : []).reduce((m, h) => { if (h && h.url) m[normalizeRepo(h.url) || h.url] = h; return m }, {}),
+          now: Date.now()
+        })
+        repos = ranked.ordered
       }
     }
     this.job = { running: true, type: 'crawl', cancel: false, progress: { reposDone: 0, repoTotal: repos.length, added: 0, linksFound: 0 }, step: '' }
@@ -1066,7 +1330,7 @@ class Hunter {
     const activeId = cfg.activePlatformId || null
     const all = this.store.getSources()
       .filter(e => !e.deprecated && e.usable && (e.url || typeof e.code === 'string'))
-      .filter(e => !this._importedEverywhere(e.id, tids, activeId))
+      .filter(e => !this._importedEverywhere(e.id, tids, activeId, e.contentHash))
     // v1.13.0 服务端处置冻结：服务端禁用 / 单平台禁用 / 护栏隔离 / 删除过的音源，
     // 同一份内容不再自动灌回（内容更新后 computeVeto 会自然解冻）。
     const { keep: allLive, frozen } = splitFrozen(this.store.db.veto, all)
@@ -1106,10 +1370,14 @@ class Hunter {
    * 注意这只是**粗筛**，不是最终判定：服务端上那条是不是真的还在，由 runImport 内部
    * 的服务端列表 + 账本对账负责（用户手动删过服务端时，只有那边才能发现）。
    */
-  _importedEverywhere(eid, targetIds, activeId) {
+  _importedEverywhere(eid, targetIds, activeId, currentHash) {
     if (!targetIds || !targetIds.length) return false
     const rec = this.store.imported[eid]
     if (!rec) return false
+    // 音源换了新版（contentHash 变了）→ 账本里那份是旧内容，不算「灌过这一版」，
+    // 让它进候选重新灌（否则按名字/id 记账的源换版后永远进不了自动灌入队列）。
+    // 老账本没有 contentHash、或本地这次没算出 hash → 维持原逻辑，避免误判。
+    if (rec.contentHash && currentHash && rec.contentHash !== currentHash) return false
     const got = new Set()
     if (rec.platformId) got.add(rec.platformId)
     for (const x of (Array.isArray(rec.importedTo) ? rec.importedTo : [])) if (x && x.platformId) got.add(x.platformId)
@@ -1729,12 +1997,12 @@ class Hunter {
         // 局限如实：混淆脚本可条件触发恶意行为，沙箱一轮实测看不见——自动信任是初筛
         // 自动化而非安全结论，条目打 obfAutoTrust 标注可追溯，内容更新自动重新隔离。
         if (cfg.autoTrustCleanObf !== false && e.contentHash && !trustedHashes.includes(e.contentHash) && e.deep && e.deep.checkedAt) {
-          const hh = risk.hits || {}
-          // P-1432 OPT-1：jsjiami 与 hardHit 判据解绑（同 qzHardHits）——品牌标识
-          // 不是行为特征，jsjiami-only 且域名/沙箱证据干净的条目可自动信任。
-          const hardHit = (hh.spinLoops || 0) > 0 || (hh.selfSchedCalls || 0) > 0 ||
-            (hh.evalCalls || 0) > 0
-          if (!hardHit) {
+          // P-1432 OPT-1 / v1.10.8：判据收敛到 checker.classifyQuarantineTrust 单一来源，
+          // 不再在这里抄第三份「spin/selfSched/eval 任一命中」的字面量。
+          // 自动信任是**无人确认**的自动化路径，因此只认 allow 档（零可疑特征）——
+          // risky/block 一律留给用户在隔离页看过 AI 意见后自己决定。
+          const trustLevel = classifyQuarantineTrust(e, cfg).level
+          if (trustLevel === 'allow') {
             const urls = []
             for (const p of Object.values(e.deep.platforms || {})) {
               if (p && p.url) urls.push(String(p.url))
@@ -1790,12 +2058,32 @@ class Hunter {
     const name = e.lxName || e.scriptName || e.name || id
     if (trust) {
       if (!e.contentHash) throw new Error('该条目没有内容指纹（contentHash），无法按内容信任')
-      const hits = e.obfHits || {}
-      // P-1432 OPT-1 补漏（用户实测点信任被拒）：trustObfSource 是信任判据的第三处副本，
-      // 与 qzHardHits/P-1431 hardHit 同步解绑 jsjiami——品牌标识不是行为特征。
-      const hard = (hits.spinLoops || 0) > 0 || (hits.selfSchedCalls || 0) > 0 ||
-        (hits.evalCalls || 0) > 0
-      if (hard) throw new Error('命中行为硬特征（空转死循环/自调度定时器/eval 动态执行），不允许信任')
+      // P-1432 OPT-1 / v1.10.8：判据收敛到 checker.classifyQuarantineTrust 单一来源。
+      // 旧写法在这里抄了「spin/selfSched/eval 任一命中 → 抛错拒绝」，导致隔离页 4/6 条灰死。
+      //
+      // ⚠️ 这里**不再对 block 档抛错**：用户拍板「6 条全部可点、0 条灰死」，block 档也应保留
+      // 用户的最终决定权（终审 §1.1「block 仍可点，二次确认」）。若后端硬拒，前端过了两道确认
+      // 依然失败，等于变相灰死，与拍板冲突。真恶意的兜底不靠这里拦，而靠三件事：
+      //   ① contentHash 绑定——放行只对这一份内容有效，脚本一更新就重新隔离；
+      //   ② 沙箱执行 + CPU 护栏——eval 真去胡来时仍在沙箱里跑，烧 CPU 被自动隔离；
+      //   ③ 前端两道确认 + AI 必须先出意见（见 renderer/app.js qz-trust 点击流程）。
+      // 因此 block 档改为**放行但留高风险审计日志**，把处置权交给用户、把痕迹留给自己。
+      const cls = classifyQuarantineTrust(e, cfg)
+      if (cls.level === 'block') {
+        // 用户拍板：block 档也保留最终决定权（不硬拒）。但必须在日志里留下可追查的完整痕迹，
+        // 否则「真恶意也能点」就成了无人负责的缺口。日志字段：命中项逐条 + 内容指纹前缀。
+        const ev = cls.evidence || {}
+        const hit = []
+        if (ev.spin) hit.push(`空转死循环 ${ev.spin} 处`)
+        if (ev.evalN) hit.push(`eval ${ev.evalN} 处`)
+        if (ev.schedTimer) hit.push(`定时器调用 ${ev.schedTimer} 处`)
+        if (!ev.deepDone) hit.push('从未深度实测')
+        else if (!ev.usableN) hit.push(`实测 ${ev.testedN} 个平台全不可用`)
+        if (ev.suspect >= 4) hit.push(`可疑外联 ${ev.suspect} 个`)
+        this.log(`用户确认放行 block 级条目「${name}」（命中：${hit.join('、') || '真恶意形态'}；`
+          + `内容指纹 ${String(e.contentHash).slice(0, 12)}…）。已按内容指纹信任，脚本内容一更新会自动重新隔离；`
+          + '沙箱执行与 CPU 护栏照常生效。', '安全', 'warn')
+      }
       if (!hashes.includes(e.contentHash)) {
         hashes.push(e.contentHash)
         this.store.saveConfig({ trustedObfHashes: hashes })
@@ -2291,7 +2579,20 @@ class Hunter {
     this.batchId = Date.now().toString(36).slice(-6)
     this.jobGate('灌入', (ids && ids.length ? ids.length + ' 条' : '全部待灌'))
     const cfg = this.store.config
-    const targets = (ids || []).map(i => this.store.db.sources[i]).filter(Boolean)
+    let targets = (ids || []).map(i => this.store.db.sources[i]).filter(Boolean)
+    // 突破项①②：把本批两处 AI 旁路分类（项①阶段2 冷启动 + 项② R4 更新语义）**转后台**执行，
+    // runImport 不再等待（AI 开启时省 ~90s 持锁等待）。结果滞后一轮参与排序（AI 仅第 6-7 级 tie-break，
+    // 客观指标全并列才生效，影响面极窄）。加固五件套见 _queueBypassClassify 注释。
+    // 旁路铁律不变：只写独立字段，不进判定链/act/三锁/gold/默认安全态；失败静默、不中断灌入。
+    if (targets.length && (!opts || opts.noQualitySort !== true)) {
+      try { this._queueBypassClassify(targets) } catch (e) { /* 入队失败：不预判、原序，不中断灌入 */ }
+    }
+    // P1-1：灌入队列接质量排序键（只改执行先后，不改任何裁决/skip/删旧兜底）。
+    // 向后兼容：opts.noQualitySort=true 时保持原勾选顺序（测试/回退用）。
+    if (!opts || opts.noQualitySort !== true) {
+      targets = targets.slice().sort((a, b) => compareImportQuality(a, b) ||
+        String(a.id).localeCompare(String(b.id)))
+    }
     if (!targets.length) throw new Error('没有选中任何音源')
 
     const svcs = this._importTargets(opts)
@@ -2311,6 +2612,12 @@ class Hunter {
     this.emit('import-targets', svcs.map(s => ({ id: s.acct.id, name: s.acct.name || s.acct.url, type: s.type })))
     if (multi) this.log(`多平台灌入：目标 ${svcs.length} 个账号（${svcs.map(s => s.acct.name || s.acct.url).join('、')}）`, '灌入')
 
+    // Top3：从占用 job 锁到结果收尾整体包 try/finally —— 任何异常（网络/适配器/裁决抛错）
+    // 都必须解锁并发 done 事件，否则任务永久卡在 running（与其他入口 crawl/hub 同构）。
+    let importError = null
+    let obfRejected = 0
+    let finalSummary = null
+    try {
     // ---- 阶段 1：逐个账号连通性校验 + 读取服务端现有列表 ----
     this.step(multi ? '校验各平台账号并读取服务端音源…' : '连接服务平台…')
     const plans = []
@@ -2403,18 +2710,16 @@ class Hunter {
     }
     await Promise.all(Array.from({ length: Math.min(4, targets.length) }, () => dlWorker()))
 
-    // 混淆隔离闸门（v1.9.5 引入，v1.10.7 改为隔离+可信任）：灌入前按当前设置再过一遍高危混淆/反调试特征。
-    // 检测阶段（runCheck）已经过一轮，但有两条路径会绕开它：
+    // 混淆隔离闸门（v1.9.5 引入，v1.10.7 改为隔离+可信任）：灌入前按当前设置再过一遍高危混淆/反调试特征。    // 检测阶段（runCheck）已经过一轮，但有两条路径会绕开它：
     //  ① 库里的老条目 —— 当初检测时这个开关还没开（或从没重新检测过）；
     //  ② 用户手动勾选直接灌入 —— 压根没过检测。
     // 用户要求「勾选后每次灌入都自动隔离」，所以这里兜底，判级与检测阶段完全同一标准
     // （obfuscationRisk：密度超高阈值，或命中空转死循环/混淆自调度/jsjiami 标识）。
     // 「混淆隔离」页信任过的条目（trustedObfHashes 按 contentHash）在这里放行。
     const obfGate = this.applyObfGate(targets, (e) => codeCache[e.id] || (typeof e.code === 'string' && e.code ? e.code : '') || '', '灌入前')
-    const obfRejected = obfGate.rejected
+    obfRejected = obfGate.rejected
     if (!targets.length) {
-      this.job.running = false
-      this.emit('job', { running: false, type: 'import', done: true, summary: { ok: 0, replaced: 0, synced: 0, skipped: 0, total: 0, obfRejected } })
+      finalSummary = { ok: 0, replaced: 0, synced: 0, skipped: 0, total: 0, obfRejected }
       return { results: [], ok: 0, replaced: 0, synced: 0, skipped: 0, total: 0, obfRejected }
     }
 
@@ -2446,6 +2751,7 @@ class Hunter {
         cfg, serverByName: p.serverByName, serverByBase: p.serverByBase,
         serverIds: p.serverIds, serverList: p.serverList,
         codeCache, importedRecs: p.importedRecs, serverScore: p.serverScore, ledger: p.ledger,
+        noQualitySort: opts && opts.noQualitySort === true,
         // 该平台名字是不是 key：不是（MusicSync）则同名不需要改名，直接新增为独立条目
         uniqueName: p.svc.adapter.uniqueName !== false
       })
@@ -2502,6 +2808,13 @@ class Hunter {
         await sleep(150)   // 轻微节流，避免打爆服务端；批量灌入时几乎无感
       }
     }
+    // P1-3：服务端画像落盘（纯统计，只读展示；serverList=null 跳过保留旧值）。
+    // 严禁反哺采集/灌入排序或降权——本画像只被 UI 读取。
+    {
+      const mainList = plans.find(p => Array.isArray(p.serverList)) // 主账号列表
+      const prof = mainList ? profileServerFleet(mainList.serverList, this.store.imported, this.store.db.veto) : null
+      if (prof) this.store.db.serverFleetProfile = prof
+    }
     this.store.saveDb()
     const ok = results.filter(r => r.status === 'success' || r.status === 'replaced').length
     const replaced = results.filter(r => r.status === 'replaced').length
@@ -2523,9 +2836,21 @@ class Hunter {
       (synced ? `、同名已存在 ${synced}` : '') + (skipped ? `、跳过 ${skipped}` : '') +
       (replaced ? `（其中替换同名旧版 ${replaced} 个）` : '') +
       (obfRejected ? `、高危混淆剔除 ${obfRejected} 条` : ''), '灌入')
-    this.job.running = false
-    this.emit('job', { running: false, type: 'import', done: true, summary })
+    finalSummary = summary
     return { results, ok, replaced, synced, skipped, obfRejected }
+    } catch (e) {
+      importError = e || new Error('未知灌入错误')
+      this.log('灌入异常：' + String((importError && importError.message) || importError), '灌入', 'error')
+      throw importError
+    } finally {
+      // 统一收尾：正常路径用 finalSummary，异常路径给同构零值 summary（前端读字段不炸）。
+      this.job.running = false
+      this.emit('job', {
+        running: false, type: 'import', done: true,
+        summary: finalSummary || { ok: 0, replaced: 0, synced: 0, skipped: 0, total: 0, obfRejected, error: String((importError && importError.message) || importError) },
+        error: importError ? String((importError && importError.message) || importError) : undefined
+      })
+    }
   }
 
   /** 单条音源灌入单个平台账号（返回结果对象，含平台归属信息） */
@@ -2588,6 +2913,9 @@ class Hunter {
           if (r && r.success) r.replacedFallback = 'renamed'
         } else {
           replaceInfo.deleted = true
+          // 轻量 B：旧版已删、新版未装。记一笔持久化中间态，避免本轮异常退出后
+          // 下一轮把「自己删的」当「用户删的」冻成 removed（旧版再也回不来）。
+          this._setPendingReplace(e.id, srv.id, svc.acct.id)
           this.log(tag + `已删除服务端旧版「${srv.name || name}」（id=${srv.id}），轮询上传新版本…`, '灌入')
           // 轮询上传：等服务端重载完成（撞「已存在」就退避重试），不再固定硬等 2.5 秒
           r = await this._uploadAfterReplace(svc, code, name)
@@ -2599,6 +2927,8 @@ class Hunter {
           }
         }
         if (r && r.success) {
+          // 新版已装上 → 清掉替换中间态（无论兜底改名还是正常灌入）
+          this._clearPendingReplace(e.id, srv.id)
           // S3-B：按新 id 重建平台开关与启用态（lxserver 零改动，状态也由 lx-hunter 主导）
           const ad = svc.adapter
           const canMigrate = typeof ad.setPlatforms === 'function' || typeof ad.toggle === 'function'
@@ -2631,6 +2961,9 @@ class Hunter {
           }
           if (purged) { this.store.saveImported(); this.log(tag + `已清理 ${purged} 条指向被替换音源的本地灌入记录`, '灌入', 'info') }
         } else if (replaceInfo.deleted) {
+          // 灌入明确失败：无论回收站恢复成功与否，这次「已删未装」中间态都结束了 ——
+          // 恢复了 → 旧版还在服务端，无需豁免；没恢复 → 旧版确实没了，该冻就冻。
+          this._clearPendingReplace(e.id, srv.id)
           // 原子性：已删未装 → 自动从服务端回收站恢复旧脚本；并把 trash 定位信息写进结果
           replaceInfo.trash = {
             owner: oldState.owner, id: oldState.id, name: oldState.name,
@@ -2785,11 +3118,57 @@ class Hunter {
    * @param {Array} plans runImport 阶段已建好的 {svc,label,serverList} 列表
    * @param {string} activeId 当前选中账号（老记录归属）
    */
+  /**
+   * 替换灌入中间态（轻量 B 案）：删旧版到装回新版之间，记一笔 db.pendingReplace[eid]，
+   * 让这段「已删未装」不被冻结表误判成「用户删除」（serverVeto computeVeto 会豁免这些 lxId）。
+   * 按 eid 存、按 lxId 精确豁免；跨崩溃/重启存活，成功/明确失败/超时后清理。
+   */
+  _pendingReplaceKey(eid) { return String(eid) }
+  _setPendingReplace(eid, lxId, platformId) {
+    const db = this.store.db
+    if (!db.pendingReplace || typeof db.pendingReplace !== 'object' || Array.isArray(db.pendingReplace)) db.pendingReplace = {}
+    db.pendingReplace[this._pendingReplaceKey(eid)] = { lxId: String(lxId), platformId: platformId || null, at: Date.now() }
+    this.store.saveDb()
+  }
+  _clearPendingReplace(eid, lxId) {
+    const db = this.store.db
+    const pr = db.pendingReplace
+    if (!pr || typeof pr !== 'object') return
+    const k = this._pendingReplaceKey(eid)
+    const hit = pr[k]
+    if (!hit) return
+    // 指定 lxId 时只在匹配时清（避免把「本轮新发起的另一次替换」误清掉）
+    if (lxId != null && String(hit.lxId) !== String(lxId)) return
+    delete pr[k]
+    this.store.saveDb()
+  }
+  /** eid → 自己删掉、尚未装回的 lxId 集合（供冻结表豁免）；顺带清掉超时项 */
+  _pendingLxIdMap(now) {
+    const db = this.store.db
+    const pr = db.pendingReplace
+    if (!pr || typeof pr !== 'object') return new Map()
+    const MAX_AGE = 30 * 60 * 1000   // 30 分钟：远大于任何一次灌入，超时即视为异常残留
+    const t = now || Date.now()
+    const map = new Map()
+    let changed = false
+    for (const [eid, hit] of Object.entries(pr)) {
+      if (!hit || hit.lxId == null || !Number.isFinite(hit.at) || t - hit.at > MAX_AGE) {
+        delete pr[eid]; changed = true; continue
+      }
+      let s = map.get(eid)
+      if (!s) { s = new Set(); map.set(eid, s) }
+      s.add(String(hit.lxId))
+    }
+    if (changed) this.store.saveDb()
+    return map
+  }
+
   async _refreshServerVeto(plans, activeId) {
     const db = this.store.db
     const prev = db.veto && typeof db.veto === 'object' ? db.veto : {}
     const merged = {}
     let sawList = false
+    const pendingLxIds = this._pendingLxIdMap(Date.now())
 
     for (const p of plans) {
       if (!p || !p.svc || !Array.isArray(p.serverList)) continue
@@ -2804,6 +3183,7 @@ class Hunter {
         activePlatformId: activeId,
         prev,
         isolatedIds,
+        pendingLxIds,
         now: Date.now()
       })
       for (const [eid, v] of Object.entries(r.veto)) {
@@ -3131,25 +3511,29 @@ class Hunter {
 
     if (provenSame && lv && sv) {
       if (vc > 0) {
-        // 口径 2「质量不劣」：服务端有实测证据时按综合评分判；无证据时退回平台数保护
+        // 2026-11-18 用户拍板（覆盖 11-11「版本唯一理由」）：同仓库同名也**不许拿版本高当
+        // 删源理由**。删源不可逆，必须双方有实质质量证据、且本地确实更优才留新删旧；
+        // 证据不足 / 打平一律不删，改名并存（与跨仓 rename 保护口径统一），提示做全平台深检。
+        // 质量维度沿用 compareVerdict 的字典序：可用平台数 → p50 延迟 → 最高可播音质档。
         if (srvDeep) {
           const qd = compareVerdict(e, qTarget)
           if (qd.cmp < 0) {
             return { act: 'skip', why: `同仓库同名且本地版本更高，但质量更差（${qd.reason}）→ 不做质量降级替换` }
           }
-          // 质量平手/不可比时不能照抄 compareVerdict 的 reason —— 平手分支的原文是
-          // 「…→ 平手，不删任何一方」，而这里恰恰要删（同仓库同源、版本更高），
-          // 直接拼进去就成了「平手，不删任何一方 → 留新删旧」的自相矛盾（实测出现过）。
-          if (qd.cmp === 0) {
-            // 2026-11-11：这里的「证据不足」可能是任一侧（本地只跑初筛 / 服务端没快照），
-            // 原来固定写「服务端侧质量证据不足」会指错方向 —— qd.reason 已经写明是哪一侧。
-            const tail = qd.by === 'tie'
-              ? `质量相当（可用平台数同为 ${newN} 个，延迟与音质档无显著差异）`
-              : `质量证据不足、无法比较优劣（${qd.reason}）`
-            return { act: 'replace', why: `同仓库同名，本地版本更高（${localVer} > ${srvVer}），${tail} → 同源以版本为准，留新删旧（删旧装新）` }
+          if (qd.cmp > 0) {
+            return { act: 'replace', why: `同仓库同名，本地版本更高（${localVer} > ${srvVer}）且质量更优（${qd.reason}）→ 留新删旧（删旧装新）` }
           }
-          return { act: 'replace', why: `同仓库同名，本地版本更高（${localVer} > ${srvVer}）且质量更优（${qd.reason}）→ 留新删旧（删旧装新）` }
+          // cmp===0 分两种：
+          //  - tie（双方证据充分、质量实质相当）：沿用既有「同源以版本为准，留新删旧」；
+          //  - insufficient（证据不足、无法质量比较）：用户 2026-11-18 口径——含糊不删，
+          //    改名并存，保留质量好的服务端源（核心 F1 修复点）。
+          if (qd.by === 'insufficient') {
+            return { act: 'rename', why: `同仓库同名，本地版本虽更高（${localVer} > ${srvVer}），但质量证据不足、无法比较优劣（${qd.reason}）→ 不按版本删源，改名并存（请做全平台深度检测后再裁决）` }
+          }
+          const tail = `质量相当（可用平台数同为 ${newN} 个，延迟与音质档无显著差异）`
+          return { act: 'replace', why: `同仓库同名，本地版本更高（${localVer} > ${srvVer}），${tail} → 同源以版本为准，留新删旧（删旧装新）` }
         }
+        // 服务端侧没有质量快照可比（老账本/未深检）：沿用既有平台数保护口径，不扩大本次改动范围。
         if (srvN > 0 && newN >= 0 && newN < srvN) {
           return { act: 'skip', why: `同仓库同名但本地可用平台少于服务端声明（${newN} < ${srvN}；${srvQualitySrc}）→ 不做质量降级替换（口径 2 要求质量不劣）` }
         }
@@ -3722,6 +4106,17 @@ class Hunter {
         if (srv) it.similarNameHint = `与服务端「${srv.name}」疑似重复（名字仅差 emoji/符号，作者/内容可能不同），如确认是同一音源的变体请人工处理`
       }
     }
+    // P1-1：规划后的队列按质量排序（与 targets 排序同口径）；skip 项沉底。
+    // 只改执行先后：每条 item 上的裁决/skip/sameContent/replace/rename 标记是前面规划好的，
+    // 排序不改动它们；_runImportItem 逐条照旧执行。向后兼容：noQualitySort 时保持原顺序。
+    if (!ctx.noQualitySort) {
+      queue.sort((a, b) => {
+        const as = a && a.skip ? 1 : 0, bs = b && b.skip ? 1 : 0
+        if (as !== bs) return as - bs                // skip 项沉底
+        return compareImportQuality(a && a.e, b && b.e) ||
+          String((a && a.e && a.e.id) || '').localeCompare(String((b && b.e && b.e.id) || ''))
+      })
+    }
     return queue
   }
 
@@ -3896,7 +4291,8 @@ class Hunter {
     // 身份口径自检：admin 等身份写的平台停用，LX 端用公开列表查看时看不到（假性不同步）
     const idNote = identityMismatch(cfg, serverList)
     if (idNote) this.log(idNote, '巡检', 'warn')
-    const items = buildPatrolItems(this.store.imported, this.store.db.sources, aliveLxIds)
+    const pid = svc.acct && svc.acct.id
+    const items = buildPatrolItems(this.store.imported, this.store.db.sources, aliveLxIds, pid, cfg.activePlatformId)
     // 私人音源由 buildPatrolItems 整体排除；这里只做一次可见提示，避免用户以为「巡检漏了我的源」。
     const privateSkipped = Object.keys(this.store.imported || {})
       .filter(srcId => { const e = this.store.db.sources[srcId]; return e && e.private }).length
@@ -3928,7 +4324,7 @@ class Hunter {
         if (this.cancelRequested) return
         const i = idx++
         if (i >= items.length) return
-        const { srcId, e, rec } = items[i]
+        const { srcId, e, rec, lxId } = items[i]
         const name = rec.name || e.scriptName || e.name
         e.checking = true
         this.emit('source-updated', e)
@@ -4008,7 +4404,7 @@ class Hunter {
           rec.patrolFailStreak = 0
           if (rec.disabledByPatrol) {
             // 重新启用走「平台级」接口（不触发服务端全量重载）；收口到串行队列降低对服务端冲击
-            const t = await this._patrolEnqueueServerWrite('enable', () => this._safePlatforms(cfg, rec.lxId, [], '重新启用', ownerById.get(rec.lxId)))
+            const t = await this._patrolEnqueueServerWrite('enable', () => this._safePlatforms(cfg, lxId, [], '重新启用', ownerById.get(lxId)))
             if (t.success) { delete rec.disabledByPatrol; reEnabled++; this.log(`巡检恢复正常，已重新启用：${name}`, '巡检') }
           }
         } else if (verdict === 'dead') {
@@ -4024,7 +4420,7 @@ class Hunter {
             try {
               const r = await this._patrolEnqueueServerWrite('delete', async () => {
                 const s = this._active()
-                return await s.adapter.remove(s.acct, rec.lxId, { owner: ownerById.get(rec.lxId) })
+                return await s.adapter.remove(s.acct, lxId, { owner: ownerById.get(lxId) })
               })
               if (r && r.success) {
                 delete this.store.imported[srcId]
@@ -4040,12 +4436,12 @@ class Hunter {
             }
             // 删除成功 → 本地记录已删，无需再禁用；失败 → 退化为禁用，保证状态有反馈
             if (this.store.imported[srcId]) {
-              const t = await this._patrolEnqueueServerWrite('disable', () => this._safePlatforms(cfg, rec.lxId, ['wy', 'tx', 'kw', 'kg', 'mg'], '自动禁用', ownerById.get(rec.lxId)))
+              const t = await this._patrolEnqueueServerWrite('disable', () => this._safePlatforms(cfg, lxId, ['wy', 'tx', 'kw', 'kg', 'mg'], '自动禁用', ownerById.get(lxId)))
               if (t.success) { disabled++; rec.disabledByPatrol = true; this.log(`巡检失效，已自动禁用：${name} — ${note}`, '巡检', 'warn') }
               else if (t.message) this.log(`巡检失效，但自动禁用失败：${name} — ${t.message}`, '巡检', 'warn')
             }
           } else if (cfg.patrolAutoDisable !== false) {
-            const t = await this._patrolEnqueueServerWrite('disable', () => this._safePlatforms(cfg, rec.lxId, ['wy', 'tx', 'kw', 'kg', 'mg'], '自动禁用', ownerById.get(rec.lxId)))
+            const t = await this._patrolEnqueueServerWrite('disable', () => this._safePlatforms(cfg, lxId, ['wy', 'tx', 'kw', 'kg', 'mg'], '自动禁用', ownerById.get(lxId)))
             if (t.success) { disabled++; rec.disabledByPatrol = true; this.log(`巡检失效，已自动禁用：${name} — ${note}`, '巡检', 'warn') }
             else if (t.message) this.log(`巡检失效，但自动禁用失败：${name} — ${t.message}`, '巡检', 'warn')
           } else {
@@ -4058,7 +4454,7 @@ class Hunter {
           // 恢复启用。过去只有「确认可用」才恢复，历史误禁的源可能永远出不了黑名单。
           // 「疑似失效」（streak 在涨）仍保持禁用，等下一轮确认。
           if (!suspectTag && rec.disabledByPatrol) {
-            const t = await this._patrolEnqueueServerWrite('enable', () => this._safePlatforms(cfg, rec.lxId, [], '恢复启用', ownerById.get(rec.lxId)))
+            const t = await this._patrolEnqueueServerWrite('enable', () => this._safePlatforms(cfg, lxId, [], '恢复启用', ownerById.get(lxId)))
             if (t.success) { delete rec.disabledByPatrol; reEnabled++; this.log(`巡检无法确认失效，已恢复启用：${name}`, '巡检') }
           }
         }
@@ -4207,6 +4603,27 @@ class Hunter {
       if (s.name) serverByName[normName(s.name)] = s
     }
     const alreadyLx = new Set(Object.values(this.store.imported).map(r => r.lxId).filter(Boolean))
+    // F1（可观测，不联动）：同步时把服务端条目状态写进账本增量字段 serverStatus/serverEnabled。
+    // 只记录、不改 lastPatrol（那是本地实测口径）、不触发任何自动处置 —— 守「不误伤」红线。
+    // 老账本没有这两个字段时照常读；这里逐条补齐。按 lxId 精确匹配（含多账号 importedTo）。
+    const syncServerState = (s) => {
+      let touched = false
+      for (const [eid, rec] of Object.entries(this.store.imported)) {
+        if (!rec) continue
+        const hit = String(rec.lxId) === String(s.id) ||
+          (Array.isArray(rec.importedTo) && rec.importedTo.some(x => x && String(x.lxId) === String(s.id)))
+        if (!hit) continue
+        const status = s.status || ''
+        const enabled = s.enabled !== false
+        if (rec.serverStatus !== status || rec.serverEnabled !== enabled) {
+          rec.serverStatus = status
+          rec.serverEnabled = enabled
+          touched = true
+        }
+      }
+      return touched
+    }
+    let stateChanged = false
     // 身份口径自检（同上）：把「猎手显示停用、LX 端显示启用」的假性不同步在同步时就提示出来
     const idNote = identityMismatch(cfg, serverList)
     if (idNote) this.log(idNote, '同步', 'warn')
@@ -4215,7 +4632,11 @@ class Hunter {
     for (const s of serverList) {
       if (!s || !s.id) continue
       const nm = normName(s.name)
-      if (alreadyLx.has(s.id)) { matched++; continue }
+      if (alreadyLx.has(s.id)) {
+        // F1：状态只观测、不联动。发现服务端状态变了就落库，供界面/排查读取。
+        if (syncServerState(s)) stateChanged = true
+        matched++; continue
+      }
       // 优先匹配本地候选（非占位、未废弃、同名）
       const local = this.store.getSources().find(e => !e.fromServer && !e.deprecated && normName(e.lxName || e.scriptName || e.name) === nm)
       if (local) {
@@ -4270,11 +4691,15 @@ class Hunter {
         pruned++
       }
     }
+    // P1-3：服务端画像落盘（同源同步也刷新一次；只读展示，不驱动行为）。
+    const srvProf = profileServerFleet(serverList, this.store.imported, this.store.db.veto)
+    if (srvProf) this.store.db.serverFleetProfile = srvProf
     this.store.saveDb()
     this.store.saveImported()
     this.log(`同步服务端音源完成：服务端共 ${serverList.length} 个 → 本地匹配 ${matched} 个、新增占位 ${added} 个、清理失效 ${pruned} 个（全部算作「已灌入」）`, '同步', 'info')
+    if (stateChanged) this.log('已把服务端状态（serverStatus/serverEnabled）同步到账本（仅记录，不改变巡检/处置口径）', '同步', 'info')
     return { total: serverList.length, matched, added, pruned, imported: Object.keys(this.store.imported).length }
   }
 }
 
-module.exports = { Hunter, normName, identityMismatch, formatIntervalHours, patrolSchedule, renameSelfCheck, versionNum, patrolAutoDeleteWanted, buildPatrolItems, buildRepoSeeds, replaceRetryDelay, REPLACE_UPLOAD_POLL_MS }
+module.exports = { Hunter, normName, identityMismatch, formatIntervalHours, patrolSchedule, renameSelfCheck, versionNum, patrolAutoDeleteWanted, buildPatrolItems, buildRepoSeeds, rankRepoSeeds, replaceRetryDelay, REPLACE_UPLOAD_POLL_MS }

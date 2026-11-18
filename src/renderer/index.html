@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>音源猎手 PC 版</title>
-<link rel="stylesheet" href="styles.css?v=20">
+<link rel="stylesheet" href="styles.css?v=21">
 <script src="auth-bg.js?v=4"></script>
 </head>
 <body>
@@ -15,7 +15,7 @@
       <div class="brand-logo">猎</div>
         <div class="brand-text">
           <div class="brand-title">音源猎手</div>
-          <div class="brand-sub">PC 版 v1.9.20</div>
+          <div class="brand-sub">PC 版 v1.13.8-beta.3</div>
         </div>
         <span class="job-chip" id="jobChip" hidden title="当前有任务在运行；此时再点采集/检测/灌入会被拒绝并记入日志"></span>
     </div>
@@ -77,6 +77,7 @@
             <button class="seg-btn" data-f="selected" id="segSelected">已选</button>
           </div>
           <label class="chk inline"><input type="checkbox" id="hideDeprecated" checked><span>隐藏已废弃重复项</span></label>
+          <label class="chk inline" title="只显示 AI 觉得需要你留意或决策的音源（一切正常的普通结论不会出现在这里，它们只写日志）"><input type="checkbox" id="onlyAiNotice"><span>只看有 AI 提醒的</span></label>
           <select class="input" id="expFilter" style="max-width:170px" title="选择导出的音源范围：勾选表格里的条目后会自动切到「选中项」，也可手动切换（切换上方筛选页签时会跟随）">
             <option value="selected">导出：选中项</option>
             <option value="all">导出：全部</option>
@@ -94,7 +95,7 @@
           <button class="btn ghost" id="btnHashDedupe" title="只下载并计算内容指纹（不进沙箱），先按内容去重，检测时直接跳过重复项">快速去重（内容指纹）</button>
           <button class="btn ghost" id="btnUndedupe" title="有勾选 → 只撤销勾选的废弃条目；没勾选 → 恢复全部废弃条目为候选（保留检测结果，可重新去重）">撤销去重</button>
           <button class="btn ghost" id="btnFullPlat" title="深度检测（打分）：对已可用的音源跑五平台真实取链，补齐快速模式下没测的平台，并产出「可用平台数 + p50 延迟」作为综合排序依据（不测音质）">深度检测（打分）</button>
-          <button class="btn ghost" id="btnAiCheck" title="✦AI 复检选中：有勾选时只复检勾选的音源，没勾选时复检当前筛选结果；AI 建议只标在音源旁，不改能不能用的判定">✦AI 复检选中</button>
+          <button class="btn ghost" id="btnAiCheck" title="✦让 AI 看选中的：有勾选时只复检勾选的音源，没勾选时复检当前筛选结果；AI 的看法只标在音源旁边，不改能不能用的判定">✦让 AI 看选中的</button>
           <button class="btn danger-ghost" id="btnDeleteSel" title="把勾选的音源从本地音源库删除（不影响服务端已灌入的脚本）；删掉的条目会记入「不再自动采集」名单，可在设置页清除记录后重新爬取">删除选中</button>
           <button class="btn ghost" id="btnClearSel">清空选择</button>
         </div>
@@ -263,7 +264,7 @@
       <header class="view-head">
         <div>
           <h1>混淆隔离区</h1>
-          <p class="hint">重度混淆/反调试脚本不再直接判死，而是隔离在这里。确认可信的脚本点「信任放行」即可正常检测和灌入（按内容指纹豁免，<strong>脚本内容一有更新就自动重新隔离</strong>）。命中反调试硬特征（空转死循环 / 混淆自调度定时器 / jsjiami / eval）的脚本不可信任。</p>
+          <p class="hint">重度混淆/反调试脚本不再直接判死，而是隔离在这里。确认可信的脚本点「信任放行」即可正常检测和灌入（按内容指纹豁免，<strong>脚本内容一有更新就自动重新隔离</strong>）。每条都会给出风险清单：<strong>放心用</strong>（无任何可疑特征）→ 直接放行；<strong>能用但有风险</strong>（如定时器轮询、动态执行代码、还没测过）→ 先看 AI 意见再决定；<strong>不建议放行</strong>（空转死循环 + 从没测出可用链接 + 可疑外联）→ 建议先跑「检测」或直接删掉。<strong>三档都可点</strong>，风险由你判断，放行后沙箱与 CPU 护栏照常生效。</p>
         </div>
         <div class="row" style="gap:8px">
           <span class="badge warn" id="qzCount">0</span>
@@ -281,36 +282,47 @@
       <header class="view-head">
         <div>
           <h1>AI 复检</h1>
-          <p class="sub">旁路语义分析层，只补规则制判断不了的灰区，<strong>不参与"能不能用"判定、不改同名裁决、不改灌入</strong>。默认关闭，零副作用。可对接任意 OpenAI 兼容中转站。</p>
+          <p class="sub">AI 只是另外出一份参考意见，补规则判断不了的模糊情况。<strong>它不改"能不能用"的结论、不改名字合并、也不改灌入</strong>。默认关着，开着也不动手。可以接任意 OpenAI 兼容中转站。</p>
         </div>
         <div class="head-actions">
           <span class="badge gray" id="aiStatus">未启用</span>
         </div>
       </header>
 
+      <!-- v1.10.9：统计卡替代已砍掉的建议列表页。用户准则——AI 建议只呈现重要的、需要决策的异常，
+           "一切正常"类普遍结论只写日志。所以这里第一行永远是「需要你留意 N 条」。 -->
+      <div class="card ai-card" id="aiSummaryCard">
+        <h3 class="card-title">需要你留意的事</h3>
+        <div id="aiSummaryStats" class="hint ai-result">读取中…</div>
+        <details style="margin-top:6px">
+          <summary class="muted" style="cursor:pointer">AI 另外记录了什么（只写日志，不用管）</summary>
+          <div id="aiSummaryQuiet" class="hint ai-result" style="margin-top:6px"></div>
+        </details>
+      </div>
+
       <div class="card ai-card">
         <h3 class="card-title">运行模式</h3>
         <div class="field-row ai-mode-fields">
           <label class="chk" title="总开关：关闭时 AI 复检完全不介入，零副作用"><input type="checkbox" id="aiEnabled"><span>启用 AI 复检（总开关）</span></label>
-          <label class="field" style="min-width:260px"><span>档位</span>
+          <label class="field" style="min-width:260px"><span>干活尺度</span>
             <select class="input" id="aiMode">
-              <option value="off">off — 全部人工</option>
-              <option value="assist">assist — 只读类自动</option>
-              <option value="auto">auto — 中风险也自动（须证据全绿）</option>
+              <option value="off">全都不自动（只给意见）</option>
+              <option value="assist">只看不改的自动</option>
+              <option value="auto">连中风险的也自动（依据必须都对得上）</option>
             </select>
           </label>
-          <label class="chk" title="高风险操作（混淆信任放行 / 拉黑删源），即使 auto 档也需显式开启"><input type="checkbox" id="aiAllowIrrev"><span>允许高风险自动（第三把锁）</span></label>
+          <label class="chk" title="高风险操作（混淆信任放行 / 建议删除），即使 auto 档也需显式开启"><input type="checkbox" id="aiAllowIrrev"><span>允许 AI 自动执行高风险操作（删源/信任，默认关闭）</span></label>
         </div>
-        <p class="hint">三把锁逐级递进：总开关 → auto 档 → 高风险第三锁。即使全开，AI 也不得判定音源"能不能用"。</p>
-        <p class="hint">档位说明：<code>off</code> 全部人工复核；<code>assist</code> 仅只读类结论可自动；<code>auto</code> 中风险也可自动，但必须证据全绿。</p>
+        <p class="hint">三道关一层层放开：总开关 → 自动档 → 高风险那一道。就算全开，AI 也不能决定音源"能不能用"。</p>
+        <p class="hint">三种尺度：<code>全都不自动</code> 每条都由你看；<code>只看不改的自动</code> 只自动处理不改数据的判断；<code>连中风险的也自动</code> 中风险的也自动，但依据必须都对得上。</p>
       </div>
 
       <div class="card ai-card">
         <h3 class="card-title">自动挡设置</h3>
-        <p class="hint">自动挡只在后台悄悄做「只读复检」：AI 看一遍音源和失败记录，把建议标在条目旁，不改任何判定、不自动放行。下面的开关都关着时，AI 完全不主动干活。</p>
+        <p class="hint">自动档只在后台悄悄看一眼：AI 过一遍音源和失败记录，把看法标在条目旁边，不改任何判定、也不会自己放行。下面开关全关着时，AI 一点都不动手。</p>
         <div class="grid-form">
-          <label class="chk" title="总开关：打开后 AI 才会按下面的周期自动复检；只给建议，不动你的音源"><input type="checkbox" id="aiAutoEnabled"><span>开启自动只读复检（总开关）</span></label>
-          <label class="field"><span>自动周期（小时）</span><input class="input" type="number" id="aiAutoInterval" value="24" min="1"><span class="hint">自动挡开着时，AI 每隔多久悄悄看一次（默认 24 小时，即一天一次）</span></label>
+          <label class="chk" title="总开关：打开后 AI 才会按下面的周期自动复检；只给建议，不动你的音源"><input type="checkbox" id="aiAutoEnabled"><span>开启自动看一眼（总开关）</span></label>
+          <label class="field"><span>每隔几小时看一次</span><input class="input" type="number" id="aiAutoInterval" value="24" min="1"><span class="hint">自动挡开着时，AI 每隔多久悄悄看一次（默认 24 小时，即一天一次）</span></label>
           <label class="field"><span>复检范围</span>
             <select class="input" id="aiAutoScope">
               <option value="failed">仅失败源</option>
@@ -320,16 +332,17 @@
             </select>
             <span class="hint">每一轮自动复检查哪些音源：默认只看失败的，也可以只看新来的、隔离区的或全部</span>
           </label>
-          <label class="field"><span>每轮上限（条）</span><input class="input" type="number" id="aiAutoMax" value="20" min="1"><span class="hint">一次最多复检多少条，别太多免得占用机器和影响接口额度（默认 20 条）</span></label>
-          <label class="field"><span>允许时段（起）</span><input class="input" type="number" id="aiAutoHourStart" value="0" min="0" max="24"><span class="hint">只在这个时间段里自动复检，0 表示从零点开始</span></label>
-          <label class="field"><span>允许时段（止）</span><input class="input" type="number" id="aiAutoHourEnd" value="24" min="0" max="24"><span class="hint">到这个点就不再自动复检，24 表示一直到午夜；起止相同表示全天都可以</span></label>
-          <label class="chk" title="影子评测：AI 的结论只记下来对比，绝不当真执行，适合先观察 AI 准不准"><input type="checkbox" id="aiShadowEval"><span>影子评测（AI 只记录不执行）</span></label>
+          <label class="field"><span>一次最多看几条</span><input class="input" type="number" id="aiAutoMax" value="20" min="1"><span class="hint">一次最多复检多少条，别太多免得占用机器和影响接口额度（默认 20 条）</span></label>
+          <label class="chk" title="默认关闭：打开后每轮会逐条调用 AI 做命名润色和建议铺轨，消耗接口额度；当前这些建议无人消费、价值很低，评测达标前不建议开"><input type="checkbox" id="aiAutoLlmReview"><span>每条都单独问一次 AI（花额度，默认关）</span></label>
+          <label class="field"><span>允许的时段（起）</span><input class="input" type="number" id="aiAutoHourStart" value="0" min="0" max="24"><span class="hint">只在这个时间段里自动复检，0 表示从零点开始</span></label>
+          <label class="field"><span>允许的时段（止）</span><input class="input" type="number" id="aiAutoHourEnd" value="24" min="0" max="24"><span class="hint">到这个点就不再自动复检，24 表示一直到午夜；起止相同表示全天都可以</span></label>
+          <label class="chk" title="影子评测：AI 的结论只记下来对比，绝不当真执行，适合先观察 AI 准不准"><input type="checkbox" id="aiShadowEval"><span>只记录不执行（AI 的判断只写进日志）</span></label>
         </div>
         <p class="hint">影子评测开着时，AI 的判断只写到日志里供你观察准不准，不会真的按它说的做——想先试试水就打开它。</p>
       </div>
 
       <div class="card ai-card">
-        <h3 class="card-title">AI 中转站（OpenAI 兼容）</h3>
+        <h3 class="card-title">AI 中转站（OpenAI 兼容的都行）</h3>
         <p class="hint">填任意实现了 <code>POST /chat/completions</code> 的服务：DeepSeek、智谱、Kimi、自建中转站均可。地址填到版本根（如 <code>https://api.deepseek.com/v1</code>）。</p>
         <div class="grid-form">
           <label class="field"><span>Base URL</span><input class="input" type="text" id="aiBaseUrl" placeholder="https://api.deepseek.com/v1"></label>
@@ -337,7 +350,7 @@
           <label class="field"><span>API Key</span><input class="input" type="password" id="aiApiKey" placeholder="留空表示不修改已存密钥"></label>
           <label class="field"><span>超时(ms)</span><input class="input" type="number" id="aiTimeout" value="20000" min="1000"></label>
         </div>
-        <label class="field" style="margin-top:12px"><span>额外请求头（JSON 对象，可选，中转站特殊鉴权用）</span>
+        <label class="field" style="margin-top:12px"><span>额外请求头（可选，中转站要特殊鉴权时才填）</span>
           <textarea class="input" id="aiHeaders" rows="2" placeholder='{"X-Api-Key":"..."}'></textarea>
         </label>
         <div class="row-form ai-actions">
@@ -349,11 +362,25 @@
 
       <div class="card ai-card">
         <h3 class="card-title">日志与总览</h3>
-        <p class="hint">失败聚类每周自动记录到日志，可手动立即分析；AI 结论已标注在音源库与隔离区对应条目上，此处只做设置。</p>
+        <p class="hint">失败原因归类每周自动写进日志，可手动立即分析；AI 的看法已标在音源库和隔离区对应条目上，此处只做设置。</p>
         <div class="row-form ai-actions">
-          <button class="btn" id="btnAiCluster">立即分析一次（记入日志）</button>
+          <button class="btn" id="btnAiCluster">马上归类一次（只写日志）</button>
           <span id="aiClusterResult" class="hint ai-result"></span>
         </div>
+      </div>
+
+      <div class="card ai-card" id="aiFeedbackCard">
+        <h3 class="card-title">你采纳得怎么样（只读，不花 AI 额度）</h3>
+        <p class="hint">采纳率 = 你说「就按这个处理」占（处理 + 不用看）的比例，只说明你觉得 AI 的看法合不合用，<strong>「不用看」不等于 AI 判错了</strong>；自检只会标出"可能偏了"，不改任何判定。样本不够时显示"数据还不够"。</p>
+        <button class="btn ghost" id="btnAiFeedbackRefresh" type="button">刷新统计</button>
+        <div id="aiFeedbackStats" class="hint ai-result" style="margin-top:8px">加载中…</div>
+      </div>
+
+      <div class="card ai-card" id="serverFleetProfileCard">
+        <h3 class="card-title">服务端音源画像（只读，仅落盘展示）</h3>
+        <p class="hint">灌入/同步时的服务端状态快照：<strong>只统计不联动</strong>，不影响采集顺序、灌入优先级或本地判定。sync 后刷新。</p>
+        <button class="btn ghost" id="btnServerFleetRefresh" type="button">刷新画像</button>
+        <div id="serverFleetStats" class="hint ai-result" style="margin-top:8px">加载中…</div>
       </div>
     </section>
 
@@ -730,7 +757,7 @@
             <option value="error">error</option>
           </select>
         </label>
-        <button class="btn ghost" id="btnAiClusterLog" title="立即对失败音源做一次 AI 聚类分析，结果只记入运行日志，不改音源状态">✦立即聚类分析（记入日志）</button>
+        <button class="btn ghost" id="btnAiClusterLog" title="马上把失败原因归类一次，结果只写进运行日志，不改音源状态">✦马上归类一次失败原因（只写日志）</button>
         <label class="chk lb-item"><input type="checkbox" id="logAutoRefresh" checked><span>自动刷新（进入本页后每 5 秒拉取新日志）</span></label>
         <span class="lb-hint" id="logShownCount"></span>
       </div>
@@ -825,8 +852,8 @@
 </div>
 
 <div class="toast" id="toast" hidden></div>
-<script src="sorters.js?v=27"></script>
-<script src="web-bridge.js?v=58"></script>
-<script src="app.js?v=81"></script>
+<script src="sorters.js?v=29"></script>
+<script src="web-bridge.js?v=60"></script>
+<script src="app.js?v=90"></script>
 </body>
 </html>

@@ -20,7 +20,7 @@ const { Store } = require('../core/store')
 const { Hunter, formatIntervalHours, patrolSchedule } = require('../core/hunter')
 const { getActiveService, getService, resolveService, TYPE_LABELS, NO_ACCOUNT_ERR } = require('../core/services')
 const { createUpdater } = require('../core/sourceUpdate')
-const { getActiveDeepNames } = require('../core/checker')
+
 const { DEFAULT_REPOS } = require('../core/crawler')
 const { Auth, SESSION_TTL_MS } = require('../core/auth')
 const { publicSourceList } = require('../core/sourceView')
@@ -67,6 +67,13 @@ function currentUser(req) {
   return auth.checkSession(readCookie(req, 'lxh_token'))
 }
 
+// 管理员门禁：配置/凭据/破坏性/耗资类端点的统一校验。非管理员或游客直接抛错，
+// 由 guard 统一包成 {ok:false,error}。action 仅用于错误消息定位。
+function assertAdmin(req, action) {
+  const me = currentUser(req)
+  if (!me || !me.admin) throw new Error('仅管理员可' + (action || '执行此操作'))
+}
+
 // ---------------- 基础状态（与桌面版主进程保持一致） ----------------
 let store = null
 let hunter = null
@@ -76,6 +83,28 @@ let updaterKey = ''
 const logs = []
 const MAX_LOGS = 3000
 const sseClients = new Set()
+
+/**
+ * 本轮深检活跃源名（P-1434）：读已存在的"检测中"标记（hunter 在逐条深检前置 `entry.checking = true`、
+ * 结束即删），不引入任何新状态。仅用于孤儿 Promise 异常日志的归因提示（并发下可能为其一）。
+ * 原实现误 import 了 checker 从未导出的 `getActiveDeepNames`，属该功能自 P-1434 起从未生效的缺口。
+ * @returns {string[]} 最多返回若干活跃源名（去重、按 id 稳定序）
+ */
+function activeDeepNames() {
+  try {
+    const sources = store && store.db && store.db.sources
+    if (!sources || typeof sources !== 'object') return []
+    const out = []
+    for (const id of Object.keys(sources)) {
+      const e = sources[id]
+      if (!e || e.checking !== true) continue
+      const nm = e.lxName || e.scriptName || e.name || e.path || id
+      if (nm) out.push(String(nm))
+      if (out.length >= 20) break
+    }
+    return out
+  } catch (e) { return [] }
+}
 
 // 音源脚本是不可信代码：沙箱内异步回调的个别异常不应打断服务进程
 process.on('uncaughtException', err => {
@@ -97,7 +126,7 @@ process.on('unhandledRejection', err => {
     if (rejSeen.size > 200) rejSeen.clear()
     const isScript = /沙箱|fetch|Failed to parse URL|__host_|vm:/i.test(first)
       // P-1434：带上本轮深检活跃源（孤儿 reject 无法精确归因，标注并发歧义）
-      const act = getActiveDeepNames()
+      const act = activeDeepNames()
       const tag = (isScript && act.length) ? `（本轮检测活跃源：${act.slice(0, 4).join('、')}${act.length > 4 ? ' 等' : ''}，并发下可能为其中之一）` : ''
     pushLog({
       msg: (isScript ? '音源脚本内部未捕获异常（已忽略，不影响检测）：' : '已捕获未处理的 Promise 异常：') + tag + first,
@@ -385,7 +414,12 @@ function ai() {
   return aiReviewInstance
 }
 
-route('GET', '/api/ai-review/config', guard((req) => ({ config: ai().publicConfig() })))
+route('GET', '/api/ai-review/config', guard((req) => {
+  assertAdmin(req, '查看 AI 复检配置')
+  // 与 /api/config 同口径：admin 拿完整脱敏副本（apiKey 掩码），非管理员已被上面的门禁拦下。
+  // publicConfig() 只掩码 apiKey，headers 可能含密钥头，必须再经 sanitizeConfig 清空。
+  return { config: sanitizeConfig({ aiReview: ai().publicConfig() }).aiReview }
+}))
 
 route('POST', '/api/ai-review/config', guard((req, res, ctx) => {
   const me = currentUser(req)
@@ -403,30 +437,41 @@ route('POST', '/api/ai-review/config', guard((req, res, ctx) => {
 }))
 
 // 测试中转站连通性（设置页「测试连接」按钮）：用当前配置发一条最小请求，不落任何建议
-route('POST', '/api/ai-review/test', guard(async () => {
+route('POST', '/api/ai-review/test', guard(async (req) => {
+  assertAdmin(req, '测试 AI 中转站')
   const r = await ai().review('你是一个连通性探测助手。', '只回复 OK 两个字母。')
   return { ok: !!r.ok, message: r.ok ? '连接成功' : (r.error || '连接失败'), model: (ai().cfg.provider || {}).model || '' }
 }))
 
 route('POST', '/api/ai-review/run', guard(async (req, res, ctx) => {
+  assertAdmin(req, '执行 AI 复检')
   const a = ai()
   const body = ctx.body || {}
-  try {
-    const out = await a.run(String(body.kind || 'R1'), body)
-    // R1 落日志（自动/手动都要记）
-    if (out && out.logged) pushLog({ msg: clusterLogMsg(out, body.trigger === 'auto' ? 'auto' : 'manual'), module: 'AI复检', level: 'info', at: Date.now() })
-    return out
-  } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) }
-  }
+  // 不在此处 try/catch：run 按旁路铁律从不抛，失败以 {ok:false,error} 返回。
+  // 这里必须 throw 让外层 guard 统一包装成顶层 {ok:false,error}，
+  // 否则 {ok:false,error} 会被当成正常 data 包成 {ok:true,data:{ok:false,...}}，renderer 误判成功。
+  const out = await a.run(String(body.kind || 'R1'), body)
+  if (out && out.ok === false) throw new Error(out.error || 'AI 复检失败')
+  // R1 落日志（自动/手动都要记）
+  if (out && out.logged) pushLog({ msg: clusterLogMsg(out, body.trigger === 'auto' ? 'auto' : 'manual'), module: 'AI复检', level: 'info', at: Date.now() })
+  return out
 }))
 
 route('GET', '/api/ai-review/suggestions', guard((req, res) => {
+  assertAdmin(req, '查看 AI 建议')
   const q = new URL(req.url, 'http://x').searchParams
-  return { suggestions: ai().listSuggestions({ status: q.get('status') || '', kind: q.get('kind') || '', source: q.get('source') || '' }) }
+  return {
+    suggestions: ai().listSuggestions({
+      status: q.get('status') || '', kind: q.get('kind') || '', source: q.get('source') || '',
+      // v1.10.9：worthOnly=1 → 只要「值得占用用户注意力」的（界面用）；
+      // 不传则全量返回（日志/评测/回放用），行为与旧版一致。
+      worthOnly: /^(1|true|yes)$/i.test(q.get('worthOnly') || '') || /^(1|true|yes)$/i.test(q.get('worth') || '')
+    })
+  }
 }))
 
 route('POST', '/api/ai-review/apply', guard((req, res, ctx) => {
+  assertAdmin(req, '确认执行 AI 建议')
   const a = ai()
   const body = ctx.body || {}
   // 只有可执行类建议能走 apply；R1/R2/R3 等只读结论一律拒绝，防误执行。
@@ -441,11 +486,27 @@ route('POST', '/api/ai-review/apply', guard((req, res, ctx) => {
   s.status = 'applied'
   s.appliedAt = Date.now()
   s.appliedBy = body.byUser ? 'user' : 'ai'
+  s.feedback = { action: 'adopt', at: Date.now(), by: body.byUser ? 'user' : 'ai' }
   a.store.saveDb()
   return { applied: true, suggestion: s }
 }))
 
+// 反馈闭环（只读 signal，不碰 APPLYABLE/gate/三锁）：用户"忽略"建议时持久化采纳意愿。
+// 忽略≠误判：只标 feedback，不写 gold、不改任何判定/门控/业务状态。
+route('POST', '/api/ai-review/dismiss', guard((req, res, ctx) => {
+  assertAdmin(req, '忽略 AI 建议')
+  const a = ai()
+  const body = ctx.body || {}
+  const s = a.store.db.aiSuggestions[body.id]
+  if (!s) throw new Error('建议不存在：' + body.id)
+  s.status = 'dismissed'
+  s.feedback = { action: 'dismiss', at: Date.now(), by: body.byUser ? 'user' : 'ai' }
+  a.store.saveDb()
+  return { dismissed: true, id: s.id }
+}))
+
 route('POST', '/api/ai-review/undo', guard((req, res, ctx) => {
+  assertAdmin(req, '回滚 AI 建议')
   const a = ai()
   const out = a.undo(String((ctx.body || {}).auditId || ''))
   a.store.saveDb()
@@ -461,8 +522,13 @@ route('GET', '/api/ai-review/eval-report', guard(() => {
   try { cases = ec.loadCases(casesDir) } catch (e) { cases = [] }
   const logs = Object.keys(store.db.aiEvalLog || {}).map(k => store.db.aiEvalLog[k])
   const metrics = ec.computeMetrics(logs, cases)
-  return { ok: true, cases: cases.length, logs: logs.length, metrics }
+  const a = ai()
+  // 反馈闭环（只读、零 AI）：采纳率统计 + 影子日志自检，纯本地聚合，不调 provider。
+  return { ok: true, cases: cases.length, logs: logs.length, metrics, feedbackStats: a.feedbackStats(), selfCheck: a.selfCheck() }
 }))
+
+// P1-3 服务端画像只读端点（与 main/index.js 镜像）：仅回读落盘画像，零请求、零副作用。
+route('GET', '/api/server/fleet-profile', guard(() => ({ profile: store.db.serverFleetProfile || null })))
 
 // 网络连通性测试（设置页「测试」按钮）：对探针 URL 跑一遍候选链
 route('POST', '/api/net/test', guard(async (req, res, ctx) => {
@@ -527,6 +593,7 @@ const dataio = require('../core/dataio')
 
 // 导出：浏览器直接触发文件下载（桌面版走保存对话框，同一个 buildExport）
 route('POST', '/api/data/export', guard(async (req, res, ctx) => {
+  assertAdmin(req, '导出配置数据')
   const scope = String((ctx.body && ctx.body.scope) || '')
   const json = JSON.stringify(dataio.buildExport(store, scope), null, 2)
   const day = new Date().toISOString().slice(0, 10)
@@ -541,9 +608,13 @@ route('POST', '/api/data/export', guard(async (req, res, ctx) => {
 
 // 导入：{scope, raw}（raw 为导出文件原文），合并逻辑见 core/dataio
 route('POST', '/api/data/import', guard(async (req, res, ctx) => {
+  assertAdmin(req, '导入配置数据')
   const b = ctx.body || {}
   const data = typeof b.raw === 'string' ? parseJsonBody(Buffer.from(b.raw)) : b.raw
   const summary = dataio.importData(store, String(b.scope || ''), data)
+  // 与桌面端 data:import 对齐：导入后让网络配置（镜像/代理）即时生效，不用重启进程。
+  // dataio.mergeMirrors 内部已对镜像池 applyConfig，这里对整份 config 再应用一次覆盖其它网络项。
+  require('../core/net').applyConfig(store.config)
   pushLog({
     msg: `导入${summary.label}：新增 ${summary.added}、更新 ${summary.updated}（现有 ${summary.total} 条）`,
     module: '数据', level: 'info', at: Date.now()
@@ -576,7 +647,8 @@ route('GET', '/api/sources', guard(() => {
   }
   // v1.13.0：把服务端处置冻结标到条目上，列表直接能显示「为什么不会再灌入」
   const veto = store.db.veto || {}
-  const list = publicSourceList(store.getSources())
+  // v1.10.8：publicSourceList 需要 cfg 才能算隔离区信任分级（qzLevel/qzReasons）
+  const list = publicSourceList(store.getSources(), store.config)
   for (const s of list) {
     if (s && veto[s.id]) s.veto = veto[s.id]
   }
@@ -596,6 +668,7 @@ route('GET', '/api/sources', guard(() => {
 // 所以解除只在「用户确认服务端已恢复/想强制重灌」时才用。
 route('GET', '/api/veto', guard(() => ({ veto: store.db.veto || {} })))
 route('POST', '/api/veto/clear', guard((req, res, ctx) => {
+  assertAdmin(req, '解除服务端处置冻结')
   if (!store.db.veto || typeof store.db.veto !== 'object') store.db.veto = {}
   const ids = Array.isArray(ctx.body && ctx.body.ids) ? ctx.body.ids.map(String) : []
   if (!ids.length) {
@@ -746,11 +819,15 @@ route('POST', '/api/db/undedupe', guard((req, res, ctx) => {
   const ids = (ctx.body || {}).ids
   return Object.assign({ busy: false }, hunter.restoreDedupe(Array.isArray(ids) ? ids : null))
 }))
-route('POST', '/api/db/clear', guard(() => { store.clearSources(); return { ok: true } }))
+route('POST', '/api/db/clear', guard((req) => {
+  assertAdmin(req, '清空音源库')
+  store.clearSources(); return { ok: true }
+}))
 
 // 手动删除选中音源（v1.10.2）：只动本地音源库，不动服务端已灌入的脚本。
 // 被删的 id 记入 store.deletedIds（不再自动采集名单），设置页可一键清除记录。
 route('POST', '/api/db/delete', guard((req, res, ctx) => {
+  assertAdmin(req, '删除音源')
   const ids = (ctx.body || {}).ids
   if (!Array.isArray(ids) || !ids.length) throw new Error('没有选中要删除的音源')
   const r = store.removeSources(ids)
@@ -846,6 +923,7 @@ route('POST', '/api/service/toggle', guard(async (req, res, ctx) => {
   return await svc.adapter.toggle(svc.acct, ctx.body.id, ctx.body.enabled, { owner: ctx.body.owner, reason: ctx.body.reason })
 }))
 route('POST', '/api/service/remove', guard(async (req, res, ctx) => {
+  assertAdmin(req, '删除服务音源')
   const svc = getActiveService(store.config)
   if (!svc) throw new Error(NO_ACCOUNT_ERR)
   return await svc.adapter.remove(svc.acct, ctx.body.id, { owner: ctx.body.owner })
@@ -870,6 +948,7 @@ route('GET', '/api/service/list/public', guard(async () => {
 // 批删串行且每个都要等服务端全量重载：逐个 pushLog（经 SSE 实时到达），
 // 同时发 pub-delete 事件，渲染进程与桌面版一样能显示「第 n/N 个」进度
 route('POST', '/api/service/remove/public', guard(async (req, res, ctx) => {
+  assertAdmin(req, '删除公共音源')
   const svc = getActiveService(store.config)
   if (!svc) throw new Error(NO_ACCOUNT_ERR)
   if (svc.type !== 'lxserver' && svc.type !== 'geelonn') return { ok: false, error: '当前平台（' + TYPE_LABELS[svc.type] + '）不支持公共音源清理，仅 LX Server / Geelonn LX Server 支持' }
@@ -1048,6 +1127,7 @@ route('GET', '/api/source-update/last', guard((req) => {
 }))
 
 route('POST', '/api/source-update/apply', guard(async (req, res, ctx) => {
+  assertAdmin(req, '执行删旧灌新')
   const b = ctx.body || {}
   // 2026-11-10 21:01 定调：检测与灌入归 lx-hunter 主链路（runImport）；
   // 本模块从服务端列表反查，服务端不回传脚本正文/hash，天然证据不足 → 只读巡检/报告层。
@@ -1221,7 +1301,20 @@ server.listen(PORT, '0.0.0.0', () => {
         }
       }
       // ② 自动只读复检：受自动挡开关/到期/时段控制；选范围 → 逐条 R3 只读分析，只产建议、不执行。
+      // 独立开关 autoLlmReviewEnabled 默认关：该路径每轮 20-60 次 LLM 仅产无人消费的 applied 标记，
+      // 零进化价值；R1 本地聚类/自生长（①，已在上面）不受影响。评测达标后再开此开关。
+      if (!cfg.autoLlmReviewEnabled) return
       if (!plan.due || !plan.activeNow) return
+      let batchError = null   // 失败退避信号：本轮同步失败写进 lastError（静默但可查，退避据此生效）
+      // 异步（fire-and-forget）失败可能在本轮 finally 之后才 reject，回调里直接落库 lastError，
+      // 否则等不到下一轮 while 就丢了信号。lastRun 只在同步轮成功时更新。
+      const markAsyncError = (e) => {
+        try {
+          const prev = store.db.aiAutoReview || {}
+          store.db.aiAutoReview = Object.assign({}, prev, { lastError: String((e && e.message) || e).slice(0, 300) })
+          store.saveDb()
+        } catch (_) {}
+      }
       try {
         const ids = selectScope(store.getSources(), plan.scope, plan.limit, Date.now()) || []
         let done = 0, marked = 0
@@ -1231,7 +1324,7 @@ server.listen(PORT, '0.0.0.0', () => {
             const text = [src.error, src.status].filter(Boolean).join(' / ')
             const name = src.name || src.lxName || src.scriptName || ''
             const r = ai().run('R3', { entryId: id, trigger: 'auto', text, name })
-            if (r && typeof r.then === 'function') awaitIgnore(r)
+            if (r && typeof r.then === 'function') awaitIgnore(r, markAsyncError)
             // 自动铺轨：auto 档时对条目产 R4/R5 可执行建议并自动标记（仅标记，不碰业务）。
             // R6/R7 高危不自动产；评测跑完再考虑接真实动作。
             if ((cfg.mode || 'off') === 'auto') {
@@ -1248,19 +1341,24 @@ server.listen(PORT, '0.0.0.0', () => {
                   if (rr && rr.autoMarked) marked++
                 }
               }
-              const p = runExec(); if (p && typeof p.then === 'function') awaitIgnore(p)
+              const p = runExec(); if (p && typeof p.then === 'function') awaitIgnore(p, markAsyncError)
             }
             done++
-          } catch (e) {}
+          } catch (e) { batchError = batchError || e }
         }
         pushLog({ msg: 'AI 自动只读复检：本轮处理 ' + done + ' 条' + (marked ? '；自动铺轨标记 ' + marked + ' 条（仅标记，未执行业务）' : ''), module: 'AI复检', level: 'info', at: Date.now() })
-      } catch (e) {} finally {
+      } catch (e) { batchError = batchError || e } finally {
+        // 水位喂全：lastAttempt 恒推进；成功写 lastRun 并清 lastError；失败保留/写 lastError 触发退避。
         try {
-          store.db.aiAutoReview = Object.assign({}, store.db.aiAutoReview || {}, { lastAttempt: Date.now() })
+          const prev = store.db.aiAutoReview || {}
+          const patch = { lastAttempt: Date.now() }
+          if (!batchError) patch.lastRun = Date.now()
+          patch.lastError = batchError ? String((batchError && batchError.message) || batchError).slice(0, 300) : null
+          store.db.aiAutoReview = Object.assign({}, prev, patch)
           store.saveDb()
         } catch (e) {}
       }
     } catch (e) {}
   }, 60 * 60 * 1000).unref?.()
-  function awaitIgnore(p) { try { p.catch(() => {}) } catch (e) {} }
+  function awaitIgnore(p, onError) { try { p.catch(onError || (() => {})) } catch (e) { if (onError) onError(e) } }
 })

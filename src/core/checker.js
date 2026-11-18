@@ -175,10 +175,30 @@ function obfuscationRisk(content) {
   const nSpin = count(/while\s*\(\s*(?:!!\s*\[\s*\]|!0x0|!0|true)\s*\)\s*\{\s*\}/g)
   const nSelfSched = count(/_0x[0-9a-f]{4,6}\s*(?:\[[^\]\r\n]{1,80}\])?\s*\(\s*_0x[0-9a-f]{4,6}\s*,\s*0x[0-9a-f]{3,5}\s*\)/gi)
   const nJsjiami = count(/jsjiami/gi)
+  // 自调度调用的第二参数细分（v1.10.8，**仅供隔离区信任分级使用，不参与下面的 high 判级**）：
+  // 原来的 nSelfSched 只数次数，完全不管第二参数是「毫秒数」还是「字符串解码的码点」。
+  // 实测 403 个脚本、128 次命中：116 次参数落在 100ms~300000ms 定时器区间（心跳/轮询，正常用途）；
+  // 12 次落在 Unicode 代理区 0xd800-0xdfff（String.fromCharCode 类字符串解码的参数，根本不是定时器）。
+  // 两类混在一起计「反调试自调度」必然误伤，故按字面值再拆三档：
+  //  - selfSchedTimer  定时器区间 → 正常轮询（音源用心跳/缓存刷新完全正当）
+  //  - selfSchedDecode 代理区（0xd800-0xdfff）→ 字符串解码，属该正则的结构性误报
+  //  - selfSchedUnknown 其余（如 <100ms 或 >300s）→ 无法判定，保守计入风险
+  // 注意：代理区数值（55296~57343）落在定时器区间数值范围内，必须**先判代理区**再判定时器。
+  let nSelfTimer = 0, nSelfDecode = 0, nSelfUnknown = 0
+  {
+    const re = /_0x[0-9a-f]{4,6}\s*(?:\[[^\]\r\n]{1,80}\])?\s*\(\s*_0x[0-9a-f]{4,6}\s*,\s*0x([0-9a-f]{3,5})\s*\)/gi
+    for (let m = re.exec(t); m; m = re.exec(t)) {
+      const v = parseInt(m[1], 16)
+      if (v >= 0xd800 && v <= 0xdfff) nSelfDecode++
+      else if (v >= 0x64 && v <= 0x493e0) nSelfTimer++
+      else nSelfUnknown++
+    }
+  }
   const hits = {
     perKb0x: n0x / kb, perKbUni: nUni / kb, perKbExotic: nExotic / kb,
     evalCalls: nEval, total0x: n0x, totalUni: nUni, totalExotic: nExotic,
-    spinLoops: nSpin, selfSchedCalls: nSelfSched, jsjiamiMarks: nJsjiami
+    spinLoops: nSpin, selfSchedCalls: nSelfSched, jsjiamiMarks: nJsjiami,
+    selfSchedTimer: nSelfTimer, selfSchedDecode: nSelfDecode, selfSchedUnknown: nSelfUnknown
   }
   // 硬特征优先：空转死循环/混淆自调度没有任何正当用途，与密度无关，命中即 high
   if (nSpin >= 1 || nSelfSched >= 1) {
@@ -1059,11 +1079,90 @@ function regressionJudge(prevPassed, newPassed, newFailed) {
   return { suspect: lost.length > 0 && next.length < prev.length, lost, gained }
 }
 
+/**
+ * 隔离区「信任放行」分级（v1.10.8）——**唯一来源**。
+ *
+ * 背景：以前同一套「命中硬特征即不可信任」被抄了三份（前端 qzHardHits、applyObfGate 的 hardHit、
+ * trustObfSource 的 hard），且口径是「spin/selfSched/eval 任一命中 → 按钮灰死、连点都不能点」。
+ * 实测证明这条规则不科学：selfSched 有结构性误报（把字符串解码参数当定时器，403 个脚本 128 次命中
+ * 里 12 次是代理区码点）、eval 是重度混淆器的必备执行出口（332KB/16316 个 0x 只 1 次 eval），
+ * 而且完全不看实测可用性——本机实测能出链接是对「行为正常」最强的证据，原规则把它丢了。
+ *
+ * **本函数只回答「隔离后能不能点、点了要提示什么」，不参与「是否进隔离区」**
+ * （那仍由 obfuscationRisk 的 high 判级决定，一个字没改）。
+ *
+ * 三档：
+ *  - `allow`  零可疑特征 → UI 主色「信任放行」，普通确认
+ *  - `risky`  有风险信号 → UI 警示色「仍要信任…」，强制先看 AI 意见 + 加重确认
+ *  - `block`  真恶意形态 → UI 警示色「有风险，不建议放行」，AI 意见 + 风险清单 + 二次确认
+ *     （用户拍板：不 disabled，保留最终决定权；但仍要过两道确认）
+ *
+ * `block` 只有一条入口：空转死循环 ≥1 且 实测可用=0 且（可疑外联≥4 或 从没测过）。
+ * gold 19 条硬特征样本实测：拦下 4 条 reject、误伤 0。
+ * 只要本机实测能出链接（usableN≥1），永不吃 block——脚本真跑通了，这是行为证据。
+ *
+ * 另：`evalCalls≥1` 永不进 allow（实测只证明当前路径跑通，不证明 eval 通道安全），
+ * 见下面的 hasEval 分支。
+ *
+ * @param {object} e 音源条目（用 obfHits / obfDomains / apiHosts / deep）
+ * @param {object} cfg 配置（只用 trustedObfDomains，白名单随用户配置，不新增硬编码黑名单）
+ * @returns {{level:'allow'|'risky'|'block', reasons:string[], evidence:object}}
+ */
+function classifyQuarantineTrust(e, cfg) {
+  const toArr = v => (Array.isArray(v) ? v : (v ? [v] : []))
+  const h = (e && e.obfHits) || {}
+  const spin = Number(h.spinLoops) || 0
+  const evalN = Number(h.evalCalls) || 0
+  // 定时器类自调度：新字段优先；老数据没有细分字段时退回总数（保守，但仍是"定时器区间"语义）
+  const schedTimer = h.selfSchedTimer != null
+    ? Number(h.selfSchedTimer) || 0
+    : (Number(h.selfSchedCalls) || 0)
+
+  const deep = (e && e.deep) || null
+  const deepDone = !!(deep && deep.checkedAt)
+  const usableN = deepDone ? usableCount(e) : 0
+  const plats = (deep && deep.platforms) || {}
+  const testedN = deepDone
+    ? Object.keys(plats).filter(k => plats[k] && plats[k].status && plats[k].status !== 'untested').length
+    : 0
+  let suspect = 0
+  try {
+    const v = obfDomainVerdict(
+      toArr(e && e.obfDomains).concat(toArr(e && e.apiHosts)),
+      cfg && cfg.trustedObfDomains
+    )
+    suspect = (v && v.suspect ? v.suspect.length : 0)
+  } catch (err) { suspect = 0 }
+
+  // 大白话风险清单（UI 直接渲染；技术原文由 renderer 的 obfTipLog / 后端日志负责）
+  const reasons = () => {
+    const r = []
+    if (spin >= 1) r.push(`脚本里有 ${spin} 处代码会让 CPU 空转，可能是故意防调试`)
+    if (evalN >= 1) r.push(`脚本里有 ${evalN} 处动态执行代码，能运行额外代码（风险点是这个）`)
+    if (schedTimer >= 1) r.push(`脚本里有 ${schedTimer} 处定时器调用（被加密过的写法，通常是正常轮询）`)
+    if (!deepDone) r.push('这条从没实测过，不确定能不能用')
+    else if (usableN === 0) r.push(`实测过 ${testedN} 个平台，都没能出链接`)
+    else r.push(`实测能出链接（${testedN} 个平台里 ${usableN} 个可用）`)
+    if (suspect >= 4) r.push(`有 ${suspect} 个陌生的外联域名`)
+    return r
+  }
+  const evidence = { spin, evalN, schedTimer, deepDone, usableN, testedN, suspect }
+
+  // 真恶意 → block（仍可点，双确认）。唯一入口，见函数注释。
+  const realBad = spin >= 1 && usableN === 0 && (suspect >= 4 || !deepDone)
+  if (realBad) return { level: 'block', reasons: reasons(), evidence }
+
+  // 完全干净才 allow；eval 有专属上限：eval≥1 无论实测如何都不进 allow
+  if (spin === 0 && evalN === 0 && schedTimer === 0) return { level: 'allow', reasons: [], evidence }
+
+  return { level: 'risky', reasons: reasons(), evidence }
+}
+
 module.exports = {
   TEST_SONGS, PLATFORMS, PLATFORM_LABEL,
   sha256Str, extractMeta, classifyEntry, scoreEntry, isHostAdapterScript, obfuscationRisk, obfuscationTip, obfDomains, obfDomainVerdict, verifyUrl,
   checkBasic, deepCheck, usableCount, stoppable, testPlatform, sameReasonHint, patrolJudge, probeTopTier, planTierProbe,
   aggregateMetrics, declaredQualities,
   isTransient, isLocalNetworkIssue, deepFailKind, applyProbeRecord, extractApiHosts, probeApiHosts, apiDownVerdict,
-  passedPlatforms, regressionJudge
+  passedPlatforms, regressionJudge, classifyQuarantineTrust
 }

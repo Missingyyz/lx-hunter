@@ -244,15 +244,64 @@ function isClearlyBetter(a, b) {
  * 所以分工写死：
  *   - **删不删**（二元裁决）→ compareVerdict：带噪声带，宁可判平手也不删；
  *   - **谁排前面**（全库排序）→ sortKey：完整字典序元组，天然全序、可复现。
- * 两者维度顺序一致（平台数 → p50 → 档位），所以排序结果与裁决方向不会互相打脸。
+ * 两者维度顺序一致（平台数 → 打分 → p50 → 档位），所以排序结果与裁决方向不会互相打脸。
+ *
+ * P1-1（2026-11-18）未打分源语义：第一位 usable 是分层键，第二位把「是否已打分」显式化
+ * ——已打分(0)排在同 usable 层未打分(1)之前，未打分只沉到**本层末位**，不再用全局
+ * MAX_SAFE_INTEGER 冒充延迟值（那个魔法值语义不清、且会与「极大真实 p50」混淆）。
+ * 未打分源的 p50 位记 0（无效占位，因 scored=false 时 p50 必为 null，不参与层内比较）。
  */
 function sortKey(entry) {
   const p = profile(entry)
   return [
-    -p.usable,                                        // 平台数多的在前
-    p.p50 === null ? Number.MAX_SAFE_INTEGER : p.p50,  // 没有延迟证据的排在实测之后
-    p.tier === null ? -1 : -p.tier                    // 档位高的在前（取负统一成「小者优先」）
+    -p.usable,                                   // 分层键：可用平台数多的在前
+    p.scored ? 0 : 1,                            // 层内：已打分在前，未打分排本层末位
+    p.p50 === null ? 0 : p.p50,                  // 同层已打分内：p50 小的在前；未打分占位 0
+    p.tier === null ? -1 : -p.tier                // 档位高的在前（取负统一成「小者优先」）
   ]
+}
+
+/**
+ * P1-1/P1-4 队列质量比较器（升序小者优先，供灌入队列 / planBaseDedupe 复用，与 UI sortKey 同口径）。
+ * 主键 sortKey（usable→打分→p50→档位），在此之上接闲置稳健性信号作次级键（只调先后、不进裁决）：
+ *   - verified 真校验通过平台数：有则用、无则退（记 0），**不设硬门槛**（避免自建 tier 全判 C）；
+ *   - playableRate / successRate：可播率/取链成功率高的排前，缺证据退 0；
+ *   - p90LatencyMs：长尾延迟低的排前（有则用、无则退）；
+ *   - suspectScore 可疑分：分低者排前，作 tie-break。
+ * 全等时返回 0，由调用方用 stable sort + id 兜底保证可复现。
+ */
+function compareImportQuality(a, b) {
+  const c = compareSortKey(a, b)
+  if (c !== 0) return c
+  const pa = profile(a), pb = profile(b)
+  const va = pa.verified || 0   // 真校验通过平台数：有则用、无则退 0，不设硬门槛
+  const vb = pb.verified || 0
+  if (va !== vb) return vb - va
+  const ma = (a && a.deep && a.deep.metrics) || {}, mb = (b && b.deep && b.deep.metrics) || {}
+  const prA = Number(ma.playableRate) || 0, prB = Number(mb.playableRate) || 0
+  if (prA !== prB) return prB - prA
+  const srA = Number(ma.successRate) || 0, srB = Number(mb.successRate) || 0
+  if (srA !== srB) return srB - srA
+  const p90a = Number(ma.p90LatencyMs) || 0, p90b = Number(mb.p90LatencyMs) || 0
+  if (p90a !== p90b) return p90a - p90b
+  // 冷启动语义预判（突破项①）作最弱 tie-break：real 略前、tool 略后、uncertain/未预判中立。
+  // 只调先后、不删不拉黑——预判错误最坏只是排序靠后。
+  // ⚠️ 优先级（全并列才生效）：本比较器依次为 ①sortKey(usable→打分→p50→档位，客观检测数据)
+  //   ②verified ③playableRate ④successRate ⑤p90LatencyMs ⑥sourceAiClass ⑦updateTipsAiClass ⑧suspectScore。
+  //   AI 类在**第 6-7 级**——只有前 5 级客观指标全完全相同才轮到它定先后，真实库里这种全并列极罕见。
+  //   且旁路已转后台：**本批排序不消费本批 AI 结论（滞后一轮才用上）**，影响面极窄、可接受（C 终审 §1/§4）。
+  const ca = a && a.sourceAiClass, cb = b && b.sourceAiClass
+  const ra = ca === 'real' ? -1 : ca === 'tool' ? 1 : 0
+  const rb = cb === 'real' ? -1 : cb === 'tool' ? 1 : 0
+  if (ra !== rb) return ra - rb
+  // R4 更新语义分级（突破项②）并列作 tie-break：实质更新(true)略前、纯催更/广告(false)略后、uncertain/未预判中立。
+  const ua = a && a.updateTipsAiClass, ub = b && b.updateTipsAiClass
+  const ura = ua === true ? -1 : ua === false ? 1 : 0
+  const urb = ub === true ? -1 : ub === false ? 1 : 0
+  if (ura !== urb) return ura - urb
+  const sa = Number(a && a.suspectScore) || 0
+  const sb = Number(b && b.suspectScore) || 0
+  return sa - sb
 }
 
 function compareSortKey(a, b) {
@@ -277,6 +326,6 @@ function describeQuality(entry) {
 module.exports = {
   profile, tierScore, bestTier,
   compareVerdict, compareQuality, isClearlyBetter, describeQuality,
-  sortKey, compareSortKey,
+  sortKey, compareSortKey, compareImportQuality,
   LATENCY_MARGIN_MS
 }

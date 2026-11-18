@@ -187,6 +187,11 @@ console.log('--- ⑧ 双外壳 API 镜像一致 + apiKey 脱敏（源码契约�
   ok(/c\.aiReview\.provider\.apiKey = ''/.test(web), 'sanitizeConfig 脱敏 AI apiKey')
   ok(/route\('GET', '\/api\/ai-review\/config'/.test(web), 'Web 端 AI config 路由存在')
   ok(/ipcMain\.handle\('ai-review:configSet'/.test(fs.readFileSync(path.join(ROOT, 'src', 'main', 'index.js'), 'utf8')), '桌面端 AI configSet IPC 存在')
+  // M1：两端 run handler 必须把 run() 的 {ok:false,error} 转成 throw 冒泡到 guard，
+  // 不能被吞成 return {ok:false,...} 而被 guard 包成 {ok:true,data:{ok:false,...}}。
+  const mainRun = fs.readFileSync(path.join(ROOT, 'src', 'main', 'index.js'), 'utf8')
+  ok(/out\.ok === false\) throw new Error\(out\.error/.test(web), 'Web run handler 把 AI 失败 throw 到 guard')
+  ok(/out\.ok === false\) throw new Error\(out\.error/.test(mainRun), '桌面 run handler 把 AI 失败 throw 到 guard')
 })()
 
 console.log('--- ⑨ 呈现范式契约：内联 chip / 按钮分流 / R1 日志化 / apply 白名单 / 聚类周期（源码正则） ---')
@@ -204,9 +209,12 @@ console.log('--- ⑨ 呈现范式契约：内联 chip / 按钮分流 / R1 日志
   ok(/qz-deep[\s\S]{0,120}AI/.test(app), 'app.js 隔离区输出 AI 意图审查行')
   ok(/aiHintByEntry/.test(app) && /rowHtml/.test(app), '内联 Map 接入 rowHtml（全表+增量刷新）')
 
-  // 确认执行按 kind 白名单：只有 R4/R5/R6/R7
-  ok(/'R4'\s*,\s*'R5'\s*,\s*'R6'\s*,\s*'R7'/.test(app), 'app.js 确认执行白名单 R4/R5/R6/R7')
-  ok(/RR6/.test(app) === false, 'app.js 无 RR6 笔误')
+  // v1.10.9：确认执行从「kind 白名单」细化为「kind+verdict 白名单」——
+  // R7 keep / R5 source / R4 ignore 这类"不动它"的结论不该给执行按钮
+  ok(/AI_ACTIONABLE_VERDICT/.test(app) && /function aiActionable/.test(app), 'app.js 有 kind+verdict 动作白名单 aiActionable')
+  ok(/R7:\s*\['blacklist'\]/.test(app) && /R5:\s*\['nonSource'\]/.test(app) && /R4:\s*\['follow'\]/.test(app),
+    '动作白名单：R7 只 blacklist / R5 只 nonSource / R4 只 follow')
+  ok(/data-ai-apply="/.test(app), 'chip 浮层对真有动作的建议提供「就按这个处理」按钮')
 
   // R1 降级为日志：前端 logOnly、后端统一走 core 的 run() 执行器
   ok(/logOnly:\s*true/.test(app), 'app.js R1 立即分析带 logOnly:true')
@@ -216,7 +224,7 @@ console.log('--- ⑨ 呈现范式契约：内联 chip / 按钮分流 / R1 日志
   ok(/\.run\(/.test(runSrc), 'web.js AI run 路由调用统一执行器 a.run()')
   ok(/out\.logged/.test(runSrc) && /pushLog/.test(runSrc), 'web.js AI run 路由按 out.logged 落日志')
   const aiSrc = fs.readFileSync(path.join(ROOT, 'src', 'core', 'aiReview.js'), 'utf8')
-  ok(/promptVersion:\s*'v1'/.test(aiSrc), 'aiReview.makeDetail 统一生成 promptVersion:v1')
+  ok(/promptVersion:\s*\(REVIEW_PROMPTS\[kind\]\s*&&\s*REVIEW_PROMPTS\[kind\]\.version\)\s*\|\|\s*'v1'/.test(aiSrc), 'aiReview.makeDetail 统一生成 promptVersion（动态取 REVIEW_PROMPTS[kind].version，默认 v1）')
   ok(/AUTO_READONLY_KINDS\s*=\s*\['R1'\s*,\s*'R2'\s*,\s*'R3'\]/.test(aiSrc), 'core 默认只读档白名单 R1/R2/R3')
   ok(/autoMarked/.test(aiSrc) && /appliedBy\s*=\s*'ai'/.test(aiSrc), 'core auto 档对 R4-R7 只铺轨标记（不硬拦、不执行业务）')
   ok(/writeClusterReport/.test(aiSrc), 'core R1 AI 研究报告方法存在')
@@ -242,8 +250,11 @@ console.log('--- ⑨ 呈现范式契约：内联 chip / 按钮分流 / R1 日志
 
   // AI 页已缩编：建议列表/详情卡移除，配置与聚类入口保留
   ok(/id="aiBaseUrl"/.test(html) && /id="aiMode"/.test(html), 'AI 页保留中转站/档位配置')
-  ok(/立即分析一次/.test(html), 'AI 页聚类按钮改为「立即分析一次」')
+  ok(/马上归类一次/.test(html), 'AI 页聚类按钮改为「马上归类一次」（大白话）')
   ok(/id="aiDetail"/.test(html) === false, 'AI 页已移除 #aiDetail 详情卡')
+  // v1.10.8：新增 #aiSummaryCard 替代不存在的 #aiSuggestions（用户拍板：不做建议列表页）
+  ok(/id="aiSummaryCard"/.test(html), 'AI 页有统计卡 #aiSummaryCard 替代建议列表')
+  ok(/id="aiSuggestions"/.test(html) === false, 'AI 页仍无 #aiSuggestions 列表容器')
 })()
 
 // --- ⑩ R1 样本驱动自生长：攒样本 → AI 归纳 → 自动生效 → 可停用 ---
@@ -333,6 +344,62 @@ async function learnTests() {
       ok(/if \(cfg\.enabled\)[\s\S]{0,200}aiLastClusterAt/.test(src), label + ' R1 聚类只受 enabled 管（与自动挡解耦）')
     }
     ok(/SEED_CLUSTER_RULES/.test(fs.readFileSync(path.join(ROOT, 'src', 'core', 'aiReview.js'), 'utf8')), 'core 内置 seed 规则常量')
+
+    // 10.5) R1 auto 不花钱润色、留自生长；manual 才写报告（2026-11-18 效果优化）
+    {
+      const mk = () => {
+        const st = tmpStore(); st.config.aiReview = Object.assign({}, st.config.aiReview)
+        const ai = new AIReview(st)
+        ai.cfg.enabled = true
+        ai.cfg.clusterLearnEnabled = true
+        ai.cfg.clusterLearnMinSamples = 99   // 样本门槛调高，确保 auto 时自生长不调 LLM
+        ai.cfg.provider = { baseUrl: 'https://x/v1', apiKey: 'k', model: 'm', headers: {}, timeoutMs: 1000 }
+        ai.fetchImpl = async () => {
+          ai.__calls = (ai.__calls || 0) + 1
+          return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '本周报告：趋势平稳' } }] }) }
+        }
+        return ai
+      }
+      const entries = [{ id: '1', error: 'gateway timeout on request' }, { id: '2', error: 'gateway timeout again' }]
+      const aiAuto = mk()
+      const rAuto = await aiAuto.run('R1', { entries, trigger: 'auto', logOnly: true })
+      ok(!aiAuto.__calls, 'auto 触发不调 LLM（报告跳过、自生长样本不足）')
+      ok(!rAuto.result.report && !!rAuto.result.summary, 'auto 时 report 缺省、summary 仍在（日志用 summary）')
+      const aiManual = mk()
+      const rManual = await aiManual.run('R1', { entries, trigger: 'manual' })
+      ok(aiManual.__calls === 1, 'manual 触发调 LLM 写报告一次')
+      ok(/本周报告/.test(rManual.result.report || ''), 'manual 报告来自 LLM')
+      // 自生长进化引擎在 auto 下仍保留：样本达标时仍会归纳
+      const aiGrow = mk()
+      aiGrow.cfg.clusterLearnMinSamples = 1
+      aiGrow.clusterFailures([{ id: 'z', error: 'weird new failure unmatched' }])
+      aiGrow.fetchImpl = async () => {
+        aiGrow.__calls = (aiGrow.__calls || 0) + 1
+        return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify([{ reason: '新类别', regex: 'weird new', samples: 1 }]) } }] }) }
+      }
+      const rGrow = await aiGrow.run('R1', { entries, trigger: 'auto', logOnly: true })
+      ok(aiGrow.__calls === 1 && rGrow.result.learnedCount >= 1, 'auto 下自生长仍调 LLM 归纳（进化引擎保留）')
+      ok(!rGrow.result.report, 'auto 即使自生长发生了也不写润色报告')
+    }
+
+    // 10.6) 自动档逐条 LLM 复检独立开关：默认关，评测达标再开（2026-11-18 省额度）
+    {
+      const st = tmpStore()
+      ok(st.config.aiReview.autoLlmReviewEnabled === false, 'Store 默认 autoLlmReviewEnabled=false（逐条LLM复检默认关）')
+      const a = new AIReview(st)
+      ok(a.cfg.autoLlmReviewEnabled === false, 'AIReview cfg 默认关')
+      ok(a.normalizeConfig(a.cfg, {}).autoLlmReviewEnabled === false, 'normalizeConfig 缺省保留 false')
+      ok(a.normalizeConfig(a.cfg, { autoLlmReviewEnabled: true }).autoLlmReviewEnabled === true, 'normalizeConfig 可显式打开')
+      const web = fs.readFileSync(path.join(ROOT, 'src', 'server', 'web.js'), 'utf8')
+      const mainSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'index.js'), 'utf8')
+      for (const [label, src] of [['web.js', web], ['main/index.js', mainSrc]]) {
+        ok(/if \(!cfg\.autoLlmReviewEnabled\) return/.test(src), label + ' 自动逐条复检受独立开关门禁')
+      }
+      const ui = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'index.html'), 'utf8')
+      ok(/id="aiAutoLlmReview"/.test(ui), 'UI 有逐条AI复检开关')
+      const app = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'app.js'), 'utf8')
+      ok(/autoLlmReviewEnabled: !!\(\$\('aiAutoLlmReview'\)/.test(app), 'app.js 保存逐条AI复检开关')
+    }
 
     // ---- 四块补齐：R3 真调 AI / R1 报告 / R4-R7 自动铺轨 / 隔离区放行前意见 ----
     // 1) R3 真调 AI：模型返回 JSON 时结论来自模型

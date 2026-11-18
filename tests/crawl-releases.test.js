@@ -372,18 +372,27 @@ ck('缓存戳不低于 v54（v1.10.7 基线）', /app\.js\?v=(5[4-9]|[6-9]\d)/.t
   ck('隔离闸：quarantined 状态取代直接判死', hSrc.includes("e.status = 'quarantined'") && !hSrc.includes("重度混淆脚本，已按设置剔除"))
   ck('检测/灌入两道闸共用 applyObfGate', (hSrc.match(/this\.applyObfGate\(/g) || []).length >= 2)
   ck('trustObfSource 按 contentHash 信任', hSrc.includes('trustObfSource(id, trust)') && hSrc.includes('trustedObfHashes'))
-  ck('硬特征条目不允许信任', hSrc.includes('不允许信任') && /spinLoops \|\| 0[\s\S]{0,120}evalCalls \|\| 0/.test(hSrc))
+  // v1.10.8：原「硬特征条目不允许信任」断言的是 hunter.js 里那份字面量副本，该副本已收敛到
+  // checker.classifyQuarantineTrust。改为断言「判据单一来源 + 只对 block 档留痕」。
+  ck('信任判据收敛到 checker.classifyQuarantineTrust 单一来源',
+    hSrc.includes('classifyQuarantineTrust(e, cfg)') &&
+    !/spinLoops \|\| 0[\s\S]{0,80}evalCalls \|\| 0/.test(hSrc))
+  ck('block 档放行留 warn 级审计日志（含命中项与内容指纹）',
+    hSrc.includes('用户确认放行 block 级条目') && hSrc.includes("'安全', 'warn'") && hSrc.includes('String(e.contentHash).slice(0, 12)'))
   ck('信任后 status 恢复 ok 且 usable 按 deep', hSrc.includes("if (e.status === 'quarantined') e.status = 'ok'") && hSrc.includes('usableCount(e) > 0'))
   ck('隔离 API 路由 /api/sources/trust-obf', webSrc.includes('/api/sources/trust-obf'))
   ck('桌面 IPC sources:trustObf', mainSrc.includes("'sources:trustObf'") && preloadSrc.includes('sourcesTrustObf'))
   ck('bridge sourcesTrustObf', bridgeSrc.includes('sourcesTrustObf: (id, trust)'))
   ck('导航含「混淆隔离」且位于已灌入与设置之间', /data-view="installed"[\s\S]{0,200}data-view="quarantine"[\s\S]{0,200}data-view="settings"/.test(htmlSrc))
   ck('隔离区视图与渲染函数', htmlSrc.includes('id="view-quarantine"') && htmlSrc.includes('id="qzList"') && appSrc.includes('function renderQuarantine'))
-  ck('硬特征条目按钮禁用', appSrc.includes('不可信任'))
+  // v1.10.8：三档分级后不再有 disabled 的「不可信任」按钮，改为断言三档文案齐全且全部可点
+  ck('隔离区三档按钮（全部可点，无灰死）',
+    appSrc.includes('信任放行') && appSrc.includes('仍要信任…') && appSrc.includes('有风险，不建议放行') &&
+    !/class="btn btn-sm ghost" disabled title="命中反调试/.test(appSrc))
   ck('音源库徽章显示混淆隔离', appSrc.includes("status === 'quarantined'") && appSrc.includes('混淆隔离</span>'))
   ck('隔离条目不落入「未检测」筛选', appSrc.includes("e.status !== 'quarantined'"))
   ck('设置页文案改为隔离表述', htmlSrc.includes('自动隔离') && htmlSrc.includes('「混淆隔离」页'))
-  ck('缓存戳提升到 app.js v81（批量 AI 复检扩展 R4-R7）', htmlSrc.includes('app.js?v=81') && htmlSrc.includes('web-bridge.js?v=58') && htmlSrc.includes('styles.css?v=20'))
+  ck('缓存戳提升到 app.js v89（突破项②R4更新语义徽章）', htmlSrc.includes('app.js?v=90') && htmlSrc.includes('web-bridge.js?v=60') && htmlSrc.includes('styles.css?v=21'))
 
   // —— v1.10.8 改名检测（prune 301 识别）+ 仓库行快捷拉黑 ——
   {
@@ -408,6 +417,12 @@ ck('缓存戳不低于 v54（v1.10.7 基线）', /app\.js\?v=(5[4-9]|[6-9]\d)/.t
     // v1.10.7 黑名单管理：unblockRepo + /api/repos/unblock + 黑名单卡片/解除按钮
     ck('hunter 提供 unblockRepo（移出黑名单可回清单）', hSrc.includes('unblockRepo(') && hSrc.includes('不在黑名单中') && hSrc.includes("origin: 'unblocked'"))
     ck('Web 路由 /api/repos/unblock + 三端透传', webSrc.includes('/api/repos/unblock') && mainSrc.includes("'repos:unblock'") && preloadSrc.includes('reposUnblock') && bridgeSrc.includes('reposUnblock:'))
+    // M5：解除拉黑三端签名必须一致——app/bridge 传字符串 repo，preload 包成对象，main 按对象解构
+    ck('解除拉黑三端签名一致（app 传 repo 字符串 → preload 包对象 → main 解构对象）',
+      appSrc.includes('api.reposUnblock(repo)') &&
+      preloadSrc.includes("reposUnblock: (repo, reAdd) => ipcRenderer.invoke('repos:unblock', { repo, reAdd })") &&
+      bridgeSrc.includes('reposUnblock: (repo, reAdd) => call(\'/api/repos/unblock\', { repo, reAdd })') &&
+      mainSrc.includes("hunter.unblockRepo(String((args || {}).repo || ''), (args || {}).reAdd)"))
     ck('仓库页黑名单卡片（blockedBox + 解除拉黑按钮）', htmlSrc.includes('id="blockedBox"') && appSrc.includes('blk-unblock') && appSrc.includes('renderBlockedRepos'))
     ck('解除拉黑带确认弹窗（说明回清单恢复采集）', appSrc.includes('解除拉黑「') && appSrc.includes('恢复采集'))
     // v1.10.8 页面重构：黑名单可折叠 + 「采集源」新页（设置页瘦身）

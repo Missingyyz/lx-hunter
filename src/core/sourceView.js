@@ -14,16 +14,43 @@
  */
 const STRIP_FIELDS = ['code']
 
-function publicSourceView(src) {
-  if (!src || typeof src !== 'object') return src
-  const out = Object.assign({}, src)
-  for (const k of STRIP_FIELDS) delete out[k]
+/**
+ * v1.10.8：隔离区信任分级由**服务端算好随条目下发**（`qzLevel` / `qzReasons`）。
+ *
+ * 为什么不放在前端算：分级判据一旦进 renderer 就是第四份副本（前三份是 app.js 的 qzHardHits、
+ * hunter.applyObfGate、hunter.trustObfSource，已漂移两轮）。renderer 是纯浏览器脚本没有 require，
+ * 拿不到 checker 的纯函数，只能把规则抄一遍。放这里则 Web 版 / Electron 版、前端 / 后端全部同一份。
+ *
+ * @param {object} src 完整条目
+ * @param {object} cfg 配置（classifyQuarantineTrust 只用 trustedObfDomains）
+ */
+function quarantineTrustView(src, cfg) {
+  const out = {}
+  // 只对隔离相关条目算（其余条目前端不显示按钮，白算 4000 条浪费 CPU）
+  if (!src || (!src.quarantined && src.status !== 'quarantined')) return out
+  try {
+    const { classifyQuarantineTrust } = require('./checker')
+    const cls = classifyQuarantineTrust(src, cfg)
+    out.qzLevel = cls.level
+    out.qzReasons = cls.reasons
+  } catch (e) {
+    // 分级只是 UI 提示，算不出来不能让整个列表接口 500——退化成最短确认路径
+    out.qzLevel = 'risky'
+    out.qzReasons = []
+  }
   return out
 }
 
-function publicSourceList(list) {
-  const arr = Array.isArray(list) ? list : []
-  return arr.map(publicSourceView)
+function publicSourceView(src, cfg) {
+  if (!src || typeof src !== 'object') return src
+  const out = Object.assign({}, src)
+  for (const k of STRIP_FIELDS) delete out[k]
+  return Object.assign(out, quarantineTrustView(src, cfg))
 }
 
-module.exports = { publicSourceView, publicSourceList, STRIP_FIELDS }
+function publicSourceList(list, cfg) {
+  const arr = Array.isArray(list) ? list : []
+  return arr.map(s => publicSourceView(s, cfg))
+}
+
+module.exports = { publicSourceView, publicSourceList, quarantineTrustView, STRIP_FIELDS }

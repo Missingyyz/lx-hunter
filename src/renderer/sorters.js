@@ -77,24 +77,26 @@
     return best
   }
   /**
-   * 综合质量排序键（升序小者优先）：[-可用平台数, p50, -档位]。
-   * 与 core/quality.sortKey 完全同口径；不带 300ms 噪声带（噪声带只用于「删不删」的二元裁决，
-   * 排序要求顺序可复现，差 1ms 也要能分出先后）。
+   * 综合质量排序键（升序小者优先）：[-可用平台数, 已打分?, p50, -档位]。
+   * 与 core/quality.sortKey 完全同口径（含 P1-1 未打分分层语义）；不带 300ms 噪声带
+   * （噪声带只用于「删不删」的二元裁决，排序要求顺序可复现，差 1ms 也要能分出先后）。
    *
-   * 打分门控（2026-11-10 00:1x 用户口径）：只有「深度检测（打分）」产生的 metrics
-   * （depth==='full'）才参与排序。初筛/快速模式的 p50 只来自 1 次成功请求，
-   * 拿它排序等于用一个样本冒充能力；这类条目 p50 记为 MAX、排在打分过的之后。
+   * 打分门控（2026-11-10 用户口径）：只有「深度检测（打分）」产生的 metrics
+   * （depth==='full' 且 samples!==0）才参与排序。第一位 usable 是分层键，
+   * 第二位把「是否已打分」显式化——同平台数层内，已打分排前、未打分排本层末位
+   * （P1-1：不再用全局 MAX_SAFE_INTEGER 冒充延迟）。
    */
   function qualitySortKey(e) {
     const p = (e.deep && e.deep.platforms) || {}
     let n = 0
     for (const k in p) if (p[k] && p[k].status === 'usable') n++
-    const m = (e.deep && e.deep.metrics) || null
-    const scored = !!(m && m.depth === 'full')
+    const m = (e.deep && e.deep.metrics) || (e.metrics) || null
+    const zeroSamples = !!(m && Number(m.samples) === 0)
+    const scored = !!(m && m.depth === 'full' && !zeroSamples)
     const raw = scored ? Number(m.p50LatencyMs) : NaN
     const p50 = raw > 0 ? raw : null
     const tier = scored ? bestTierValue(m && m.qualityMax) : null
-    return [-n, p50 === null ? Number.MAX_SAFE_INTEGER : p50, tier === null ? -1 : -tier]
+    return [-n, scored ? 0 : 1, p50 === null ? 0 : p50, tier === null ? -1 : -tier]
   }
   /**
    * 质量摘要 HTML（「3平台 · 320ms」）——排序依据的可读化。
@@ -130,6 +132,48 @@
     // 能显示出来的 p50 一定是这一轮深度检测测出来的。
     return '<span class="qbrief" title="排序依据：可用平台 ' + n + ' 个 → p50 延迟 ' +
       Math.round(raw) + 'ms → 最高可播档（需专项补测）">' + n + '平台 · ' + Math.round(raw) + 'ms</span>'
+  }
+
+  /**
+   * P1-4 稳健性徽章：可播率 / 取链成功率 / p90 长尾延迟（只读展示，取自 deep.metrics）。
+   * 只作提示，不参与排序裁决、不进删源；字段缺失（eval/初筛样本常见）时返回空串，不编造。
+   */
+  function qualityRobustnessHtml(e) {
+    const m = (e && e.deep && e.deep.metrics) || null
+    if (!m) return ''
+    const bits = []
+    const pr = Number(m.playableRate), sr = Number(m.successRate), p90 = Number(m.p90LatencyMs)
+    if (Number.isFinite(pr) && pr > 0) bits.push('可播 ' + Math.round(pr * 100) + '%')
+    if (Number.isFinite(sr) && sr > 0) bits.push('取链 ' + Math.round(sr * 100) + '%')
+    if (Number.isFinite(p90) && p90 > 0) bits.push('p90 ' + Math.round(p90) + 'ms')
+    if (!bits.length) return ''
+    return '<span class="qbrief robust" title="稳健性信号（仅展示，不参与删源判定）：' + bits.join('、') + '">' + bits.join(' · ') + '</span>'
+  }
+
+  /**
+   * 突破项①阶段2 UI 徽章：冷启动语义预判结果（只读，sourceAiClass 由灌入前旁路写入）。
+   * 只展示、不参与判定；未预判/uncertain 不出徽章（不编造）。
+   */
+  function coldStartBadgeHtml(e) {
+    const c = e && e.sourceAiClass
+    if (!c || c === 'uncertain') return ''
+    const reason = String((e && e.sourceAiReason) || '').slice(0, 60)
+    if (c === 'real') return '<span class="qbrief cs-real" title="AI 猜这是真音源（只是提示，不参与判定）' + (reason ? ' — ' + reason.replace(/[<>"']/g, '') : '') + '">像是真源</span>'
+    if (c === 'tool') return '<span class="qbrief cs-tool" title="AI 猜这是自检/示例工具（只是排后面，不删除也不判死）' + (reason ? ' — ' + reason.replace(/[<>"']/g, '') : '') + '">像是工具，待确认</span>'
+    return ''
+  }
+
+  /**
+   * 突破项② UI 徽章：R4 更新说明语义分级结果（只读，updateTipsAiClass 由灌入前旁路写入）。
+   * 只有明确 substantive=true/false 出徽章；uncertain/无字段不出（不编造）。判据是「有无实质修复」。
+   */
+  function updateTipsBadgeHtml(e) {
+    const c = e && e.updateTipsAiClass
+    if (c === undefined || c === null || c === 'uncertain') return ''
+    const reason = String((e && e.updateTipsAiReason) || '').slice(0, 60).replace(/[<>"']/g, '')
+    if (c === true) return '<span class="qbrief ut-sub" title="AI 看更新说明：有实际修复或新功能（只是提示，不参与判定）' + (reason ? ' — ' + reason : '') + '">有实际更新</span>'
+    if (c === false) return '<span class="qbrief ut-ad" title="AI 看更新说明：只是催更或广告，没实质内容（只是提示，不自动删源）' + (reason ? ' — ' + reason : '') + '">像是催更，待确认</span>'
+    return ''
   }
 
   /** 质量排序键 → 比较器；全等时按名称兜底，保证顺序稳定。 */
@@ -170,5 +214,5 @@
     return arr.sort((a, b) => dir * def.cmp(a, b, imported))
   }
 
-  return { SORT_KEYS, SORT_DEFS, statusRank, platScore, sortSources, qualitySortKey, qualityCmp, tierValue, bestTierValue, qualityBriefHtml, isDeepDead, isCheckedNoSource }
+  return { SORT_KEYS, SORT_DEFS, statusRank, platScore, sortSources, qualitySortKey, qualityCmp, tierValue, bestTierValue, qualityBriefHtml, qualityRobustnessHtml, coldStartBadgeHtml, updateTipsBadgeHtml, isDeepDead, isCheckedNoSource }
 })

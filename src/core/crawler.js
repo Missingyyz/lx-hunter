@@ -193,6 +193,21 @@ const MAX_SCRIPT_BYTES = 2 * 1024 * 1024
 let crawlBlockPatterns = []
 function setCrawlBlockPatterns(a) { crawlBlockPatterns = Array.isArray(a) ? a.map(x => String(x || '').trim()).filter(Boolean) : [] }
 
+/**
+ * P-1434 采集特征库统一判定：文件名/路径命中特征关键词即为非音源脚本（示例音源/插件等）。
+ * 语义与历史树内实现完全一致：忽略大小写、子串包含。
+ * 树内 .js（extractCandidates）与压缩包内 .js（pickScriptsFromZip）都必须走这里，
+ * 避免两条采集入口的过滤口径漂移（T1-1：曾经树内拦、zip 内放，废源反复采回）。
+ */
+function isBlockedPath(path) {
+  const lp = String(path || '').toLowerCase()
+  for (const bp of crawlBlockPatterns) {
+    const kw = String(bp || '').trim().toLowerCase()
+    if (kw && lp.includes(kw)) return true
+  }
+  return false
+}
+
 /** 树里的 .js 候选（带 blob sha —— 增量判重靠它，零额外请求）
  *  2026-11-11 性能项 2：候选阶段先按「路径 + 体积」预过滤，少建条目 = 少下载、少排队。
  *  @returns {{items:Array<{path,sha,size}>, filtered:{path:number,size:number}}} */
@@ -206,13 +221,7 @@ function extractCandidates(tree, maxPerRepo) {
     if (/(webpack|vite|rollup|babel|jest|eslint|tsconfig)[^/]*\.js$/i.test(item.path)) continue
     if (CLIENT_SOURCE_PATH.test(item.path)) { filtered.path++; continue }
     // P-1434 采集特征库：文件名/路径命中特征关键词 → 不采集（示例音源/插件等非音源脚本）
-    const lp = String(item.path || '').toLowerCase()
-    let blocked = false
-    for (const bp of crawlBlockPatterns) {
-      const kw = String(bp || '').trim().toLowerCase()
-      if (kw && lp.includes(kw)) { blocked = true; break }
-    }
-    if (blocked) { filtered.block++; continue }
+    if (isBlockedPath(item.path)) { filtered.block++; continue }
     const size = Number(item.size)
     // 空文件 / 超过检测上限的文件：下载也是白下（checkBasic 会判「文件过大」或空正文）
     if (size === 0) { filtered.size++; continue }
@@ -245,6 +254,9 @@ function pickScriptsFromZip(entries, archivePath, repo, rawUrl, maxPerArchive) {
   for (const f of entries) {
     if (!/\.js$/i.test(f.path) || f.data.length > 2 * 1024 * 1024) continue
     if (/(^|\/)(node_modules|test|tests|__tests__)\//.test(f.path)) continue
+    // P-1434 采集特征库：与树内 .js 同口径。包内脚本路径或压缩包文件名命中特征词即跳过，
+    // 防止被特征库标记的废源换个 zip 分发又采回（T1-1）。
+    if (isBlockedPath(f.path) || isBlockedPath(archivePath)) continue
     // 包内脚本正文也可能是 GBK；用 decodeScriptText 兜底，别再无条件 toString('utf8')
     const text = decodeScriptText(f.data)
     const score = scoreEntry(f.path, text)
@@ -722,6 +734,9 @@ async function discoverReposViaSearch(opts) {
   // v1.13.0：搜索结果里本来就有 default_branch，带给 verifyRepoHasSource 就能省掉一次
   // /repos/{repo} 请求（每候选仓库省 1 次配额）
   const branches = {}
+  // 突破项①：保留搜索结果的语义元数据（name/description/topics），供验真前冷启动预判；
+  // 只用于排序，不参与任何入库/验真硬判定。
+  const meta = {}
   for (const kw of keywords) {
     if (out.length >= maxTotal) break
     try {
@@ -746,6 +761,7 @@ async function discoverReposViaSearch(opts) {
         if (o.skipRelevance !== true && !looksLikeSourceRepo(it)) { filtered++; continue }
         seen.add(n)
         out.push(n)
+        meta[n] = { id: n, name: it.name || full, description: it.description || '', topics: Array.isArray(it.topics) ? it.topics : [] }
         if (it.default_branch) branches[n] = String(it.default_branch)
         added++
       }
@@ -754,6 +770,18 @@ async function discoverReposViaSearch(opts) {
       perKeyword[kw] = { error: String((e && e.message) || e).slice(0, 80), found: 0 }
     }
     await sleep(300)
+  }
+  // 突破项①：验真/爬取前做一次批量冷启动语义预判，只把「像真音源仓」的排前面。
+  // 低价值仓只延后不拉黑——prioritize 只重排顺序、不删元素；失败/未启用时由调用方返回原序。
+  if (out.length > 1 && typeof o.prioritize === 'function') {
+    try {
+      const ranked = await o.prioritize(out.slice(), meta)
+      if (Array.isArray(ranked) && ranked.length === out.length) {
+        // 只接受「是原集合的一个重排」：补齐/丢元素都视为异常，保持原序
+        const set = new Set(ranked)
+        if (set.size === out.length && out.every(r => set.has(r))) out = ranked
+      }
+    } catch (e) { /* 旁路失败：保持原序，不中断采集 */ }
   }
   // 内容验真（可选）：逐个仓库看有没有真音源脚本 / 压缩包 / 发行资产。
   // 只有显式 verify===true 才做——搜索本身是"发现"，实际爬取前才值得花这些 API 配额。
@@ -1054,7 +1082,7 @@ module.exports = {
   resetGhStats, ghStatsSnapshot,
   parseReleaseAssets, fetchRepoFreshness, judgeFreshness,
   discoverReposViaSearch, looksLikeSourceRepo, verifyRepoHasSource, resolveRepoRename, isSourceAsset,
-  extractCandidates, extractArchiveCandidates, pickScriptsFromZip, normalizeRepo,
+  extractCandidates, extractArchiveCandidates, pickScriptsFromZip, normalizeRepo, isBlockedPath,
   filterLatestOnly, latestBaseName, versionNumOf,
   RELEASES_PER_REPO, MAX_ASSET_BYTES, MAX_RELEASE_DL_PER_REPO
 }

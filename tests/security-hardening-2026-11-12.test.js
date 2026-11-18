@@ -101,7 +101,10 @@ ok(/外联：/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer'
 console.log('--- ⑮ P-1431：规则制自动信任（用户要求：不要每次人工信任）---')
 ok(/function obfDomainVerdict\(domains, customList\)/.test(checkerSrc), 'checker 提供自动信任判定 obfDomainVerdict')
 ok(/autoTrustCleanObf !== false && e\.contentHash && !trustedHashes\.includes/.test(hunterSrc), '闸门检测路径有自动信任判定（可关）')
-ok(/hardHit = \(hh\.spinLoops \|\| 0\) > 0/.test(hunterSrc), '硬特征条目永不自动信任')
+// v1.10.8：hardHit 字面量已收敛到 checker.classifyQuarantineTrust，
+// 自动信任只认 allow 档（零可疑特征）——仍有风险信号的条目永不被自动信任。
+ok(/const trustLevel = classifyQuarantineTrust\(e, cfg\)\.level/.test(hunterSrc) &&
+  /if \(trustLevel === 'allow'\)/.test(hunterSrc), '硬特征条目永不自动信任（自动信任仅限 allow 档）')
 ok(/obfDomainVerdict\(obfDomains\(code\)\.concat\(urls\), cfg\.trustedObfDomains\)/.test(hunterSrc), '判定域 = 静态外联 + 沙箱实测取链 URL')
 ok(/自动信任 \$\{autoTrusted\} 条/.test(hunterSrc), '自动信任有日志可追溯')
 ok(/Array\.isArray\(cfg\.trustedObfHashes\)\) cfg\.trustedObfHashes = \[\]/.test(hunterSrc), 'trustedHashes 挂回 cfg（修复首签丢失隐患）')
@@ -159,15 +162,18 @@ ok(/\/RATE_LIMIT\|限流\|已知失败\/i\.test\(String\(pl\.message \|\| ''\)\)
 ok(/Date\.now\(\) - e\.deep\.checkedAt < 30 \* 60 \* 1000\)\s*\{\s*rlSkip\+\+/.test(hunterSrc4), '限流冷却 30 分钟内跳过无效重试')
 ok(/限流冷却中跳过 \$\{rlSkip\} 条/.test(hunterSrc4), '跳过数进汇总日志可追溯')
 
-console.log('--- ㉑ P-1432 OPT-1：jsjiami 与信任边界解绑 ---')
-const qzFrag = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8').split('function qzHardHits')[1].split('\n}')[0]
-ok(qzFrag.includes('(h.spinLoops || 0) > 0') && qzFrag.includes('(h.evalCalls || 0) > 0') && !qzFrag.includes('jsjiamiMarks'),
-  'qzHardHits 只保留行为特征（jsjiami 移出不可信任名单）')
-ok(/hh\.evalCalls \|\| 0\) > 0`/.test('') || /const hardHit = \(hh\.spinLoops \|\| 0\) > 0 \|\| \(hh\.selfSchedCalls \|\| 0\) > 0 \|\|\s*\n\s*\(hh\.evalCalls \|\| 0\) > 0/.test(hunterSrc3), 'P-1431 自动信任 hardHit 同步解绑')
+console.log('--- ㉑ P-1432 OPT-1 / v1.10.8：信任判据收敛（jsjiami 解绑 + 三份副本合并）---')
+// v1.10.8：qzHardHits / applyObfGate.hardHit / trustObfSource.hard 三份字面量副本已全部删除，
+// 收敛到 checker.classifyQuarantineTrust。原断言改为「副本已清零 + 单一来源存在」。
+const appSrcQz = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8')
+ok(appSrcQz.indexOf('function qzHardHits') === -1, '前端 qzHardHits 副本已删除（分级改由服务端下发）')
+ok(appSrcQz.includes('gzLevel') === false && /qzLevel/.test(appSrcQz), '前端只读服务端下发的 qzLevel')
+ok(/const hardHit = \(hh\.spinLoops/.test(hunterSrc3) === false, 'P-1431 自动信任 hardHit 副本已删除')
 
-console.log('--- ㉒ P-1432 OPT-1 补漏：trustObfSource 第三处判据解绑 ---')
-ok(!/hits\.jsjiamiMarks \|\| 0\) > 0/.test(hunterSrc4), '信任接口判据不再含 jsjiami（三处副本全部解绑）')
-ok(hunterSrc4.includes('命中行为硬特征'), '拒绝文案改为行为特征表述')
+console.log('--- ㉒ P-1432 OPT-1 / v1.10.8：trustObfSource 判据收敛 ---')
+ok(!/hits\.jsjiamiMarks \|\| 0\) > 0/.test(hunterSrc4), '信任接口判据不再含 jsjiami')
+ok(hunterSrc4.includes('classifyQuarantineTrust(e, cfg)'), '信任接口改调 classifyQuarantineTrust 单一来源')
+ok(hunterSrc4.includes('用户确认放行 block 级条目'), 'block 档放行留 warn 审计日志')
 
 console.log('--- ㉓ P-1432：checking 残留清扫（用户实测截图：状态卡「检测中…」）---')
 const storeSrc2 = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'store.js'), 'utf8')

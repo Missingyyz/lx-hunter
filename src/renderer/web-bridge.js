@@ -25,10 +25,18 @@
     const j = await r.json()
     // 会话过期广播（v1.10.0）：任意接口 401 时通知 app.js 重新弹出登录层，
     // 并断开 SSE（重连后的 EventSource 才会带上重新登录的 Cookie）
-    if (r.status === 401 && j && j.authRequired) {
-      window.dispatchEvent(new CustomEvent('lxh-auth-expired'))
-      if (es) { es.close(); es = null }
-    }
+    if (r.status === 401 && j && j.authRequired) handleAuthExpired()
+    return j
+  }
+
+  // 会话过期统一处理：裸 fetch 的接口（文件导入/导出）拿不到 call() 里的这段逻辑，
+  // 会话过期时必须同样弹登录层 + 断 SSE，否则用户只看到 "失败(401)" 却不知要重登。
+  function handleAuthExpired() {
+    window.dispatchEvent(new CustomEvent('lxh-auth-expired'))
+    if (es) { es.close(); es = null }
+  }
+  function checkAuthExpired(r, j) {
+    if (r.status === 401 && j && j.authRequired) handleAuthExpired()
     return j
   }
 
@@ -58,7 +66,10 @@
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: ids || [] })
     })
-    if (!r.ok) return { ok: false, error: '导出失败（HTTP ' + r.status + '）' }
+    if (!r.ok) {
+      try { const j = await r.json(); if (j && j.authRequired) handleAuthExpired() } catch (e) {}
+      return { ok: false, error: '导出失败（HTTP ' + r.status + '）' }
+    }
     const blob = await r.blob()
     const disposition = r.headers.get('Content-Disposition') || ''
     const m = /filename="?([^"]+)"?/.exec(disposition)
@@ -84,7 +95,7 @@
         try {
           const text = await f.text()
           const r = await fetch('/api/db/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: text })
-          resolve(await r.json())
+          resolve(checkAuthExpired(r, await r.json()))
         } catch (e) { resolve({ ok: false, error: String((e && e.message) || e) }) }
       }
       inp.click()
@@ -100,6 +111,14 @@
     })
     if (!r.ok) return { ok: false, error: '导出失败（HTTP ' + r.status + '）' }
     const blob = await r.blob()
+    // guard 的业务失败是 HTTP 200 + {ok:false,error}（桥接层既有契约），只看 r.ok 会
+    // 把错误 JSON 当附件下载还报「导出成功」。先解析内容：错误信封就不落盘、如实报错。
+    let envelope = null
+    try { envelope = JSON.parse(await blob.text()) } catch (e) { /* 正常导出也是 JSON，解析失败按原样下载 */ }
+    if (envelope && envelope.ok === false) {
+      if (r.status === 401 && envelope.authRequired) handleAuthExpired()
+      return { ok: false, error: envelope.error || '导出失败' }
+    }
     const disposition = r.headers.get('Content-Disposition') || ''
     const m = /filename="?([^"]+)"?/.exec(disposition)
     const a = document.createElement('a')
@@ -126,7 +145,7 @@
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ scope, raw: text })
           })
-          resolve(await r.json())
+          resolve(checkAuthExpired(r, await r.json()))
         } catch (e) { resolve({ ok: false, error: String((e && e.message) || e) }) }
       }
       inp.click()
@@ -148,7 +167,7 @@
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: f.name, code })
           })
-          resolve(await r.json())
+          resolve(checkAuthExpired(r, await r.json()))
         } catch (e) { resolve({ ok: false, error: String((e && e.message) || e) }) }
       }
       inp.click()
@@ -217,8 +236,10 @@
   aiRun: (body) => call('/api/ai-review/run', body),
   aiSuggestions: (filter) => call('/api/ai-review/suggestions?' + new URLSearchParams(filter || {}).toString()),
   aiApply: (body) => call('/api/ai-review/apply', body),
+  aiSuggestionIgnore: (body) => call('/api/ai-review/dismiss', body),
   aiUndo: (auditId) => call('/api/ai-review/undo', { auditId }),
   aiEvalReport: () => call('/api/ai-review/eval-report', {}),
+serverFleetProfile: () => call('/api/server/fleet-profile'),
     dbDelete: ids => call('/api/db/delete', { ids }),
     dbDeletedList: () => call('/api/db/deleted/list', {}),
     dbDeletedClear: () => call('/api/db/deleted/clear', {}),
@@ -228,7 +249,7 @@
     sourceImportSingle,
     sourceValidate: id => call('/api/source/validate', { id }),
     importUrl: (url, name) => call('/api/import/url', { url, name }),
-    serviceToggle: (id, enabled, owner) => call('/api/service/toggle', { id, enabled, owner }),
+    serviceToggle: (id, enabled, owner, reason) => call('/api/service/toggle', { id, enabled, owner, reason }),
     serviceRemove: (id, owner) => call('/api/service/remove', { id, owner }),
     servicePlatforms: (id, disabledSources, owner) => call('/api/service/platforms', { id, disabledSources, owner }),
     serviceListPublic: () => call('/api/service/list/public'),

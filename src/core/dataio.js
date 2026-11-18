@@ -15,6 +15,12 @@ const { hostToId, applyConfig } = require('./net')
 const SCOPES = ['repos', 'hubs', 'mirrors']
 const SCOPE_LABELS = { repos: '仓库清单', hubs: '音源采集站', mirrors: 'raw 加速镜像' }
 
+// 配置条目都是纯数据对象；深拷贝一份再改，避免合并时就地改到 store.config 的原对象 ——
+// 否则 saveConfig 抛错（磁盘满/只读）时内存已被改脏，后续任意 saveConfig 会把脏数据写盘。
+function cloneList(arr) {
+  return Array.isArray(arr) ? arr.map(x => (x && typeof x === 'object' ? JSON.parse(JSON.stringify(x)) : x)) : []
+}
+
 /** 采集站条目规范化（与 web.js 的 normHub 同一套字段口径） */
 function normHub(h) {
   if (!h || !h.url) return null
@@ -63,7 +69,7 @@ function buildExport(store, scope) {
 
 /** 仓库清单合并：规范化 + 按小写去重；同仓库时保留本地条目的 builtin/origin，enabled 以导入为准 */
 function mergeRepos(cur, incoming) {
-  const out = Array.isArray(cur) ? cur.slice() : []
+  const out = cloneList(cur)
   const byKey = new Map()
   for (const r of out) {
     if (!r || !r.repo) continue
@@ -91,7 +97,7 @@ function mergeRepos(cur, incoming) {
 
 /** 采集站合并：按规范化 url 去重，同名站点保留本地的 id/lastSync（采集状态不丢） */
 function mergeHubs(cur, incoming) {
-  const out = Array.isArray(cur) ? cur.slice() : []
+  const out = cloneList(cur)
   const byUrl = new Map()
   for (const h of out) {
     if (!h || !h.url) continue
@@ -120,7 +126,7 @@ function mergeHubs(cur, incoming) {
  */
 function mergeMirrors(store, incoming) {
   const c = store.config || {}
-  const cur = Array.isArray(c.mirrorPool) ? c.mirrorPool.slice() : []
+  const cur = cloneList(c.mirrorPool)
   const byId = new Map()
   for (const m of cur) if (m && m.id) byId.set(m.id, m)
   let added = 0, updated = 0

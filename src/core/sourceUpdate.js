@@ -23,7 +23,7 @@
 const crypto = require('crypto')
 const { versionKey: versionNum, cmpVersion } = require('./version')
 const { normName, repoKey, nameBody, scriptName } = require('./identity')
-const { compareVerdict, describeQuality } = require('./quality')
+const { compareVerdict, compareQuality, describeQuality } = require('./quality')
 
 function sha256(s) {
   return crypto.createHash('sha256').update(String(s), 'utf8').digest('hex')
@@ -374,7 +374,7 @@ async function defaultFetchCode(candidate, timeoutMs) {
   if (!url) throw new Error('候选既无脚本正文也无下载地址')
   let text = ''
   try {
-    const { crawlFetch } = require('./crawler')
+    const { crawlFetch } = require('./net')   // crawlFetch 由 net 导出（原先误从 crawler 解构 → undefined，下载必崩）
     const r = await crawlFetch(url, null, timeoutMs || 20000)
     const res = r && (r.res || r)
     if (!res || !res.ok) throw new Error('HTTP ' + (res && res.status))

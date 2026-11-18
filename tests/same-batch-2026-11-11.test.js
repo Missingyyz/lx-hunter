@@ -221,7 +221,7 @@ console.log('=== E. P1-4：非打分档灌入不继承上一版质量快照 ==='
   eq('深检 0 样本 → 也不写快照', store.imported.m2.score, null)
 }
 
-console.log('=== F. 同仓库版本更高 + 本地未打分：文案不能指错方向 ===')
+console.log('=== F. 同仓库版本更高 + 本地未打分：证据不足不删源（2026-11-18 新口径） ===')
 {
   const h = mkHunter()
   const e = mkE({ id: 'n1', name: 'P v2.0.0', ver: 'v2.0.0', repo: 'https://github.com/a/b' })
@@ -232,10 +232,11 @@ console.log('=== F. 同仓库版本更高 + 本地未打分：文案不能指错
     qualityProxy: { checkedAt: Date.now(), platforms: { kw: { status: 'usable', verified: true } }, metrics: { depth: 'full', p50LatencyMs: 200, samples: 3 } }
   }
   const v = h.sameNameVerdict(e, srv, e.code, { skipUnusable: true, replaceSameNameOnImport: true }, { ledger: null })
-  eq('同源版本更高 + 质量不可比 → 仍留新删旧', v.act, 'replace')
+  // 2026-11-18 用户拍板：证据不足不按版本删源（保留质量好的服务端源），改名并存。
+  eq('同源版本更高 + 质量不可比 → 不删源（改名并存）', v.act, 'rename')
   ok('理由写「证据不足」而不是「质量相当」', /证据不足/.test(v.why), v.why)
   ok('不再把缺口一口咬定成服务端侧', !/服务端侧质量证据不足/.test(v.why), v.why)
-  ok('也不再出现「平手，不删」这种自相矛盾', !/平手，不删/.test(v.why), v.why)
+  ok('明确给出「不按版本删源」的护栏', !/留新删旧/.test(v.why), v.why)
   ok('理由里给出可执行提示（先做深度检测）', /深度检测|初筛/.test(v.why), v.why)
 }
 

@@ -288,20 +288,19 @@ ipcMain.handle('ai-review:configSet', guard((e, p) => {
 
 ipcMain.handle('ai-review:test', guard(async () => {
   const r = await ai().review('你是一个连通性探测助手。', '只回复 OK 两个字母。')
-  return { ok: !!r.ok, message: r.ok ? '连接成功' : (r.error || '连接失败') }
+  return { ok: !!r.ok, message: r.ok ? '连接成功' : (r.error || '连接失败'), model: (ai().cfg.provider || {}).model || '' }
 }))
 
 ipcMain.handle('ai-review:run', guard(async (e, body) => {
   const a = ai()
   body = body || {}
-  try {
-    const out = await a.run(String(body.kind || 'R1'), body)
-    // R1 落日志（自动/手动都要记）
-    if (out && out.logged) pushLog({ msg: clusterLogMsg(out, body.trigger === 'auto' ? 'auto' : 'manual'), module: 'AI复检', level: 'info', at: Date.now() })
-    return out
-  } catch (err) {
-    return { ok: false, error: String((err && err.message) || err) }
-  }
+  // 与 Web 端同口径：不在此处 try/catch，run 失败 ({ok:false,error}) 必须 throw
+  // 冒泡到 guard，产出顶层 {ok:false,error}，避免被包成 {ok:true,data:{ok:false,...}}。
+  const out = await a.run(String(body.kind || 'R1'), body)
+  if (out && out.ok === false) throw new Error(out.error || 'AI 复检失败')
+  // R1 落日志（自动/手动都要记）
+  if (out && out.logged) pushLog({ msg: clusterLogMsg(out, body.trigger === 'auto' ? 'auto' : 'manual'), module: 'AI复检', level: 'info', at: Date.now() })
+  return out
 }))
 
 ipcMain.handle('ai-review:suggestions', guard((e, filter) => ({ suggestions: ai().listSuggestions(filter || {}) })))
@@ -316,8 +315,20 @@ ipcMain.handle('ai-review:apply', guard((e, body) => {
   const g = a.gate(s.kind)
   if (!g.auto && !body.byUser) return { applied: false, needUserConfirm: true, reason: g.reason }
   s.status = 'applied'; s.appliedAt = Date.now(); s.appliedBy = body.byUser ? 'user' : 'ai'
+  s.feedback = { action: 'adopt', at: Date.now(), by: body.byUser ? 'user' : 'ai' }
   a.store.saveDb()
   return { applied: true, suggestion: s }
+}))
+
+// 反馈闭环（与 web.js 镜像）：忽略只标采纳意愿，不碰执行白名单/门控/业务状态。
+ipcMain.handle('ai-review:dismiss', guard((e, body) => {
+  const a = ai(); body = body || {}
+  const s = a.store.db.aiSuggestions[body.id]
+  if (!s) throw new Error('建议不存在：' + body.id)
+  s.status = 'dismissed'
+  s.feedback = { action: 'dismiss', at: Date.now(), by: body.byUser ? 'user' : 'ai' }
+  a.store.saveDb()
+  return { dismissed: true, id: s.id }
 }))
 
 ipcMain.handle('ai-review:undo', guard((e, auditId) => {
@@ -335,8 +346,13 @@ ipcMain.handle('ai-review:evalReport', guard(() => {
   try { cases = ec.loadCases(casesDir) } catch (e) { cases = [] }
   const logs = Object.keys(store.db.aiEvalLog || {}).map(k => store.db.aiEvalLog[k])
   const metrics = ec.computeMetrics(logs, cases)
-  return { ok: true, cases: cases.length, logs: logs.length, metrics }
+  const a = ai()
+  // 与 web.js 镜像：反馈闭环只读聚合，零 AI、零副作用。
+  return { ok: true, cases: cases.length, logs: logs.length, metrics, feedbackStats: a.feedbackStats(), selfCheck: a.selfCheck() }
 }))
+
+// P1-3 服务端画像只读端点（与 web.js 镜像）：仅回读落盘画像，不计算、不请求、不驱动任何行为。
+ipcMain.handle('server:fleetProfile', guard(() => ({ profile: store.db.serverFleetProfile || null })))
 
 // 通用自动复检定时器：每小时轮询。R1 失败聚类日志只受总开关 enabled 管（与自动挡解耦），
 // 保持 clusterIntervalHours 每周语义；R3 自动只读复检受 aiSchedulePlan（自动挡）管。
@@ -362,7 +378,20 @@ setInterval(async () => {
       }
     }
     // ② 自动只读复检：受自动挡开关/到期/时段控制；选范围 → 逐条 R3 只读分析，只产建议、不执行。
+    // 独立开关 autoLlmReviewEnabled 默认关：该路径每轮 20-60 次 LLM 仅产无人消费的 applied 标记，
+    // 零进化价值；R1 本地聚类/自生长（①，已在上面）不受影响。评测达标后再开此开关。
+    if (!cfg.autoLlmReviewEnabled) return
     if (!plan.due || !plan.activeNow) return
+    let batchError = null   // 失败退避信号：本轮同步失败写进 lastError（静默但可查，退避据此生效）
+    // 异步（fire-and-forget）失败可能在本轮 finally 之后才 reject，回调里直接落库 lastError，
+    // 否则等不到下一轮 while 就丢了信号。lastRun 只在同步轮成功时更新。
+    const markAsyncError = (e) => {
+      try {
+        const prev = store.db.aiAutoReview || {}
+        store.db.aiAutoReview = Object.assign({}, prev, { lastError: String((e && e.message) || e).slice(0, 300) })
+        store.saveDb()
+      } catch (_) {}
+    }
     try {
       const ids = selectScope(store.getSources(), plan.scope, plan.limit, Date.now()) || []
       let done = 0, marked = 0
@@ -372,7 +401,7 @@ setInterval(async () => {
           const text = [src.error, src.status].filter(Boolean).join(' / ')
           const name = src.name || src.lxName || src.scriptName || ''
           const r = ai().run('R3', { entryId: id, trigger: 'auto', text, name })
-          if (r && typeof r.then === 'function') awaitIgnore(r)
+          if (r && typeof r.then === 'function') awaitIgnore(r, markAsyncError)
           // 自动铺轨：auto 档时对条目产 R4/R5 可执行建议并自动标记（仅标记，不碰业务）。
           // R6/R7 高危不自动产；评测跑完再考虑接真实动作。
           if ((cfg.mode || 'off') === 'auto') {
@@ -389,21 +418,26 @@ setInterval(async () => {
                 if (rr && rr.autoMarked) marked++
               }
             }
-            const p = runExec(); if (p && typeof p.then === 'function') awaitIgnore(p)
+            const p = runExec(); if (p && typeof p.then === 'function') awaitIgnore(p, markAsyncError)
           }
           done++
-        } catch (e) {}
+        } catch (e) { batchError = batchError || e }
       }
       pushLog({ msg: 'AI 自动只读复检：本轮处理 ' + done + ' 条' + (marked ? '；自动铺轨标记 ' + marked + ' 条（仅标记，未执行业务）' : ''), module: 'AI复检', level: 'info', at: Date.now() })
-    } catch (e) {} finally {
+    } catch (e) { batchError = batchError || e } finally {
+      // 水位喂全：lastAttempt 恒推进；成功写 lastRun 并清 lastError；失败保留/写 lastError 触发退避。
       try {
-        store.db.aiAutoReview = Object.assign({}, store.db.aiAutoReview || {}, { lastAttempt: Date.now() })
+        const prev = store.db.aiAutoReview || {}
+        const patch = { lastAttempt: Date.now() }
+        if (!batchError) patch.lastRun = Date.now()
+        patch.lastError = batchError ? String((batchError && batchError.message) || batchError).slice(0, 300) : null
+        store.db.aiAutoReview = Object.assign({}, prev, patch)
         store.saveDb()
       } catch (e) {}
     }
   } catch (e) {}
 }, 60 * 60 * 1000).unref?.()
-function awaitIgnore(p) { try { p.catch(() => {}) } catch (e) {} }
+function awaitIgnore(p, onError) { try { p.catch(onError || (() => {})) } catch (e) { if (onError) onError(e) } }
 
 ipcMain.handle('net:test', guard(async (e, opts) => {
   const { testNetwork } = require('../core/net')
@@ -585,7 +619,8 @@ ipcMain.handle('sources:get', guard(() => {
   return {
     // 桌面版同样剥掉 code：IPC 也要序列化这 11MB，剥掉后列表响应体 14.3MB → 2.7MB
     // （渲染层列表不用正文，见 core/sourceView.js 的说明）
-    sources: require('../core/sourceView').publicSourceList(store.getSources()),
+    // v1.10.8：桌面版与 Web 版保持一致——隔离区三档分级随列表下发（qzLevel/qzReasons）
+    sources: require('../core/sourceView').publicSourceList(store.getSources(), store.config),
     imported: store.imported,
     lastCrawl: store.db.lastCrawl,
     patrol: store.db.patrol || { lastRun: 0 }
@@ -772,10 +807,10 @@ ipcMain.handle('import:url', guard(async (e, url, name) => {
   return r
 }))
 
-ipcMain.handle('service:toggle', guard(async (e, id, enabled, owner) => {
+ipcMain.handle('service:toggle', guard(async (e, id, enabled, owner, reason) => {
   const svc = getActiveService(store.config)
   if (!svc) throw new Error(NO_ACCOUNT_ERR)
-  return await svc.adapter.toggle(svc.acct, id, enabled, { owner })
+  return await svc.adapter.toggle(svc.acct, id, enabled, { owner, reason })
 }))
 ipcMain.handle('service:remove', guard(async (e, id, owner) => {
   const svc = getActiveService(store.config)

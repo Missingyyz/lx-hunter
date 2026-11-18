@@ -1,0 +1,29 @@
+R4-R7 评测回放报告（桩模式：aiAct=goldAct，验证链路与样本量，非真机准确率）
+==============================================================================
+样本总数 230 | 标注来源 双盲标+用户定稿 | 生成 2026-11-17T04:01:05.952Z
+
+kind 分布：{"R4":36,"R5":86,"R6":80,"R7":28}
+verdict 分布：{"R4:ignore":21,"R4:follow":15,"R5:nonSource":11,"R5:source":75,"R6:reject":58,"R6:trust":22,"R7:keep":15,"R7:blacklist":13}
+reviewType 分布：{"agree":177,"dispute|用户修正":23,"lowconf":30}
+
+分层指标（computeMetrics）：
+stratum            n   need  sufficient  verdict     accuracy  coverage  readonly
+R4|GREY|D0         16    200       false  数据不足           1.00     1.00  true
+R4|HARD|D0          5    500       false  数据不足           1.00     1.00  true
+R4|HARD|D1         15    100       false  数据不足           1.00     1.00  true
+R5|GREY|D0         70    200       false  数据不足           1.00     1.00  true
+R5|GREY|D1         11    100       false  数据不足           1.00     1.00  true
+R5|HARD|D0          5    500       false  数据不足           1.00     1.00  true
+R6|GREY|D0         57    200       false  数据不足           1.00     1.00  true
+R6|GREY|D1          7    100       false  数据不足           1.00     1.00  true
+R6|HARD|D0          1    500       false  数据不足           1.00     1.00  true
+R6|HARD|D1         15    100       false  数据不足           1.00     1.00  true
+R7|GREY|D0         10    200       false  数据不足           1.00     1.00  true
+R7|GREY|D1         13    380       false  数据不足           1.00     1.00  true
+R7|HARD|D0          5    500       false  数据不足           1.00     1.00  true
+
+总判定：数据不足 — 存在未达门槛的分层，不判通过
+门槛：{"HARD":500,"GREY":200,"DANGER":100,"BLACKLIST":380}
+
+说明：桩模式 aiAct 直接取 goldAct，accuracy 恒为1，仅验证回放链路/样本量/只读约束。
+真机准确率需 LXH_AI_EVAL_LIVE=1 + 真实 provider，由评测台子后续执行。

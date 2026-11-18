@@ -1,0 +1,216 @@
+R4-R7 双标争议/低置信条目（需用户拍板）
+============================================================
+[R4] 8bdc9e91d5 | dispute | 长青SVIP音源
+  ① follow: updateTips[0].msg 明确『新版本v1.3.0』版本升级；validTier=confirmed、deep=平台数5可用3失败0、status=ok，证据齐全。
+  ② ignore: updateTips.msg'更新内容:长青svip音源更新，请尽快更新！'仅泛泛催更新，无具体修复或新功能。
+
+[R4] e3ad2cf4d0 | dispute | 长青SVIP音源
+  ① follow: updateTips[0].msg 明确『新版本v1.3.0』版本升级；validTier=confirmed、deep=平台数5可用5失败0、status=ok，证据齐全。
+  ② ignore: updateTips.msg'更新内容:长青svip音源更新，请尽快更新！'为泛泛催更新、无具体修复项；且usable=false与deep可用=5冲突。
+
+[R4] fe654090ca | dispute | 长青SVIP音源
+  ① follow: updateTips[0].msg 明确『新版本v1.3.0』版本升级；validTier=confirmed、deep=平台数5可用3失败0、status=ok，证据齐全。
+  ② ignore: updateTips.msg'更新内容:长青svip音源更新，请尽快更新！'无任何具体更新项，属催更新噪声。
+
+[R4] a0ef854eac | dispute | SVIP音源
+  ① follow: updateTips[0].msg 明确『新版本v1.3.0』版本升级；validTier=confirmed、deep=平台数5可用3失败0、status=ok，证据齐全。
+  ② ignore: scriptVersion为空、name='SVIP音源'而updateTips.msg称'长青svip音源更新'，msg亦无具体修复/新功能。
+
+[R4] bc789e8720 | dispute | 花瓣源（原netease，电脑版亲测有用)
+  ① follow: updateTips[0].msg 明确『新版本v1.3.0』版本升级；validTier=confirmed、deep=平台数5可用3失败0、status=ok，证据齐全（scriptVersion=v2.0.0.beta5 与新版本存在冲突，但 msg 本身为明确升级）。
+  ② ignore: updateTips.msg称发现新版本v1.3.0但scriptVersion=v2.0.0.beta5(版本倒退)，且msg提'长青svip音源'与name='花瓣源'不符，无实质内容。
+
+[R4] bdf0933770 | dispute | 长青SVIP音源
+  ① follow: updateTips[0].msg 明确『新版本v1.3.0』版本升级；validTier=confirmed、deep=平台数5可用5失败0、status=ok，证据齐全（usable=false 与 deep 可用5冲突）。
+  ② ignore: updateTips.msg'长青svip音源更新，请尽快更新！'无具体更新项；且usable=false与deep可用=5冲突。
+
+[R4] ec568fbc4d | dispute | ikun音源[公益]
+  ① follow: updateTips[0].msg 明确『版本v24→v27』版本升级；validTier=confirmed、deep=平台数5可用2失败0、status=ok，证据齐全。
+  ② ignore: updateTips.msg为'版本: v27'+'验证码获取：c.wwwweb.top'+'群：329970458'，属版本播报与广告，无实质更新。
+
+[R4] f5e75f6fd9 | dispute | ikun音源[公益]
+  ① follow: updateTips[0].msg 明确『版本v26→v27』版本升级；validTier=confirmed、deep=平台数5可用2失败0、status=ok，证据齐全。
+  ② ignore: updateTips.msg仅'版本更新 版本:v27'并附'验证码获取：c.wwwweb.top''群：329970458'等广告，无具体新功能或修复。
+
+[R6] e354f6724c | dispute | lx-玉宁熙
+  ① reject: obfDomains=[api-v2.yuafeng.cn] 与 apiHosts 一致，但该域名外联可疑（与 caseId=9a0700588f 同名脚本 evalCalls=0/jsjiamiMarks=0 证据冲突），且 deep 可用仅 1/5、totalUni=1 证据矛盾，存疑不放行
+  ② trust: validTier=confirmed，deep=平台数5 可用=1 失败=0，evalCalls=0/jsjiamiMarks=0；但 obfDomains=[api-v2.yuafeng.cn] 与 apiHosts 重合，域名归类存疑，按保守置 GREY。
+
+[R6] 844cae6d6b | dispute | 墨澜聚合音源
+  ① trust: deep=平台数5可用1失败0、validTier=confirmed、evalCalls=0/jsjiamiMarks=0无恶意特征，但usable=false与deep可用1冲突故列GREY降置信
+  ② reject: usable=false与deep=平台数=5 可用=1 失败=0冲突，total0x=48587超高，字段矛盾
+
+[R6] b446bf5865 | dispute → 已定稿(trust) | 长青SVIP音源
+  【2026-11-18 用户定稿】以客观实测为准：deep有可用、validTier=confirmed、无evalCalls/自启动/恶意域名 → 判 trust；jsjiami 混淆标记本身不算恶意特征。故 ①trust 采纳、②reject 作废。
+  ① trust: deep=平台数5可用3失败0实测可用、validTier=confirmed、evalCalls=0、apiHosts为空，但jsjiamiMarks=2故降置信
+  ② reject: obfHits含jsjiamiMarks=2，符合恶意特征阈值jsjiamiMarks≥1，虽有deep可用=3且confirmed仍不放行
+
+[R6] dd9513af05 | dispute | 墨澜聚合音源
+  ① trust: deep=平台数5可用3失败0、validTier=confirmed、evalCalls=0/jsjiamiMarks=0无恶意特征，但usable=false与deep可用3冲突故列GREY降置信
+  ② reject: usable=false与deep=平台数=5 可用=3 失败=0冲突，且total0x=42212超高未见合理说明，证据矛盾
+
+[R6] 5e3641d7e1 | dispute | 花瓣源（原netease，电脑版亲测有用)
+  ① trust: deep=平台数5可用3失败0、validTier=confirmed、evalCalls=0、jsjiamiMarks=1属低位混淆、apiHosts为空无恶意域名
+  ② reject: obfHits含jsjiamiMarks=1，达到jsjiamiMarks≥1的拒绝阈值
+
+[R7] 120ef77d38 | dispute | 示例音源
+  ① blacklist: deep='平台数=5 可用=0 失败=0'全平台无可用且usable=false、validTier=probable；name='示例音源'。
+  ② keep: name='示例音源'疑非音源，但deep='平台数=5 可用=0 失败=0'、apiDownStreak=3偏小，R7下证据不足以判长期失效或确认有害，保守保留。
+
+[R7] 78f284fe9a | dispute | afp
+  ① blacklist: deep='平台数=0 可用=0 失败=0 加载失败'且validTier=rejected、usable=false，实测加载失败不可用；但apiDownStreak=3偏小、name=afp疑似工具，故置信中等。
+  ② keep: deep='平台数=0 可用=0 失败=0 加载失败'属证据不足，apiDownStreak=3偏小不构成长期全平台失效；虽evalCalls=1、validTier=rejected但未达确认有害，保守保留。
+
+[R7] 794b3d91df | dispute | 聚合API接口
+  ① blacklist: deep='平台数=5 可用=0 失败=0'全平台无可用且usable=false、validTier=probable，属全失败长期失效。
+  ② keep: 聚合API接口deep='平台数=5 可用=0 失败=0'无可用，但apiDownStreak=3偏小、validTier=probable，证据不足以判长期全平台失效，保守保留。
+
+[R7] ab7b475d49 | dispute | 聚合API接口 (by lerd)
+  ① blacklist: deep='平台数=5 可用=0 失败=0'全失败且usable=false、validTier=probable，obfHits中jsjiamiMarks=1、obfLevel=high有恶意特征。
+  ② keep: obfLevel=high且jsjiamiMarks=1有可疑混淆特征，deep='平台数=5 可用=0 失败=0'但apiDownStreak=4偏小，未达确认有害或长期失效标准，保守保留。
+
+[R7] f060e89f8c | dispute | 聚合API接口 (by lerd)（decrypt)
+  ① blacklist: deep='平台数=5 可用=0 失败=0'全平台无可用且usable=false、validTier=probable，属全失败长期失效。
+  ② keep: deep='平台数=5 可用=0 失败=0'无可用，但apiDownStreak=3偏小、validTier=probable、usable=false，证据不足以判长期全平台失效，保守保留。
+
+[R7] 43fb39dff0 | dispute | comment
+  ① blacklist: deep='平台数=0 可用=0 失败=0 加载失败'且validTier=rejected、apiDownStreak=6、usable=false，加载失败长期失效。
+  ② keep: comment的deep='平台数=0 可用=0 失败=0 加载失败'属证据不足，apiDownStreak=6不构成长期失效，validTier=rejected，保守保留。
+
+[R7] 89fe28536d | dispute | musicSearch
+  ① blacklist: deep='平台数=0 可用=0 失败=0 加载失败'且validTier=rejected、apiDownStreak=6、usable=false，加载失败长期失效。
+  ② keep: musicSearch的deep='平台数=0 可用=0 失败=0 加载失败'属证据不足，apiDownStreak=6不构成长期失效，validTier=rejected，保守保留。
+
+[R7] 9c9f8cf49e | dispute | hotSearch
+  ① blacklist: deep='平台数=0 可用=0 失败=0 加载失败'且validTier=rejected、apiDownStreak=6、usable=false，加载失败长期失效。
+  ② keep: hotSearch的deep='平台数=0 可用=0 失败=0 加载失败'属证据不足，apiDownStreak=6不构成长期失效，validTier=rejected，保守保留。
+
+[R7] d47bad77e4 | dispute | leaderboard
+  ① blacklist: deep='平台数=0 可用=0 失败=0 加载失败'且validTier=rejected、apiDownStreak=6、usable=false，加载失败长期失效。
+  ② keep: leaderboard的deep='平台数=0 可用=0 失败=0 加载失败'属证据不足，apiDownStreak=6不构成长期失效，validTier=rejected，保守保留。
+
+[R7] d973da89cb | dispute | pic
+  ① blacklist: deep='平台数=0 可用=0 失败=0 加载失败'且validTier=rejected、apiDownStreak=6、usable=false，加载失败长期失效。
+  ② keep: pic的deep='平台数=0 可用=0 失败=0 加载失败'属证据不足，apiDownStreak=6不构成长期失效，validTier=rejected，保守保留。
+
+[R5] 0fc9fd58e8 | lowconf | 洛雪音乐源 1.0.0 此版有bug 去用修复版
+  ① source: name=洛雪音乐源 1.0.0 此版有bug 去用修复版 指向音源，status=quarantined/validTier 空/deep 空仅为证据缺失，按 source
+  ② source: name=「洛雪音乐源 1.0.0 此版有bug 去用修复版」明确音乐源；status=quarantined、jsjiamiMarks=2、selfSchedCalls=47 属混淆隔离(R6 范畴)，deep 为空
+
+[R5] 29d4468afc | lowconf | HYW×Koneko-API-Charity
+  ① source: name=HYW×Koneko-API-Charity 含义不明且非文档测试，deep=平台数=5 可用=0、validTier=probable，拿不准按 source
+  ② source: name=「HYW×Koneko-API-Charity」音源名，validTier=probable，deep=平台数=5 可用=0 失败=0 有实测，apiHosts 含 hywmusic.example.com
+
+[R5] 5f64c21911 | lowconf | 弥音
+  ① source: name=弥音 无显式音源或文档关键词、deep 空、validTier 空，按宁漏勿错标 source
+  ② source: name=「弥音」音源名，apiHosts=api.xunhuisi.store，但 deep 为空、validTier 为空故 GREY
+
+[R5] 6197ae2e09 | lowconf | 墨澜聚合音源
+  ① source: name=墨澜聚合音源 含聚合音源，虽 obfLevel=high 且 apiHosts/deep 为空，混淆属 R6 问题，按 source
+  ② source: name=「墨澜聚合音源」明确聚合音源，但 apiHosts 为空、obfLevel=high(total0x=38839)、deep 为空，证据弱故保守判 source
+
+[R5] 74c3843f09 | lowconf | lx-source-v8.16.0
+  ① source: name=lx-source-v8.16.0 暗示音源，但 status=unknown 且 scriptName、deep、validTier、obfHits、apiHosts 全空，无明确非音源字段故按宁漏勿错判 source；证据缺失故 GREY、低置信。
+  ② source: name=lx-source-v8.16.0 含 source(lx 音源系列)，但 status=unknown 且 scriptName/obfHits/apiHosts/deep/validTier 全空，证据严重缺失；按保守判 source，置信低。
+
+[R5] 76f175eb93 | lowconf | Ciallo～(∠・ω< )⌒☆
+  ① source: name=Ciallo 颜文字无明确音源/文档特征、deep 空、validTier 空，拿不准按 source
+  ② source: name=「Ciallo～(∠・ω< )⌒☆」音源名，apiHosts=api.s0o1.com，但 deep 为空、validTier 为空故 GREY
+
+[R5] b116b05f20 | lowconf | lx-玉宁熙-Pro
+  ① source: name=lx-玉宁熙-Pro 为具名音源样式、apiHosts 含 api-v2.yuafeng.cn，deep 空、validTier 空按 source
+  ② source: name=「lx-玉宁熙-Pro」无示例/自检标识，apiHosts 含 api-v2.yuafeng.cn、ynx.de5.net，但 deep 为空、validTier 为空故 GREY
+
+[R5] ba77a9b1a1 | lowconf | Ciallo～(∠・ω< )⌒☆
+  ① source: name 为 Ciallo 颜文字无明确音源/文档特征，deep=平台数=5 可用=0、validTier=probable，拿不准按 source
+  ② source: deep=平台数=5 可用=0 失败=0 有实测且 apiHosts=www.s0o1.com，名虽特殊但非示例/自检标识，validTier=probable
+
+[R5] c25e0637ff | lowconf | 酷我音乐·车机版
+  ① source: name=酷我音乐·车机版 与 apiHosts=[mobi.kuwo.cn] 更像客户端而非音源脚本，但无示例/自检/demo/readme/test 等明确非音源字段，按宁漏勿错判 source；deep 空、validTier 空故 GREY 且低置信。
+  ② source: name=酷我音乐·车机版、apiHosts=mobi.kuwo.cn，疑似调用酷我 API 的音源，但「车机版」也可能是客户端应用；deep/validTier 空，按宁漏勿错判 source，置信低。
+
+[R5] ca55262c3d | lowconf | lx-玉宁熙
+  ① source: name=lx-玉宁熙 为具名音源样式、apiHosts 含 gitee.com，deep 空、validTier 空、混淆属 R6，按 source
+  ② source: name=「lx-玉宁熙」无示例/自检标识，apiHosts 含 gitee.com、api-v2.yuafeng.cn，但 deep 为空、validTier 为空故 GREY
+
+[R5] e85fe8f5d5 | lowconf | 六音自定义源
+  ① source: name=六音自定义源 含自定义源，status=quarantined 与 obfLevel=high 仅为 R6 问题，deep 空按 source
+  ② source: name=「六音自定义源」含自定义源指向音源且无示例/自检标识，但 status=quarantined、evalCalls=1、scriptName 与 deep 均为空，证据弱故保守判 source
+
+[R5] e9c7675488 | lowconf | 全豆要
+  ① source: name=全豆要 疑为音源但 validTier 空、deep 空、apiHosts 空，证据不足按宁漏勿错标 source
+  ② source: name=「全豆要」为音源名且无示例/自检/preload 标识，但 deep 为空、validTier 为空证据不足，按宁漏勿错保守判 source
+
+[R5] f9bd28788b | lowconf | HYWmusic_beta_公益测试
+  ① source: name=HYWmusic_beta_公益测试 含测试但主体 HYWmusic 为音乐源且 beta 为版本标识，deep 空、validTier 空，拿不准按 source
+  ② source: name=「HYWmusic_beta_公益测试」为音乐源公益测试通道，apiHosts=103.79.184.97；虽含「测试」字样但非示例/自检脚本，deep 为空故保守判 source 并低置信
+
+[R5] fc53eba4a3 | lowconf | lx-玉宁熙
+  ① source: name=lx-玉宁熙 为具名音源样式且非文档测试，deep 空、apiHosts=gitee.com，拿不准按 source
+  ② source: name=「lx-玉宁熙」无示例/自检/preload 标识且 apiHosts=gitee.com，但 deep 为空、validTier 为空且 obfLevel=high(total0x=561,totalUni=52)，证据弱
+
+[R6] 2fd9c66091 | lowconf → 已定稿(trust，原reject作废) | SVIP音源
+  【2026-11-18 用户统一口径修正（原与b446bf5865冲突）】以客观实测为准：deep有可用、validTier=confirmed、无evalCalls/自启动/恶意域名 → 判 trust；jsjiami 混淆标记本身不算恶意特征。故原两条 reject 均作废，改判 trust。
+  ① reject(作废): obfHits 中 jsjiamiMarks=2 属硬恶意特征，按存疑不放行原则即便 validTier=confirmed、deep=可用=3 也 reject
+  ② reject(作废): jsjiamiMarks=2 属明确恶意特征；虽 validTier=confirmed、deep 可用=3、usable=true，证据相互冲突，按存疑不放行拒绝。
+
+[R6] 87485466e4 | lowconf | 豆包定制[聚合音源]
+  ① reject: 虽validTier=confirmed且deep可用1，但apiHosts含oiapi.net/lxmusicapi.onrender.com/api.music.lerd.dpdns.org/yy.zddyr.top等非常规免费托管域名且usable=false，存疑不放行
+  ② reject: deep=平台数=5 可用=1 失败=0但usable=false与实测冲突；apiHosts含oiapi.net、api.xcvts.cn、yy.zddyr.top等非常规域名，按存疑不放行
+
+[R6] 9141b00e99 | lowconf | [独家音源]
+  ① reject: status=ok 但 deep 为空无实测、validTier 空、scriptVersion 仅 4、repository=[URL] 且 usable=false；totalUni=1585 证据矛盾，拿不准一律 reject
+  ② reject: deep 为空、validTier 为空、usable=false，仅 repository=[URL]，无任何实测证据。
+
+[R6] b272a61087 | lowconf | 👖裤佬SVIP音源
+  ① reject: apiHosts=[t.me] 为可疑外联，scriptVersion=✈️TG频道[URL] 疑似引流，deep 为空无实测；totalUni=2/totalExotic=1/perKbExotic≈0.0103 证据矛盾，保守 GREY/low
+  ② reject: deep 为空、validTier 为空，apiHosts=[t.me] 且 apiDownStreak=1，证据缺失且域名可疑。
+
+[R6] cf31a69f20 | lowconf | 👖裤佬SVIP音源
+  ① reject: apiHosts=[t.me] 为可疑外联，scriptVersion=✈️TG频道[URL] 疑似引流，deep 为空无实测；totalUni=2/totalExotic=1/perKbExotic≈0.0103 证据矛盾，保守 GREY/low
+  ② reject: deep 为空、validTier 为空，apiHosts=[t.me] 且 apiDownStreak=1，证据缺失且域名可疑。
+
+[R6] ea9a1e24b0 | lowconf | aya `[URL]
+  ① reject: apiHosts=[t.me, api2.vsaa.cn] 含可疑外联域名且 jsjiamiMarks=1 属硬恶意特征，尽管 validTier=confirmed、deep=可用=2，按存疑不放行 reject；name 含 aya `[URL] 证据矛盾
+  ② reject: jsjiamiMarks=1 且 apiHosts=[t.me, api2.vsaa.cn] 含可疑域名；虽 validTier=confirmed、deep 可用=2、usable=true，按存疑不放行拒绝。
+
+[R7] 1c8bdb130e | lowconf | 幻音音源
+  ① keep: deep='平台数=5 可用=3 失败=0'且usable=true、validTier=confirmed明显仍可用；但apiDownStreak=26很大与实测冲突，按拿不准keep，需重点核实。
+  ② keep: deep='平台数=5 可用=3 失败=0'、usable=true明确有3个可用平台，apiDownStreak=26存在矛盾但实测有可用优先保留。
+
+[R7] 3f1dc2774b | lowconf | TuneFlow VIP音源
+  ① keep: deep为空、validTier为空、apiDownStreak=3偏小，证据不足按拿不准keep。
+  ② keep: TuneFlow VIP音源deep为空、validTier为空、apiDownStreak=3、usable=false，证据缺失不足以判长期失效，保守保留。
+
+[R7] 4806279ff6 | lowconf | TZB独家音源
+  ① keep: deep为空、validTier为空、apiDownStreak=3偏小，证据不足按拿不准keep。
+  ② keep: TZB独家音源deep为空、validTier为空、apiDownStreak=3、usable=false，证据缺失不足以判长期失效，保守保留。
+
+[R7] 54e4c5c4eb | lowconf | HYWmusic_beta
+  ① keep: deep为空、validTier为空、apiDownStreak=3偏小，证据不足按拿不准keep。
+  ② keep: HYWmusic_beta的deep为空、validTier为空、apiDownStreak=3、usable=false，证据缺失不足以判长期失效，保守保留。
+
+[R7] 58d01007d2 | lowconf | TuneFlow_beta
+  ① keep: deep为空、validTier为空、apiDownStreak=3偏小，证据不足按拿不准keep。
+  ② keep: TuneFlow_beta的deep为空、validTier为空、apiDownStreak=3、usable=false，证据缺失不足以判长期失效，保守保留。
+
+[R7] 658f94b87b | lowconf | 闻音音源
+  ① keep: deep='平台数=5 可用=1 失败=0'且usable=true、validTier=confirmed即仍可用；但apiDownStreak=10较大与实测矛盾，按拿不准keep，需核实。
+  ② keep: deep='平台数=5 可用=1 失败=0'、usable=true仍有可用、validTier=confirmed，但apiDownStreak=10与仍有可用信号矛盾，按有可用保留。
+
+[R7] 6da1f06b6b | lowconf | gdstudio音乐源
+  ① keep: deep='平台数=5 可用=1 失败=0'且usable=true、validTier=confirmed即仍可用；但apiDownStreak=29很大与实测矛盾，按拿不准keep，需重点核实。
+  ② keep: validTier=confirmed且deep='平台数=5 可用=1 失败=0'、usable=true仍有可用，apiDownStreak=29与之矛盾，按实测有可用保留。
+
+[R7] 895c0d43db | lowconf | TuneFlow
+  ① keep: deep为空、validTier为空、apiDownStreak=3偏小，无实测证据证明长期全平台失效，证据不足按拿不准keep。
+  ② keep: TuneFlow的deep为空、validTier为空、apiDownStreak=3、usable=false，证据缺失不足以判长期失效或有害，保守保留。
+
+[R7] 9f73eb4a7a | lowconf | TuneFlow测试版
+  ① keep: deep为空、validTier为空、apiDownStreak=3偏小，证据不足按拿不准keep；name含'测试版'。
+  ② keep: TuneFlow测试版deep为空、validTier为空、apiDownStreak=3、usable=false，证据缺失不足以判长期失效，保守保留。
+
+[R7] fd3b78a860 | lowconf | 星海GD精简源 (qdy-mini)
+  ① keep: deep='平台数=5 可用=1 失败=0'且usable=true、validTier=confirmed即仍可用；但apiDownStreak=29很大与实测矛盾，按拿不准keep，需重点核实。
+  ② keep: validTier=confirmed且deep='平台数=5 可用=1 失败=0'、usable=true仍有可用，apiDownStreak=29与之矛盾但实测优先保留。
+

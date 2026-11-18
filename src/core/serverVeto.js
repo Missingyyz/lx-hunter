@@ -51,6 +51,10 @@ const VETO_PRIORITY = { removed: 4, isolated: 3, disabled: 2, 'platform-disabled
  * @param {string} p.activePlatformId    当前账号 id（老记录归当前选中账号）
  * @param {object} [p.prev]              上一层冻结表 db.veto
  * @param {string[]} [p.isolatedIds]     被服务端护栏隔离的服务端条目 id
+ * @param {Map<string,Set<string>>|object} [p.pendingLxIds] eid → 该音源「替换灌入自己删掉、
+ *        尚未装回」的服务端 id 集合。对这些 (eid, lxId) 暂不判 REMOVED —— 这是我们自己的
+ *        中间态（轻量 B 案，db.pendingReplace），不是用户手动删；否则「已删未装」会被
+ *        冻成 removed，旧版再也回不来。按 eid+lxId 精确豁免，不误放用户删掉的其它条目。
  * @param {number} [p.now]
  * @returns {{veto:object, added:number, updated:number, cleared:number, kept:number}}
  */
@@ -62,6 +66,13 @@ function computeVeto(p) {
   const prev = p.prev && typeof p.prev === 'object' ? p.prev : {}
   const isolated = new Set((p.isolatedIds || []).filter(x => x != null).map(String))
   const now = p.now || Date.now()
+  // 替换灌入中间态：eid → 自己删掉、还没装回的 lxId 集合（轻量 B 案）
+  const pending = p.pendingLxIds instanceof Map ? p.pendingLxIds : (p.pendingLxIds && typeof p.pendingLxIds === 'object' ? p.pendingLxIds : {})
+  const pendingFor = (eid) => {
+    const v = pending instanceof Map ? pending.get(eid) : pending[eid]
+    if (v == null) return null
+    return v instanceof Set ? v : new Set((Array.isArray(v) ? v : [v]).filter(x => x != null).map(String))
+  }
 
   const byServerId = new Map()
   for (const s of serverList) {
@@ -94,6 +105,10 @@ function computeVeto(p) {
     let offList = []
 
     if (!srv) {
+      // 轻量 B：这条 lxId 是替换灌入自己刚删、还没装回的中间态 → 暂不判删除冻结，
+      // 让下一轮还能重试把旧版装回（恢复/超时后 pendingReplace 会被清掉，那时才是真删）。
+      const pend = pendingFor(eid)
+      if (pend && pend.has(String(lxId))) continue
       type = VETO_TYPES.REMOVED
       detail = '服务端列表里已找不到这条音源（手动删除或巡检移除）'
     } else if (isolated.has(String(lxId))) {
@@ -181,6 +196,55 @@ function vetoReason(v) {
   return v.detail ? head + '：' + v.detail : head
 }
 
+/**
+ * P1-3 服务端画像（只读纯函数，零请求）：把服务端列表聚合成「可观测缺口画像」。
+ *
+ * 严禁反哺：本函数只产出统计供落盘/展示，返回值不被任何采集排序、灌入优先级或降权读取。
+ * customSourceCount 不纳入（/api/health 当前无此字段，纳入即非 0 请求）。
+ *
+ * @param {Array} serverList 服务端源列表（含 id/enabled/status/supportedSources/disabledSources/owner）
+ * @param {object} imported 本地账本（id -> 记录），用于判断已灌入覆盖，仅计数不驱动行为
+ * @param {object} veto 冻结表（id -> {type}），isolated 类型计入 isolated
+ * @returns {object|null} 画像；serverList 非数组时返回 null（调用方据此跳过、保留旧值）
+ */
+function profileServerFleet(serverList, imported, veto) {
+  if (!Array.isArray(serverList)) return null
+  const v = veto && typeof veto === 'object' ? veto : {}
+  const imp = imported && typeof imported === 'object' ? imported : {}
+  const platforms = {
+    wy: { supported: 0, disabled: 0 }, tx: { supported: 0, disabled: 0 },
+    kw: { supported: 0, disabled: 0 }, kg: { supported: 0, disabled: 0 },
+    mg: { supported: 0, disabled: 0 }
+  }
+  const owners = {}
+  let enabled = 0, disabled = 0, failed = 0, isolated = 0, importedCount = 0
+  for (const s of serverList) {
+    if (!s) continue
+    if (s.enabled === false || s.status === 'disabled') disabled++
+    else enabled++
+    if (s.status === 'failed') failed++
+    if (v[s.id] && v[s.id].type === VETO_TYPES.ISOLATED) isolated++
+    // 支持平台计数：supportedSources 为数组
+    const sup = Array.isArray(s.supportedSources) ? s.supportedSources : []
+    const off = Array.isArray(s.disabledSources) ? s.disabledSources : []
+    for (const p of sup) if (platforms[p]) platforms[p].supported++
+    for (const p of off) if (platforms[p]) platforms[p].disabled++
+    const owner = s.owner || 'open'
+    owners[owner] = (owners[owner] || 0) + 1
+  }
+  for (const k of Object.keys(imp)) if (imp[k]) importedCount++
+  // 缺口平台：服务端可用支撑（supported-disabled）数量最少的平台
+  const gapPlatforms = Object.keys(platforms)
+    .map(p => ({ platform: p, available: platforms[p].supported - platforms[p].disabled }))
+    .sort((a, b) => a.available - b.available)
+    .map(x => x.platform)
+  return {
+    total: serverList.length, enabled, disabled, failed, isolated,
+    platforms, gapPlatforms, owners, importedCount,
+    at: Date.now(), sampleCount: serverList.length
+  }
+}
+
 /** 批量：把一批条目按冻结状态分成 {keep, frozen}，供灌入队列过滤与日志统计 */
 function splitFrozen(vetoMap, entries) {
   const keep = []
@@ -193,4 +257,4 @@ function splitFrozen(vetoMap, entries) {
   return { keep, frozen }
 }
 
-module.exports = { VETO_TYPES, VETO_PRIORITY, TYPE_LABEL, computeVeto, isFrozen, vetoReason, splitFrozen, recLxIdOn }
+module.exports = { VETO_TYPES, VETO_PRIORITY, TYPE_LABEL, computeVeto, isFrozen, vetoReason, splitFrozen, recLxIdOn, profileServerFleet }

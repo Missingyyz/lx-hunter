@@ -207,7 +207,8 @@ const DEFAULT_CONFIG = {
     autoScope: 'failed',             // 自动范围：new/failed/quarantined/all，默认仅失败源
     autoMaxItems: 20,                // 自动每轮上限
     autoActiveHours: { start: 0, end: 24 },  // 允许时段，默认全天
-    shadowEval: false                // 影子评测开关：AI 决策只记不执行，默认关
+    shadowEval: false,               // 影子评测开关：AI 决策只记不执行，默认关
+    autoLlmReviewEnabled: false      // 自动档逐条 LLM 复检独立开关，默认关（R3润色+R4/R5铺轨零进化价值；评测达标再开）
   },
   debugMode: false
 }
@@ -239,6 +240,7 @@ class Store {
       if (a.autoScope == null) a.autoScope = d.autoScope
       if (a.autoMaxItems == null) a.autoMaxItems = d.autoMaxItems
       if (a.shadowEval == null) a.shadowEval = d.shadowEval
+      if (a.autoLlmReviewEnabled == null) a.autoLlmReviewEnabled = d.autoLlmReviewEnabled
       a.autoActiveHours = Object.assign({}, d.autoActiveHours, a.autoActiveHours || {})
       if (a.mode !== 'off' && a.mode !== 'assist' && a.mode !== 'auto') a.mode = d.mode
     }

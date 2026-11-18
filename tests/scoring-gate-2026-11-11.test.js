@@ -102,8 +102,11 @@ console.log('=== C. 排序视图：未打分排在打分之后 ===')
   const unscored = mk({ usable: 2, metrics: { depth: 'quick', p50LatencyMs: 100 } })
   const order = [unscored, scored].sort(Q.compareSortKey)
   ok('同平台数时，已打分的排在未打分之前', order[0] === scored)
-  ok('未打分的排序键 p50 位是 MAX（不参与比较）',
-     Q.sortKey(unscored)[1] === Number.MAX_SAFE_INTEGER && Q.sortKey(scored)[1] === 900)
+  ok('未打分的排序键「已打分位」=1、打分源=0（未打分沉到本 usable 层末位，不再用全局 MAX）',
+     Q.sortKey(unscored)[1] === 1 && Q.sortKey(scored)[1] === 0)
+  // 分层语义：未打分只沉到「同 usable 层」末位，不会跨层压过平台数更少的打分源
+  ok('未打分按 usable 分层降级：3平台未打分仍排在 2平台已打分之前',
+     Q.compareSortKey(mk({ usable: 3, metrics: { depth: 'quick', p50LatencyMs: 100 } }), scored) < 0)
 }
 
 console.log('=== D. 初筛/巡检一律清分（不继承上一轮打分） ===')
