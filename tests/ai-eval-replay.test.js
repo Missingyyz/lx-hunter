@@ -328,11 +328,19 @@ console.log('--- ⑪ R4-R7 指标 + 数据不足（评测台子；产建议链�
 
   const m = ec.computeMetrics(logs, cases)
   ok(m.overall.verdict === '数据不足', '样本量未达门槛 → overall 判「数据不足」而非通过')
-  ok(m.table.length >= 4 && m.table.every(r => r.insufficient === true && r.verdict === '数据不足'),
-    '4 个分层均标数据不足（' + m.table.map(r => r.stratum).join(' ') + '）')
+  ok(m.table.length >= 4 && m.table.filter(r => r.insufficient).length >= 4,
+    '存在多个分层标数据不足（' + m.table.filter(r => r.insufficient).length + '/' + m.table.length + ' 层）')
+  ok(m.table.filter(r => ['R6', 'R7'].indexOf(r.kind) !== -1 && r.danger === 'D1').every(r => r.insufficient === true),
+    '危险层（R6|D1 信任放行 / R7|D1 删源）仍全部数据不足——不随样本降门槛')
   ok(m.table.every(r => r.accuracy === 1 && r.readonlyOk === true), '桩回放 accuracy=1 且全部只读')
+  // 门槛：v1.13.9 B 批起「样本量门槛」改为自适应（危险层硬门槛、可逆层按现有样本数），
+  // 不传 existing 时仍返回旧的退路值，保证本断言与历史行为一致。
   ok(ec.thresholdFor('R7|GREY|D1') === 380 && ec.thresholdFor('R4|GREY|D0') === 200,
-    '门槛落地：R7 删源=380，灰区=200')
+    '门槛退路值：R7 删源=380，灰区=200（不传现有样本数时）')
+  // 传了现有样本数就走自适应：可逆层按 0.8 系数、下限 20；危险层不动。
+  ok(ec.thresholdFor('R4|GREY|D0', null, 70) === 56, '可逆层自适应：n=70 → need=56（70×0.8）')
+  ok(ec.thresholdFor('R4|GREY|D0', null, 5) === 20, '可逆层下限保护：n=5 → need=20（不塌到 4）')
+  ok(ec.thresholdFor('R7|HARD|D1', null, 1000) === 380, '危险层不随样本浮动：n=1000 仍是 380')
   // 样本补齐到门槛后应给出比率结论，证明「数据不足」不是写死
   const many = []
   for (let i = 0; i < 210; i++) many.push(Object.assign({}, cases[0], { id: 'r4-' + i, expected: Object.assign({}, cases[0].expected) }))

@@ -33,17 +33,22 @@ const mkLogs = (cs, correct) => cs.map((c, i) => ({
   executed: false,
   auditId: null
 }))
-const ALL_ONE = { HARD: 1, GREY: 1, DANGER: 1, BLACKLIST: 1 }
-const HUGE = { HARD: 99999, GREY: 99999, DANGER: 99999, BLACKLIST: 99999 }
+// 门槛全开：自适应关掉（fixedSampleTh），四档常量压到 1，确保每层 sufficient。
+const ALL_ONE = { HARD: 1, GREY: 1, DANGER: 1, BLACKLIST: 1, fixedSampleTh: true }
+const HUGE = { HARD: 99999, GREY: 99999, DANGER: 99999, BLACKLIST: 99999, fixedSampleTh: true }
 
 // ============================================================
 console.log('\n=== ① A1：thresholdFor 门槛覆盖（向后兼容 + 覆盖生效） ===')
 ;(() => {
-  // 向后兼容：不传 th 时与旧行为完全一致（这两个值是历史断言）
+  // 向后兼容：不传 th / 不传 existing 时返回旧的退路值。
+  // 注意 R5|GREY|D1：v1.13.9 B 批把「危险层」收窄为仅 R6/R7 的 D1
+  // （R5→nonSource 判非音源可撤销，不该和删源同级），所以它现在落回 GREY=200。
+  // 这是有意的语义修正，见 evalCases.js 里 MIN_SAMPLES 上方的说明。
   ok('不传 th：R7|GREY|D1 = 380（BLACKLIST）', thresholdFor('R7|GREY|D1') === 380, String(thresholdFor('R7|GREY|D1')))
   ok('不传 th：R4|GREY|D0 = 200（GREY）', thresholdFor('R4|GREY|D0') === 200, String(thresholdFor('R4|GREY|D0')))
   ok('不传 th：R4|HARD|D0 = 500（HARD）', thresholdFor('R4|HARD|D0') === 500, String(thresholdFor('R4|HARD|D0')))
-  ok('不传 th：R5|GREY|D1 = 100（DANGER）', thresholdFor('R5|GREY|D1') === 100, String(thresholdFor('R5|GREY|D1')))
+  ok('不传 th：R5|GREY|D1 = 200（可逆层，不再当危险层用 DANGER）', thresholdFor('R5|GREY|D1') === 200, String(thresholdFor('R5|GREY|D1')))
+  ok('不传 th：R6|HARD|D1 = 100（R6 信任放行仍是危险层）', thresholdFor('R6|HARD|D1') === 100, String(thresholdFor('R6|HARD|D1')))
 
   // 覆盖生效
   ok('传 th：R7|GREY|D1 用传入 BLACKLIST', thresholdFor('R7|GREY|D1', { BLACKLIST: 7 }) === 7)
@@ -57,8 +62,12 @@ console.log('\n=== ① A1：thresholdFor 门槛覆盖（向后兼容 + 覆盖生
   const logs = mkLogs(cases, true)
   const strict = computeMetrics(logs, cases)
   const loose = computeMetrics(logs, cases, { thresholds: ALL_ONE })
-  ok('【核心】默认门槛：各层全部 insufficient（样本量确实不够）',
-    strict.table.length >= 12 && strict.table.every(r => r.insufficient === true), 'len=' + strict.table.length)
+  ok('【核心】默认自适应门槛：仍有分层 insufficient（危险层 + 小样本层）',
+    strict.table.length >= 12 && strict.table.some(r => r.insufficient === true),
+    'len=' + strict.table.length + ' insufficient=' + strict.table.filter(r => r.insufficient).length)
+  ok('【核心】自适应门槛下 R7|D1 / R6|D1 仍 insufficient（危险层不降）',
+    strict.table.filter(r => ['R6', 'R7'].indexOf(r.kind) !== -1 && r.danger === 'D1').every(r => r.insufficient === true),
+    strict.table.filter(r => r.danger === 'D1').map(r => r.stratum + '=' + r.insufficient).join(','))
   ok('【核心】opts.thresholds 全 1 后：0 层 insufficient（原来这里恒 12，覆盖无效）',
     loose.table.every(r => r.insufficient === false), loose.table.filter(r => r.insufficient).map(r => r.stratum).join(','))
   ok('【核心】opts.thresholds 真生效后 need 字段跟着变', loose.table.every(r => r.need === 1))
