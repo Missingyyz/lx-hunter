@@ -1913,7 +1913,7 @@ function obfTipUi(e) {
     const n = h.selfSchedTimer != null ? h.selfSchedTimer : h.selfSchedCalls
     if (n) parts.push(`${n} 处定时器调用，通常是正常轮询`)
   }
-  if (h.jsjiamiMarks) parts.push('用了 jsjiami 加密工具')
+  if (h.jsjiamiMarks) parts.push('用了 jsjiami 混淆')
   if (h.evalCalls) parts.push(`${h.evalCalls} 处动态执行代码，能运行额外代码`)
   const detail = parts.length ? '（' + parts.join('、') + '）' : ''
   return e.obfLevel === 'high'
@@ -4334,7 +4334,7 @@ async function boot() {
   const AI_QUIET_NOTE = {
     R1: '失败原因归类，只写日志',
     R2: '解释为什么这么自动判，已经做完了',
-    R3: '名字没问题',
+    R3: '本地规则没发现异常',
     R4: '更新说明没实质内容，不用跟',
     R5: '还是当音源处理，不用动',
     R6: '隔离区的信任意见，在隔离页看',
@@ -4371,6 +4371,9 @@ async function boot() {
       // ① 文本明确「没问题」先判（「未见明显异常」里含"异常"，顺序不能反）
       if (/未见明显异常|未见异常|看着没问题|无明显异常|语义正常|正常命名|未见可疑/.test(text)) return false
       // ② 本地规则 ok=true（只用于真，不用 false 否决——本地正则看不到同形字符/二改整合）
+      // ② 模型亲口判「命名异常」→ 立刻 true（与后端同口径；只用于 true，不做 false 否决）
+      const aiS = ev.find(x => x && x.key === 'aiSuspicious')
+      if (aiS && aiS.ok === true) return true
       const nh = ev.find(x => x && x.key === 'nameHeuristic')
       if (nh && nh.ok === true) return true
       // ③ 文本可疑词

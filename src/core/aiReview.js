@@ -141,16 +141,22 @@ function worthNotifying(s) {
     return true
   }
   if (kind === 'R3') {
-    // R3 的模型输出是 {suspicious}，不是 verdict，所以 s.eval 恒为空；判据分三级：
+    // R3 的模型输出是 {suspicious}，不是 verdict，所以 s.eval 恒为空；判据分四级：
     // ① 文本明确「没问题」→ 立刻 false（必须在可疑词之前，因为「未见明显异常」含"异常"）
     if (/未见明显异常|未见异常|看着没问题|无明显异常|语义正常|正常命名|未见可疑/.test(text)) return false
-    // ② 结构化：本地规则的「可疑」标记（由 name/tmp/test 等硬正则得出，最可靠）
+    // ② 模型亲口判「命名异常」→ 立刻 true。
+    //    这是本地词表覆盖不到的常见真实异常（仿冒/全角空格/不可见字符/命名不规范），
+    //    原来 j.suspicious 被 _reviewOneName 丢掉，导致这些一律漏提醒（C 复核发现）。
+    //    **只用于 true 判定，绝不作 false 否决**——AI 说「没问题」但结论说乱码时听结论，
+    //    别再犯 ok===false 短路那个错。
+    const aiS = ev.find(x => x && x.key === 'aiSuspicious')
+    if (aiS && aiS.ok === true) return true
+    // ③ 结构化：本地规则的「可疑」标记（由 name/tmp/test 等硬正则得出，最可靠）
     //    注意本地规则只覆盖"重复/测试/临时"这一族，覆盖不到乱码/同形字符/二改整合，
-    //    所以这里**只用于 true 判定，不用 false 否决**——ok=false 但模型说"乱码混淆"时
-    //    应当听模型的（本地正则看不到同形字符）。
+    //    所以这里同样只用于 true 判定，不用 false 否决。
     const nh = ev.find(x => x && x.key === 'nameHeuristic')
     if (nh && nh.ok === true) return true
-    // ③ 文本可疑词：乱码/同形字符/二改/整合/副本/重复/测试/临时…
+    // ④ 文本可疑词：乱码/同形字符/二改/整合/副本/重复/测试/临时…
     if (/乱码|混淆命名|同形字符|同形|伪装|二改|二次修改|二次改|整合版|整合|重复|副本|多版本|临时|测试|tmp|test/i.test(text)) return true
     return false
   }
@@ -596,6 +602,31 @@ class AIReview {
 
   /**
    * 判断某风险级在当前配置下是否自动执行。
+   *
+   * ⚠⚠ 重要风险（S8，2026-11-19 打桩实测确认，接入真实执行前必读）⚠⚠
+   *
+   * 1) 本函数**只拿 kind，拿不到任何 evidence**。模块头红线第 12 行写的
+   *    「置信度 = 客观证据项 AND，缺项降级人工」——那条「证据 AND 才放行」的红线
+   *    **从未落地**：evidence 齐全与否完全不参与这里的判定，`evaluateGate()` /
+   *    `quoteLocatable()` 在生产链路零调用（见各自 JSDoc）。实测：三把锁全开 +
+   *    R7 模型返回 blacklist + evidence 长度 0，`gate()` 照样返回 {auto:true}。
+   *
+   * 2) 当前之所以还没出事，是因为「自动执行」**只把建议 s.status 标成 'applied'，
+   *    不碰任何业务对象**（aiReview.js 通用分支的自动铺轨；调用方只拿 autoMarked 计数）。
+   *    实测业务侧零变化：sources 前后一致、源还在、aiAudit/veto/imported 全空。
+   *    所以现在的实际危害是**污染采纳率统计与用户对「AI 做了什么」的认知**，
+   *    即「记录污染」级，不是事故。真正会删源的只有巡检的 patrolAutoDeleteWanted
+   *    （判据是连续失效次数，不读 AI）和用户手动勾选的 runRevoke。
+   *
+   * 3) **但这是一颗定时炸弹**。代码里已有「评测达标后再放开执行」的意图。
+   *    一旦把手动/自动执行接到真实动作（删源 / 混淆信任放行 / 拉黑），
+   *    `gate()` 不看证据这一点就会立刻变成「**无证据自动删源**」——
+   *    届时不设防的路径是：allowIrreversible 开着 + mode=auto ⇒ R6/R7 直接放行。
+   *
+   * 4) 因此：**接入任何真实执行动作之前，必须先给 R6/R7 补上
+   *    evaluateGate（证据全 AND 才放行）+ quoteLocatable（AI 引用必须能在输入里逐字定位）**，
+   *    并把 evidence 传进 gate 的判定链。在那之前不要把 gate() 的结果当作执行许可。
+   *
    * @returns {{auto:boolean, reason:string}}
    */
   gate(kind) {
@@ -1051,6 +1082,12 @@ class AIReview {
       : '名字看着没问题（本地快速判断，仅供参考）'
     let conclusion = localConclusion
     let byAi = false
+    // 模型对「命名是否异常」的判断（C 复核发现的缺陷，v1.13.9 修）：
+    // R3 的 prompt 明确要求返回 {suspicious, reason}，但原来只读了 reason，
+    // 把 suspicious 直接丢掉 ⇒ 模型明确判「可疑」但措辞不在本地词表里时
+    // （仿冒/全角空格/不可见字符/命名不规范…）会被 worthNotifying 判 false，
+    // 真实命名异常被漏提醒、还被归到「名字没问题」那栏。
+    let aiSuspicious = null
     try {
       const sys = [
         '你是音源命名审查助手。判断音源名称是否异常（重复/测试/临时/多版本副本/乱码混淆等）。',
@@ -1061,18 +1098,25 @@ class AIReview {
       const r = await this.review(sys, usr)
       if (r && r.ok && r.text) {
         const j = this._parseJsonObject(r.text)
+        if (j && typeof j.suspicious === 'boolean') aiSuspicious = j.suspicious
         if (j && typeof j.reason === 'string' && j.reason.trim()) {
           conclusion = j.reason.trim().slice(0, 200)
           byAi = true
         }
       }
     } catch (e) {}
-    const out = { suspicious, conclusion, byAi, entryId: entry.id || '' }
+    const out = { suspicious, aiSuspicious, conclusion, byAi, entryId: entry.id || '' }
     const detail = this.makeDetail('R3', hay.slice(0, 200), byAi ? '命名异常 AI 意见（不改状态）' : '命名异常本地规则提示（AI 不可用，降级）')
-    const s = this.suggest(entry.id || '', 'R3', conclusion, [
+    const evidence = [
       { key: 'nameHeuristic', ok: suspicious, detail: hay.slice(0, 80) },
       { key: 'source', ok: byAi, detail: byAi ? 'ai' : 'local-fallback' }
-    ], { detail })
+    ]
+    // 只在模型**真的给了布尔**时才加这条证据：没给（AI 不可用/降级/模型跑偏）
+    // 就不产生，避免用 null 冒充「AI 说不关键」——那会变成静默否决。
+    if (typeof aiSuspicious === 'boolean') {
+      evidence.push({ key: 'aiSuspicious', ok: aiSuspicious, detail: 'ai' })
+    }
+    const s = this.suggest(entry.id || '', 'R3', conclusion, evidence, { detail })
     return { suggestion: s, result: out }
   }
 

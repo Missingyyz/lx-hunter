@@ -333,13 +333,16 @@ console.log('--- ⑪ R4-R7 指标 + 数据不足（评测台子；产建议链�
   ok(m.table.every(r => r.accuracy === 1 && r.readonlyOk === true), '桩回放 accuracy=1 且全部只读')
   ok(ec.thresholdFor('R7|GREY|D1') === 380 && ec.thresholdFor('R4|GREY|D0') === 200,
     '门槛落地：R7 删源=380，灰区=200')
-  // 样本补齐到门槛后应判 evaluated，证明「数据不足」不是写死
+  // 样本补齐到门槛后应给出比率结论，证明「数据不足」不是写死
   const many = []
   for (let i = 0; i < 210; i++) many.push(Object.assign({}, cases[0], { id: 'r4-' + i, expected: Object.assign({}, cases[0].expected) }))
   const logsMany = many.map(c => makeEvalLog({ entryId: c.id, aiAct: c.goldAct, goldAct: c.goldAct, executed: false, auditId: null }))
   const mM = ec.computeMetrics(logsMany, many)
   const r4 = mM.table.find(r => r.stratum.indexOf('R4|') === 0)
-  ok(r4 && r4.sufficient === true && r4.verdict === 'evaluated', '样本达 200 → R4 分层可评估（数据不足非写死）')
+  // 样本够格后还要过比率门槛，verdict 正好是 '达标'（这里 aiAct=goldAct，accuracy 恒为 1.0）。
+  // 单值断言：三态里没有别名可退，写死才能守住语义。
+  ok(r4 && r4.sufficient === true && r4.verdict === '达标',
+    '样本达 200 → R4 分层可评估（数据不足非写死），实际 verdict=' + (r4 && r4.verdict))
 })()
 
 console.log('\nai-eval-replay: PASS ' + pass + ' / FAIL 0')

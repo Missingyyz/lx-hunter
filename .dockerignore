@@ -1,11 +1,16 @@
 # 构建上下文里只需要 src/ 和 package.json，其余一律排除（node_modules 体积很大）
 node_modules
 dist
-tests
 ref
 .git
 .workbuddy
 *.patch
 *.log
+# 测试脚本排除，但 **必须保留 tests 目录本身**：Dockerfile 要 COPY tests/eval-cases
+# 进来的（评测样本，缺了 eval-report 恒「无样本」）。
+# 注意不能写成 `tests` + `!tests/eval-cases`：Docker 的 ignore 是路径前缀排除，
+# 父目录 tests 一旦被排除，子目录的白名单无效，COPY 会报 file not found。
+# 所以这里只按文件粒度排除脚本，让目录结构留下来。
+tests/*.js
 # 注意：Dockerfile / docker-compose.yml 必须在上下文里（Compose 构建时要读），
 # 不能排除——否则 NAS 上「Compose 新增项目」会报找不到 Dockerfile。

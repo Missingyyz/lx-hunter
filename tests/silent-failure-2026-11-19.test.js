@@ -323,5 +323,203 @@ console.log('\n=== ⑨ S8 设计-实现落差已如实标注（不删不接） =
   })())
 })()
 
+// ============================================================
+console.log('\n=== ⑩ R3：模型判 suspicious=true 必须被采纳（C 复核发现的真缺陷） ===')
+;(() => {
+  // 缺陷：_reviewOneName 只取了 j.reason，把 j.suspicious 直接丢了。
+  // 后果：模型明确判「可疑」但措辞不在本地词表里（仿冒/全角空格/不可见字符/命名不规范）
+  //       → worthNotifying 给 false → 真实命名异常被漏提醒，界面还归到「名字没问题」那栏。
+  // 下面 4 条是 C 造的实际模型输出，改动前全部为 false（FAIL），改动后必须为 true。
+  const { worthNotifying } = require(path.join(SRC, 'core', 'aiReview'))
+  const cases = [
+    ['AI 判可疑：名称与官方源高度相似，疑似仿冒', '名称与官方源高度相似，疑似仿冒'],
+    ['AI 判可疑：名称含全角空格，可能干扰搜索排序', '名称含全角空格，可能干扰搜索排序'],
+    ['AI 判可疑：名字里有一个不可见字符', '名字里有一个不可见字符'],
+    ['AI 判可疑：命名不规范，建议统一', '命名不规范，建议统一']
+  ]
+  for (const [label, reason] of cases) {
+    // 本地正则没命中（ok=false），模型说 suspicious=true
+    const s = {
+      kind: 'R3',
+      conclusion: reason,
+      evidence: [
+        { key: 'nameHeuristic', ok: false, detail: 'official-x' },
+        { key: 'source', ok: true, detail: 'ai' },
+        { key: 'aiSuspicious', ok: true, detail: 'ai' }
+      ]
+    }
+    ok(label + ' → 提醒', worthNotifying(s) === true, 'got=' + worthNotifying(s))
+  }
+
+  // aiSuspicious=false 绝不拥有否决权（别再犯 ok===false 短路那个错）
+  ok('【防回归】aiSuspicious=false 但结论说乱码 → 仍提醒',
+    worthNotifying({
+      kind: 'R3', conclusion: '疑似乱码混淆命名',
+      evidence: [{ key: 'nameHeuristic', ok: false }, { key: 'aiSuspicious', ok: false }]
+    }) === true)
+  ok('【防回归】aiSuspicious=false 且结论中性 → 不提醒',
+    worthNotifying({
+      kind: 'R3', conclusion: '名字一般',
+      evidence: [{ key: 'nameHeuristic', ok: false }, { key: 'aiSuspicious', ok: false }]
+    }) === false)
+  ok('【防回归】aiSuspicious=false 且结论明确「没问题」→ 不提醒',
+    worthNotifying({
+      kind: 'R3', conclusion: '命名未见明显异常',
+      evidence: [{ key: 'aiSuspicious', ok: true }]
+    }) === false)
+
+  // 产出端确实保留了 aiSuspicious
+  const src = read('core/aiReview.js')
+  ok('_reviewOneName 读取 j.suspicious', /typeof j\.suspicious === 'boolean'/.test(src))
+  ok('_reviewOneName 把 aiSuspicious 写进 evidence', /key: 'aiSuspicious'/.test(src))
+  ok('aiSuspicious 只由「模型真给了布尔」时产出', /aiSuspicious/.test(src))
+
+  // 前端兜底同口径（API 返回的证据数组同名 key）
+  const appSrc = read('renderer/app.js')
+  ok('前端 aiWorthNotifyingLocal 也认 aiSuspicious', /aiSuspicious/.test(appSrc))
+  ok('前端 R3 安静说明改为「本地规则没发现异常」', /本地规则没发现异常/.test(appSrc))
+})()
+
+// ============================================================
+console.log('\n=== ⑪ S8 风险注释已写进 gate() 旁（防止将来接执行时踩坑） ===')
+;(() => {
+  const src = read('core/aiReview.js')
+  const i = src.indexOf('gate(kind) {')
+  ok('gate() 存在', i > 0)
+  const before = src.slice(Math.max(0, i - 3000), i)
+  ok('gate() 旁的注释写明「只拿 kind，拿不到 evidence」', /拿不到\s*evidence|拿不到任何\s*evidence/.test(before))
+  ok('gate() 旁写明「证据 AND 才放行」这条红线未落地', /证据\s*AND[\s\S]{0,120}未落地|红线[\s\S]{0,60}未落地/.test(before))
+  ok('gate() 旁写明当前只标 status 不碰业务对象', /只把建议 s\.status 标成 'applied'[\s\S]{0,120}不碰任何业务对象/.test(before) || /只(标|改)\s*status[\s\S]{0,120}不碰/.test(before))
+  ok('gate() 旁写明危害是污染采纳率统计', /采纳率/.test(before))
+  ok('gate() 旁写明这是「定时炸弹」', /定时炸弹/.test(before))
+  ok('gate() 旁要求接真实执行前先补 evaluateGate + quoteLocatable',
+    /evaluateGate/.test(before) && /quoteLocatable/.test(before) && /真实(执行|动作)/.test(before))
+})()
+
+// ============================================================
+console.log('\n=== ⑫ 文案："jsjiami 加密工具" → "jsjiami 混淆" ===')
+;(() => {
+  const appSrc = read('renderer/app.js')
+  ok('不再出现「jsjiami 加密工具」', !/jsjiami 加密工具/.test(appSrc))
+  ok('改为「jsjiami 混淆」', /jsjiami 混淆/.test(appSrc))
+})()
+
+// ============================================================
+console.log('\n=== ⑬ 旧版对照：checker.obfuscationRisk 判级零漂移（C 的方法） ===')
+;(() => {
+  // C 复核用 `git show <旧提交>:src/core/checker.js` 取真旧版做对照，比内联复刻可靠。
+  // 这里把那次对照固化成测试：旧版来自 git 对象库（不落盘成常驻文件），
+  // git 不可用 / 取不到旧版时**跳过而不是假通过**，避免测试变成摆设。
+  const { execFileSync } = require('child_process')
+  const GIT_CANDS = [
+    path.join(ROOT, '..', '_tools', 'git', 'cmd', 'git.exe'),
+    'git'
+  ]
+  const runGit = (args) => {
+    for (const g of GIT_CANDS) {
+      try {
+        return execFileSync(g, args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
+      } catch (e) { /* 试下一个 */ }
+    }
+    return null
+  }
+  // 找 checker.js 最近一次被改动的提交，取它的**父提交**版本 = 改造前真旧版
+  const log = runGit(['log', '--format=%H', '--', 'src/core/checker.js'])
+  if (!log) {
+    console.log('  SKIP git 不可用，跳过旧版对照（需在有 git 的环境跑）')
+    return
+  }
+  // 取「checker.js 最近一次改动提交」的**父提交**版本 = 那次改造前的真旧版。
+  // 注意别取最早那条：最早提交的父提交不存在（浅克隆时更会拿不到）。
+  const shas = log.trim().split(/\r?\n/).filter(Boolean)
+  if (!shas.length) { console.log('  SKIP 取不到 checker.js 的提交历史'); return }
+  let oldSrc = null
+  for (const sha of shas) {
+    const cand = runGit(['show', sha + '^:src/core/checker.js'])
+    if (cand && /function obfuscationRisk/.test(cand)) { oldSrc = cand; break }
+  }
+  if (!oldSrc) {
+    console.log('  SKIP 取不到旧版 checker.js（浅克隆/历史被裁）')
+    return
+  }
+  ok('取到真旧版 checker.js（含 obfuscationRisk，不含新三档函数）',
+    /function obfuscationRisk/.test(oldSrc) && !/classifyQuarantineTrust/.test(oldSrc))
+
+  // 旧版落到 src/core 同级目录才能解析它的相对 require（sandbox/net 等）
+  const tmpOld = path.join(SRC, 'core', '__old_checker_tmp.js')
+  fs.writeFileSync(tmpOld, oldSrc, 'utf8')
+  let oldMod, newMod
+  try {
+    oldMod = require(tmpOld)
+    newMod = require(path.join(SRC, 'core', 'checker.js'))
+  } finally {
+    try { fs.unlinkSync(tmpOld) } catch (e) {}
+  }
+
+  // 真实样本：仓库内 .js（音源脚本优先），最多 128 个 —— 与 C 的口径一致
+  const realScripts = []
+  const collect = (d) => {
+    let entries = []
+    try { entries = fs.readdirSync(d, { withFileTypes: true }) } catch (e) { return }
+    for (const ent of entries) {
+      const p = path.join(d, ent.name)
+      if (ent.isDirectory()) { if (!/node_modules|^\.git$|^dist$|^_tools$/.test(ent.name)) collect(p) }
+      else if (/\.js$/.test(ent.name)) {
+        try { const st = fs.statSync(p); if (st.size < 400 * 1024) realScripts.push({ name: path.relative(ROOT, p), code: fs.readFileSync(p, 'utf8') }) } catch (e) {}
+      }
+    }
+  }
+  collect(path.join(SRC)); collect(path.join(ROOT, 'tests'))
+  const likeSource = realScripts.filter(s => /lx\.(on|send|request|utils|musicInfo|currentMusicInfo)\b/.test(s.code))
+  const ordered = likeSource.concat(realScripts.filter(s => likeSource.indexOf(s) === -1))
+  const realPick = ordered.slice(0, 128)
+
+  // 合成样本：覆盖各判级边界（自调度/eval/spin/Proxy/超长/空）
+  const synth = []
+  for (let n = 0; n <= 6; n++) synth.push({ name: 'spin' + n, code: 'while(true){' + 'eval("x")'.repeat(n) + '}' })
+  for (let n = 0; n <= 6; n++) synth.push({ name: 'sched' + n, code: 'var a=' + n + ';setTimeout(function(){eval("x")},' + n * 1000 + ')' })
+  for (let n = 0; n <= 6; n++) synth.push({ name: 'proxy' + n, code: 'var p=new Proxy({},{get:function(){return ' + n + '}})' })
+  for (let n = 0; n <= 4; n++) synth.push({ name: 'hex' + n, code: 'var s = "' + 'x'.repeat(n) + '";' })
+  for (let n = 0; n <= 5; n++) synth.push({ name: 'uni' + n, code: 'var \u0041 = "\\u00' + (40 + n) + '";' })
+  for (let n = 0; n <= 4; n++) synth.push({ name: 'long' + n, code: '/*' + 'A'.repeat(n * 500) + '*/var lx={}' })
+  for (let n = 0; n <= 4; n++) synth.push({ name: 'blank' + n, code: ' '.repeat(n * 10) })
+  synth.push({ name: 'ok1', code: 'var lx={on:function(){},send:function(){},request:function(){},utils:{}};lx.send("inited")' })
+  synth.push({ name: 'ok2', code: 'const lx = require("lx"); lx.on("music", ()=>({})); lx.send("inited")' })
+  synth.push({ name: 'jsjiami', code: 'var _0x1a2b=["a","b"];(function(_0x){while(!![]){try{...}}}());' })
+
+  const all = realPick.concat(synth)
+  ok('样本量足够（真实≥50 + 合成≥40）', realPick.length >= 50 && synth.length >= 40,
+    '真实=' + realPick.length + ' 合成=' + synth.length + ' 合计=' + all.length)
+
+  const NEWKEYS = ['selfSchedTimer', 'selfSchedDecode', 'selfSchedUnknown']
+  let levelDiff = 0, hitsDiff = 0, crashes = 0
+  const diffs = []
+  for (const s of all) {
+    let o, n
+    try { o = oldMod.obfuscationRisk(s.code, s.name, {}) } catch (e) { crashes++; continue }
+    try { n = newMod.obfuscationRisk(s.code, s.name, {}) } catch (e) { crashes++; continue }
+    if (!o || !n) { crashes++; continue }
+    if (o.level !== n.level) { levelDiff++; if (diffs.length < 5) diffs.push(s.name + ' old=' + o.level + ' new=' + n.level) }
+    const keys = new Set([...Object.keys(o.hits || {}), ...Object.keys(n.hits || {})])
+    for (const k of keys) {
+      if (NEWKEYS.indexOf(k) !== -1) continue
+      if (String((o.hits || {})[k]) !== String((n.hits || {})[k])) { hitsDiff++; if (diffs.length < 8) diffs.push(s.name + ' hits.' + k) }
+    }
+  }
+  ok('样本全部可跑（无异常）', crashes === 0, 'crashes=' + crashes)
+  ok('【核心】level 判级零漂移（旧版 vs 新版）', levelDiff === 0, '不一致 ' + levelDiff + ' / ' + all.length + (diffs.length ? ' :: ' + diffs.join('; ') : ''))
+  ok('【核心】旧字段 hits 值零漂移（新三字段除外）', hitsDiff === 0, '不一致 ' + hitsDiff + (diffs.length ? ' :: ' + diffs.join('; ') : ''))
+
+  // 新版三字段必须存在且为数字（新增字段的契约）。
+  // 注意 obfuscationRisk 对 <200 字符内容直接返回 {level:'', hits:null}（:166），
+  // 所以样本必须够长，否则拿到的是 null 而非 hits 对象。
+  const longSrc = '/*' + 'A'.repeat(300) + '*/var a=1;setTimeout(function(){eval("x")},5000);while(true){}'
+  const probe = newMod.obfuscationRisk(longSrc)
+  ok('新版返回含 selfSchedTimer/Decode/Unknown',
+    !!(probe.hits) && NEWKEYS.every(k => typeof probe.hits[k] === 'number'), JSON.stringify(probe))
+  ok('短内容（<200 字符）仍返回 {level:"",hits:null}（原语义不变）',
+    (() => { const r = newMod.obfuscationRisk('var a=1;'); return r.level === '' && r.hits === null })())
+})()
+
 console.log('\nquarantine/silent-failure regression: PASS ' + pass + ' / FAIL ' + fail)
 if (fail > 0) process.exit(1)
