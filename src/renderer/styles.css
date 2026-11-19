@@ -655,6 +655,10 @@ body.conn-offline .snap-tag { display: inline-block; }
 .qz-trust.warn { border-color: var(--warn); color: var(--warn); }
 .qz-trust.warn:hover { background: rgba(251,191,36,.12); }
 .qz-row .btn[disabled] { opacity: .55; cursor: not-allowed; }
+/* v1.13.12：试跑 + 信任放行并排。试跑用次要色，避免和「信任放行」抢注意力或被误点。 */
+.qz-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.qz-probe { border-color: var(--line); color: var(--sub, var(--muted)); }
+.qz-probe:hover { background: rgba(255,255,255,.04); color: var(--text); }
 
 /* ---------- 任务状态 chip + 日志工具条（v1.10.8） ---------- */
 .job-chip {

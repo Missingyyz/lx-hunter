@@ -46,6 +46,8 @@ const api = {
   reposBlock: (repo) => ipcRenderer.invoke('repos:block', repo),
   reposUnblock: (repo, reAdd) => ipcRenderer.invoke('repos:unblock', { repo, reAdd }),
   sourcesTrustObf: (id, trust) => ipcRenderer.invoke('sources:trustObf', { id, trust }),
+  // 隔离区试跑（v1.13.12）：只实测、不信任。confirmBlock 用于 block 档二次确认。
+  sourcesProbeQuarantined: (id, confirmBlock) => ipcRenderer.invoke('sources:probeQuarantined', { id, confirmBlock: !!confirmBlock }),
   // AI 复检层（v1.14.0）
   aiConfigGet: () => ipcRenderer.invoke('ai-review:configGet'),
   aiConfigSet: (patch) => ipcRenderer.invoke('ai-review:configSet', patch),

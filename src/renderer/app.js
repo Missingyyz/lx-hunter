@@ -1967,10 +1967,97 @@ function qzReasonsOf(e) {
 }
 
 function qzDeepSummary(e) {
-  if (!e.deep || !e.deep.checkedAt) return '尚未深度体检（信任放行后可跑「检测」确认实际可用性）'
+  if (!e.deep || !e.deep.checkedAt) return '尚未深度体检（可先点「试跑一次」看它到底能不能出链接，不必先信任）'
   const plats = e.deep.platforms || {}
   const usableN = Object.values(plats).filter(p => p && p.status === 'usable').length
-  return `深度体检：${e.deep.loadable ? '可加载' : '不可加载'}，实测可用平台 ${usableN} 个`
+  // 试跑产出（probeOnly）必须标明「未信任、未放行」，否则用户会以为它已经通过检测
+  const tag = e.deep.probeOnly === true ? '（试跑结果，尚未信任；条目仍在隔离区）' : ''
+  return `深度体检：${e.deep.loadable ? '可加载' : '不可加载'}，实测可用平台 ${usableN} 个${tag}`
+}
+
+/**
+ * 隔离区「试跑一次」入口（v1.13.12）——只实测、不信任。
+ *
+ * 为什么必须有这个按钮：隔离区的条目被混淆闸门 `continue` 跳过深检，而 R6 判 trust
+ * 要求「实测可用平台>=1」，于是「先信任才能验证」的死锁成立。试跑让用户在不签字的
+ * 前提下看到实测结果，把验证放回信任之前。
+ *
+ * 交互约束（用户拍板）：
+ *   - allow / risky 档：一次确认即跑
+ *   - block 档（含 CPU 空转死循环特征）：必须二次确认，第一次确认要把后果说清
+ *   - 后端串行 + 单轮 ≤5 条；超限时给出明确提示，不静默忽略
+ */
+async function probeQuarantined (id, btn) {
+  const src = (state.sources || []).find(s => String(s.id) === String(id)) || {}
+  const lv = qzLevelOf(src)
+  const reasons = qzReasonsOf(src)
+  const label = btn.textContent
+  let confirmBlock = false
+
+  if (lv === 'block') {
+    // 第一次确认：说清「空转死循环」到底是什么意思、会有什么后果（大白话，不用术语）
+    const why = reasons.length ? '这条的风险：\n' + reasons.map(r => '· ' + r).join('\n') + '\n\n' : ''
+    const ok1 = window.confirm(why +
+      '这个脚本里有会让 CPU 原地空转的代码（无限循环，一直在算但永远出不来）。\n\n' +
+      '试跑时它可能把一个 CPU 核心吃满，期间应用会变卡、其它检测会变慢；\n' +
+      '如果它一直转不停，只能关掉并重启应用。\n\n' +
+      '试跑不会让这条音源被信任或放行，跑完它仍然留在隔离区。\n\n' +
+      '仍然要试跑吗？')
+    if (!ok1) return false
+    // 第二次确认：只针对高风险形态，防手滑
+    const ok2 = window.confirm('再确认一次：这条有空转死循环特征，试跑可能让应用卡住一阵。\n\n' +
+      '我明白风险，仍要试跑。')
+    if (!ok2) return false
+    confirmBlock = true
+  } else {
+    const okGo = window.confirm(
+      '试跑会用本机沙箱真实跑一次这个脚本，看它能出几个平台的链接。\n\n' +
+      '试跑：\n' +
+      '· 不会信任、不会放行，跑完它仍然留在隔离区\n' +
+      '· 会发出网络请求（和正常检测一样）\n' +
+      '· 会占用一会儿 CPU\n\n' +
+      '开始试跑吗？')
+    if (!okGo) return false
+  }
+
+  btn.disabled = true
+  btn.textContent = '试跑中…'
+  try {
+    const r = await api.sourcesProbeQuarantined(id, confirmBlock)
+    // guard 把异常包成 {ok:false, error:'...'}，错误码只以文本形式保留在 message 里，
+    // 所以这里按文案分流（'达到上限' / '二次确认' 都来自 hunter.probeQuarantined 与 IPC 层）。
+    if (r && r.ok === false) {
+      const msg = String(r.error || '未知错误')
+      if (msg.indexOf('达到上限') >= 0) {
+        toast(msg, 'warn')
+      } else if (msg.indexOf('二次确认') >= 0) {
+        toast('这条需要二次确认才能试跑：' + msg, 'warn')
+      } else {
+        toast('试跑失败: ' + msg, 'err')
+      }
+      return false
+    }
+    const d = (r && r.data) || {}
+    const usableN = Number(d.usableN) || 0
+    const usedInfo = d.roundUsed ? `（本轮第 ${d.roundUsed}/${d.roundLimit} 条）` : ''
+    if (usableN > 0) {
+      toast(`试跑完成：${usableN} 个平台真的出了链接。可以据此判断要不要信任放行。${usedInfo}`, 'ok')
+    } else if (d.loadable === false) {
+      toast(`试跑完成：脚本本机加载失败，出不了链接。${usedInfo}`, 'warn')
+    } else {
+      toast(`试跑完成：没能出链接（0 个平台可用）。${usedInfo}`, 'warn')
+    }
+    await loadSources()
+    renderQuarantine()
+    return true
+  } catch (e) {
+    // 走到这里说明 IPC 本身出错（通道异常），不是业务失败
+    toast('试跑失败: ' + String((e && e.message) || e), 'err')
+    return false
+  } finally {
+    btn.disabled = false
+    btn.textContent = label
+  }
 }
 
 function renderQuarantine() {
@@ -1991,11 +2078,14 @@ function renderQuarantine() {
       ? '<button class="btn btn-sm btn-primary qz-trust" data-lv="allow" title="这条没有任何可疑特征。信任后按内容指纹放行，正常检测与灌入；脚本内容一更新就自动重新隔离">信任放行</button>'
       : lv === 'risky'
         ? '<button class="btn btn-sm qz-trust warn" data-lv="risky" title="有风险信号。点击后先给你看 AI 的意见，再决定要不要放行">仍要信任…</button>'
-        : '<button class="btn btn-sm qz-trust warn" data-lv="block" title="这条的形态和已知恶意样本一致，强烈建议先跑「检测」或直接删掉。仍可放行，但要过两道确认">有风险，不建议放行</button>'
+        : '<button class="btn btn-sm qz-trust warn" data-lv="block" title="这条的形态和已知恶意样本一致，强烈建议先点「试跑一次」看实测结果，或直接删掉。仍可放行，但要过两道确认">有风险，不建议放行</button>'
     // 风险清单（大白话，来自服务端 classifyQuarantineTrust 的 reasons）
     const riskTxt = reasons.length
       ? `<span class="qz-risk">${reasons.map(r => '· ' + esc(r)).join('<br>')}</span>`
       : ''
+    // 试跑按钮（v1.13.12）：拆「先信任才能验证」死锁的入口。只实测、不信任。
+    // block 档也保留可点（不灰死），差别是点了要过二次确认——见 probeQuarantined()。
+    const probeBtn = '<button class="btn btn-sm qz-probe" title="用本机沙箱真实跑一次，看它能出几个平台的链接。不会信任、不会放行，跑完仍在隔离区">试跑一次</button>'
     return `<div class="qz-row" data-id="${esc(e.id)}">
       <div class="qz-main">
         <span class="qz-name">${esc(e.lxName || e.scriptName || e.name || e.id)}</span>
@@ -2005,12 +2095,22 @@ function renderQuarantine() {
         ${(() => { const ai = aiHintFor(e); return ai && ai.status === 'pending' ? `<span class="qz-deep">✦AI 看法：${esc(aiBrief(ai.conclusion, 60))}</span>` : '' })()}
         <span class="qz-deep">${esc(qzDeepSummary(e))}</span>
       </div>
-      ${btn}
+      <span class="qz-actions">${probeBtn}${btn}</span>
     </div>`
   }).join('')
 }
 
 $('qzList').addEventListener('click', async (ev) => {
+  // 试跑（v1.13.12）：只实测、不信任。与「信任放行」完全分开，避免误点。
+  const probeBtn = ev.target.closest('.qz-probe')
+  if (probeBtn) {
+    if (probeBtn.disabled) return
+    const pRow = probeBtn.closest('.qz-row')
+    const pId = pRow && pRow.getAttribute('data-id')
+    if (!pId) return
+    await probeQuarantined(pId, probeBtn)
+    return
+  }
   const btn = ev.target.closest('.qz-trust')
   if (!btn || btn.disabled) return
   const row = btn.closest('.qz-row')
@@ -2060,7 +2160,7 @@ $('qzList').addEventListener('click', async (ev) => {
     btn.textContent = '待确认…'
     const aiPart = aiText ? 'AI 的看法：\n' + aiText + '\n\n' : 'AI 意见暂不可用。\n\n'
     const tail = lv === 'block'
-      ? '这条的形态和已知恶意样本一致，强烈建议先跑「检测」或直接删掉。\n\n真要用请自己明白风险。仍要放行吗？'
+      ? '这条的形态和已知恶意样本一致，强烈建议先点「试跑一次」看实测结果，或直接删掉。\n\n真要用请自己明白风险。仍要放行吗？'
       : '放行后按内容指纹豁免；脚本内容一更新会自动重新隔离。真出问题由沙箱和 CPU 护栏兜底。\n\n仍要信任放行吗？（AI 意见仅供参考，放行由你决定）'
     if (!window.confirm(aiPart + riskBlock + tail)) return restore()
     // block 档再过一道，避免手滑
@@ -4455,6 +4555,37 @@ async function boot() {
         if (Array.isArray(sc.bias) && sc.bias.length) {
           parts.push('可能偏了：' + sc.bias.map(b => esc(aiKindLabel(b.kind)) + '里有 ' + b.share + '% 都给出同一个结论（' + esc(aiVerdictPhraseLabel(b.kind, b.verdict)) + '），建议你自己复核几条').join('；'))
         } else parts.push('偏向提示：暂时没发现')
+      }
+      // ---- 评测指标表（v1.13.10 B4）----
+      // 以前这里**完全不渲染** metrics：后端算好了三态 verdict（达标/未达标/数据不足）
+      // 和「误伤率无法计算」的 ratio.unmeasurable，前端一个都没显示，用户能看到的只有
+      // 采纳率和自检——于是「删源这一层从没被验证过」在界面上彻底不可见，看起来一切正常。
+      // 这里把每层如实摊开，尤其把「不可测量」说成人话，绝不显示成 0%。
+      const m = d.metrics
+      if (m && Array.isArray(m.table) && m.table.length) {
+        const rows = m.table.filter(r => r.ratio || r.verdict)
+        if (rows.length) {
+          const COLOR = { '达标': '#3f9b6d', '未达标': '#e05252', '数据不足': '#b07b2b' }
+          const unmeas = rows.filter(r => r.ratio && r.ratio.unmeasurable === true)
+          const html = rows.map(r => {
+            const v = String(r.verdict || '')
+            const c = COLOR[v] || '#B4B2A9'
+            let txt
+            if (r.ratio && r.ratio.unmeasurable === true) {
+              txt = esc(aiKindLabel(r.kind)) + ' · ' + esc(r.stratum) + ' —— <b style="color:#b07b2b">样本构成不全，这项测不了</b>：这一层没有「该保留」的样本，误伤率算不出来（不是 0%，是没有分母）'
+            } else if (r.ratio && typeof r.ratio.value === 'number') {
+              const pct = (Math.round(r.ratio.value * 10000) / 100)
+              txt = esc(aiKindLabel(r.kind)) + ' · ' + esc(r.stratum) + ' —— ' + esc(r.ratio.label || '') + ' ' +
+                pct + '%（门槛 ' + (Math.round(r.ratio.threshold * 10000) / 100) + '%）'
+            } else {
+              txt = esc(aiKindLabel(r.kind)) + ' · ' + esc(r.stratum) + ' —— ' + esc(String(r.reason || '').slice(0, 90))
+            }
+            return '<div><span style="color:' + c + '">[' + esc(v) + ']</span> ' + txt + '</div>'
+          }).join('')
+          parts.push('<b>评测指标（按分层）</b>' + html +
+            '<div style="opacity:.75">整体结论：' + esc(String((m.overall && m.overall.verdict) || '—')) +
+            (unmeas.length ? '（有 ' + unmeas.length + ' 层样本构成不全，测不了）' : '') + '</div>')
+        }
       }
       box.innerHTML = parts.map(x => '<div>' + x + '</div>').join('')
     } catch (e) { box.textContent = '统计加载失败：' + String((e && e.message) || e) }

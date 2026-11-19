@@ -128,10 +128,10 @@ console.log('\n=== ⑤ 语义定义未被改动（只改显示）===')
 
 console.log('\n=== ⑥ 缓存戳同步（改 app.js 必须 bump） ===')
 ;(() => {
-  ok(/app\.js\?v=92/.test(htmlSrc), 'index.html 缓存戳已 bump 到 app.js?v=92')
+  ok(/app\.js\?v=93/.test(htmlSrc), 'index.html 缓存戳已 bump 到 app.js?v=93')
   for (const f of ['crawl-releases.test.js', 'external-source.test.js', 'proxy-policy.test.js']) {
     const s = fs.readFileSync(path.join(ROOT, 'tests', f), 'utf8')
-    ok(/app\.js\?v=92/.test(s) && !/app\.js\?v=91/.test(s), f + ' 缓存戳断言已同步到 v92')
+    ok(/app\.js\?v=93/.test(s) && !/app\.js\?v=92/.test(s), f + ' 缓存戳断言已同步到 v93')
   }
 })()
 

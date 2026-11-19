@@ -5,6 +5,7 @@ const fs = require('fs')
 const { Store } = require('../core/store')
 const { createAppLogWriter } = require('../core/logFile')
 const { Hunter, formatIntervalHours, patrolSchedule } = require('../core/hunter')
+const { makeProbeQueue } = require('../core/probeQueue')
 const { getActiveService, resolveService, TYPE_LABELS, NO_ACCOUNT_ERR } = require('../core/services')
 const { DEFAULT_REPOS } = require('../core/crawler')
 
@@ -723,6 +724,23 @@ ipcMain.handle('repos:block', guard((e, repo) => hunter.blockRepo(String(repo ||
 ipcMain.handle('repos:unblock', guard((e, args) => hunter.unblockRepo(String((args || {}).repo || ''), (args || {}).reAdd)))
 // 混淆隔离：信任/取消信任（v1.10.7）
 ipcMain.handle('sources:trustObf', guard((e, args) => hunter.trustObfSource(String((args || {}).id || ''), !!(args || {}).trust)))
+// 混淆隔离：试跑一次（v1.13.12）——只实测、不信任。
+//
+// 配额与串行逻辑在 core/probeQueue.js（v1.13.13 抽出），原因：
+//   ① 它是「用户手动点试跑」这个交互的约束，不属于 hunter 的业务语义；
+//   ② Web 端原先根本没有试跑通道（A1 复查发现），补路由时必须用**同一套**保护，
+//      否则 Web 端可无限试跑、且能并发开多个沙箱。
+//
+// ⚠️ 残留风险如实：试跑仍在**主线程**跑 deepCheck（没搬 worker）。
+// worker 化需要把整个 deepCheck 依赖链（sandbox / net / checker 辅助函数）搬进 worker，
+// 属于后续批次。当前缓解手段是：串行 + 单轮上限 + 沙箱自身的资源配额闸门。
+// 尚不能硬杀的是「定时器回调里的 CPU 空转」——vm 的 timeout 只约束同步段，
+// 这类脚本会让主线程卡到它自己结束。block 档（含空转特征）因此要求二次确认。
+const probeQueue = makeProbeQueue()
+ipcMain.handle('sources:probeQuarantined', guard((e, args) => {
+  const a = args || {}
+  return probeQueue.run(() => hunter.probeQuarantined(String(a.id || ''), { confirmBlock: !!a.confirmBlock }))
+}))
 
 // 手动删除选中音源（v1.10.2）：与 Web 版 /api/db/delete 同签名、同语义
 ipcMain.handle('db:delete', guard((e, ids) => {  if (!Array.isArray(ids) || !ids.length) throw new Error('没有选中要删除的音源')

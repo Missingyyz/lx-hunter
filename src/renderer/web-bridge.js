@@ -229,6 +229,9 @@
     reposBlock: repo => call('/api/repos/block', { repo }),
     reposUnblock: (repo, reAdd) => call('/api/repos/unblock', { repo, reAdd }),
     sourcesTrustObf: (id, trust) => call('/api/sources/trust-obf', { id, trust }),
+    // 隔离区「试跑一次」（v1.13.13）—— 与 preload.js 同名同签名。
+    // A1 修复：这条原先在 Web 端缺失，但 app.js 是两端共用的，按钮会渲染出来、点了必失败。
+    sourcesProbeQuarantined: (id, confirmBlock) => call('/api/sources/probe-quarantined', { id, confirmBlock: !!confirmBlock }),
   // AI 复检层（v1.14.0）—— 与 preload.js 同名同签名
   aiConfigGet: () => call('/api/ai-review/config'),
   aiConfigSet: (patch) => call('/api/ai-review/config', patch),

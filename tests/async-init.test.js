@@ -54,7 +54,7 @@ lx.request('__SERVER__/config', { method: 'GET' }, (err, resp, body) => {
   const code = ASYNC_SCRIPT.split('__SERVER__').join(base)
 
   // ---------- 1. 慢于宽限（6s > 4s 默认宽限）时仍要等到 inited ----------
-  let sb = new Sandbox({ id: 'async', fetchTimeout: 15000, dispatchTimeout: 15000 })
+  let sb = new Sandbox({ id: 'async', fetchTimeout: 15000, dispatchTimeout: 15000, allowPrivateHosts: true })
   let r = await sb.init(code, { name: '异步init源', homepage: base + '/' })
   ck('慢网络异步 init: 仍能拿到 inited', r.inited === true, JSON.stringify(r).slice(0, 120))
   ck('慢网络异步 init: 拿到完整平台声明', !!r.data && ['kw', 'wy', 'tx'].every(k => r.data.sources[k]),
@@ -62,7 +62,7 @@ lx.request('__SERVER__/config', { method: 'GET' }, (err, resp, body) => {
 
   // ---------- 2. 服务端比硬上限还慢：拿不到 inited，但必须抢救而不是判死 ----------
   DELAY = 60000
-  sb = new Sandbox({ id: 'async2', fetchTimeout: 60000, dispatchTimeout: 15000, initGraceMs: 1000, initGraceMaxMs: 3000 })
+  sb = new Sandbox({ id: 'async2', fetchTimeout: 60000, dispatchTimeout: 15000, initGraceMs: 1000, initGraceMaxMs: 3000, allowPrivateHosts: true })
   r = await sb.init(code, { name: '极慢init源', homepage: base + '/' })
   ck('超硬上限: 抢救为可测而非判死', r.inited === true && r.recovered === true, JSON.stringify(r).slice(0, 140))
   ck('超硬上限: 标记 guessedSources（未拿到平台声明）', r.guessedSources === true)
@@ -72,7 +72,7 @@ lx.request('__SERVER__/config', { method: 'GET' }, (err, resp, body) => {
   // ---------- 3. 抢救出来的脚本要真的能测出可用平台（而不是全灰「未检测」） ----------
   DELAY = 60000
   const d = await deepCheck({ id: 'x', name: '异步init源', url: 'local' }, code,
-    { linkTimeoutMs: 12000, platformBudgetMs: 20000, retryBudgetMs: 8000, quickCheck: false, initGraceMs: 1000, initGraceMaxMs: 3000 },
+    { linkTimeoutMs: 12000, platformBudgetMs: 20000, retryBudgetMs: 8000, quickCheck: false, initGraceMs: 1000, initGraceMaxMs: 3000, allowPrivateHosts: true },
     () => {}, () => false)
   const plats = Object.entries(d.platforms || {})
   console.log('   平台结果:', plats.map(([k, v]) => k + ':' + v.status + '(' + String(v.message||'').slice(0,50) + ')').join(' '))
