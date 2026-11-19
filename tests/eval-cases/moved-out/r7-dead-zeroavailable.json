@@ -1,0 +1,2514 @@
+{
+ "version": 1,
+ "note": "R7 移出的「深检全平台 0 可用但 apiDownStreak<10」样本（gold 依据 rule-dead）。这批 gold=blacklist 与 R7 prompt 互斥：prompt 两条 blacklist 路径（dead/404、可用=0 且 streak>=10）命中 0 条，按 prompt 口径应判 keep。口径待定，暂移出以免污染 R7 读数。 本文件位于 moved-out/ 子目录：evalCases.loadCases 只扫顶层目录，不递归，因此这些样本已不参与 R7 评测统计，仅作留档与回归验证用。",
+ "movedFrom": "r7-library.json",
+ "movedAt": 1795047686879,
+ "movedReason": "status=ok + 可用=0 + apiDownStreak 0~3（门槛 10），R7 prompt 明写此类应 keep。留在 R7 等于把正确行为稳定记为错误。",
+ "pendingDecision": "口径待定：(a) 按 prompt 改 gold 为 keep；(b) 改 prompt 放宽门槛（红线方向，已否决）；(c) 维持移出等口径。当前选 (c)。",
+ "count": 55,
+ "cases": [
+  {
+   "id": "r7b-05a1973502",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "ikun-sourse",
+    "scriptName": "ikun音源",
+    "scriptVersion": "v7",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=4",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=4），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "05a19735025f0e8bed622c2c958fc03355dc7fe93e17583f0f119d540431f160",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-08183af30a",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "[已恢复]新澜音源(公益版) v3.0.0",
+    "scriptName": "新澜音源(公益版)",
+    "scriptVersion": "3.0.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 2 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "08183af30abec5d1dc72123bd8fc3dcf76e4181a5b56862228907930e54667f8",
+   "copies": 2,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-09f6f3fb94",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "(第四个测试版)TuneFlow_beta v1.0_beta",
+    "scriptName": "TuneFlow_beta",
+    "scriptVersion": "1.0_beta",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 3 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "09f6f3fb9428f4e47aa77473bd392d6f1687af293166a9e56c1e6a6e0bea075b",
+   "copies": 3,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-176ea2309a",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "废材公社(三改FL，二改小熊猫)",
+    "scriptName": "微信公众号：废材公社 内部源1",
+    "scriptVersion": "v1.1.2",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[URL]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 6 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "176ea2309a6fd17bb38323e6508b2df02da48bfa63fe8779a5378bea0dd80d6d",
+   "copies": 6,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-18981faccf",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "小熊猫音源 v1.1.1",
+    "scriptName": "小熊猫",
+    "scriptVersion": "v1.1.1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[URL]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 2 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "18981faccf8ba3d76a5733c06154211dd456ea232030cf57c946cdcc46dd6789",
+   "copies": 2,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-211621673d",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "(第二个测试版)TuneFlow VIP音源 v1.0.0",
+    "scriptName": "TuneFlow VIP音源",
+    "scriptVersion": "1.0.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 3 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "211621673da379a324cfac16cf74b33f37b5a799cfdc1cbcc83f5a240f13ef44",
+   "copies": 3,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-21c2b7e2a2",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "MyGO音源 v1",
+    "scriptName": "MyGO音源",
+    "scriptVersion": "v1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=1",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=1），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 2 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "21c2b7e2a214ccc3e907373475d5036bff310a486356b6a8e196bc0248048518",
+   "copies": 2,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-243415bed4",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "洛雪科技[独家音源] v4-会停用",
+    "scriptName": "[独家音源]",
+    "scriptVersion": "4",
+    "status": "ok",
+    "error": "自动信任：无硬特征，沙箱实测外联域名全部为音乐生态白名单",
+    "repository": "[REPO]",
+    "validTier": "rejected",
+    "obfLevel": "high",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=1585 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [],
+    "apiDownStreak": 0,
+    "suspected": false,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 29 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "243415bed434b9e0d3562d724acc16b1d0703d7ee161a943b8ad0b9b1413f550",
+   "copies": 29,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-27b7674032",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "聆澜音源(公益版) v7",
+    "scriptName": "聆澜音源(公益版)",
+    "scriptVersion": "v7",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=3",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=3），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "27b7674032d226482956fff82abcb46cf3e5ed9010c02c065782236c744d5a33",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-4312c7cbc2",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "云端音源(免费版，每日2000次) v2.1.0",
+    "scriptName": "云端音源(免费版)",
+    "scriptVersion": "v2.1.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "4312c7cbc2dbae3751fad1c16a95f6f3a94ef01482e550c81b40748e0ee1e630",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-459bf1fafa",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "听音音源 v2(已配置key，直接可用)",
+    "scriptName": "听音音源",
+    "scriptVersion": "v1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=4",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=4），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 3 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "459bf1fafaced5adcc82e70a24340954b774ec5e80807f3378867d41d75f27e3",
+   "copies": 3,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-48d5fed8b4",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "长青SVIP音源(二改修复版) v1.2.0",
+    "scriptName": "长青SVIP音源(二改修复版)",
+    "scriptVersion": "v1.2.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "high",
+    "obfHits": "evalCalls=0 total0x=2806 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=4",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=4），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 9 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "48d5fed8b46344e9298d55427382ce573485a264a2ae287ed829e2f2548223e8",
+   "copies": 9,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-4b8493acc8",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "TZB独家音源 v1.0.0",
+    "scriptName": "TZB独家音源",
+    "scriptVersion": "1.0.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=3",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=3），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 2 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "4b8493acc8ed7d01bf356f96582e861ca8daa3ed9f0db1d279802bc30eab2839",
+   "copies": 2,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-4e0835fbca",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "bimiao音源 v1",
+    "scriptName": "bimiao音源",
+    "scriptVersion": "v1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[URL]",
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=1",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=1），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 3 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "4e0835fbcaffa400fb1d8bae518b88659584801ac84155989f15a156fa9e4298",
+   "copies": 3,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-4f677c4c65",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "野花音源",
+    "scriptName": "野花🌷",
+    "scriptVersion": "1.0.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=5 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 5 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "4f677c4c655ffe353116db8921fd8b14aa06bb6c94787f317863ec33a637e2c4",
+   "copies": 5,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-55d270e812",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "落月 v1.0.3",
+    "scriptName": "落雪",
+    "scriptVersion": "1.0.3",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]",
+     "[HOST]",
+     "[HOST]"
+    ],
+    "apiDownStreak": 1,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=2",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=2），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 2 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "55d270e81263bdb481dfc9ed36464ec69331d441fa27a1cf0f95fa8c3119953c",
+   "copies": 2,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-5755672ceb",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "肥猫不肥",
+    "scriptName": "肥猫不肥",
+    "scriptVersion": "肥猫不肥",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "music.xn--z7x900a.live"
+    ],
+    "apiDownStreak": 1,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "5755672cebf555f379238082fd3746f423d6fca0bffe3f747baa65c24e9ddb25",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-57716d45cb",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "春日影-单平台128k",
+    "scriptName": "春日影",
+    "scriptVersion": "v1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]",
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=1",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=1），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 13 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "57716d45cbf8524b6c3f2605700e15f0a25f787628bb09a938504bc9183f7dc0",
+   "copies": 13,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-6706d07e4a",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "HYWmusic_beta v0.42.0",
+    "scriptName": "HYWmusic_beta",
+    "scriptVersion": "0.42.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 3 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "6706d07e4a5b2541f343d586e0d281ac771289baab1d7c0bf775ae918a2dc532",
+   "copies": 3,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-80b7b7b188",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "梓橙公益音源2代",
+    "scriptName": "梓澄公益音源二代",
+    "scriptVersion": "[HOST].5",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "80b7b7b1882d572221ade7e1acf4dd452207ee36e245aca6d31defec78ad3269",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-866893ce8b",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "2",
+    "scriptName": "微信公众号：洛雪音乐",
+    "scriptVersion": "2",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "88.lxmusic.xn--fiqs8s"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "866893ce8b37fd4a92f374c4b5d0f7781e6e6658e74b6a3fb0ec6c3ff9f30318",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-8cd3f90d51",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "聚合API接口（最高支持无损音质）",
+    "scriptName": "聚合API接口 (by lerd)",
+    "scriptVersion": "v2.0.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "high",
+    "obfHits": "evalCalls=0 total0x=544 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=1 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[URL]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 5 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "8cd3f90d51011d2b82d9fbf8a7ffe2d087f334e6fb1ff27dfba07374db3f9acc",
+   "copies": 5,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-8efcc82f8d",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "(第一个测试版)TuneFlow v0.1_alphha",
+    "scriptName": "TuneFlow",
+    "scriptVersion": "0.1_alphha",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 3 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "8efcc82f8da0939728fd00678aee4795de566cb4a59a58597cc72d1e74efd668",
+   "copies": 3,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-92b505c63a",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "ikun音源-HK",
+    "scriptName": "ikun音源（中国香港服务器)",
+    "scriptVersion": "v1.0.1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "high",
+    "obfHits": "evalCalls=0 total0x=324 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "92b505c63a3eec63bc3a00f27a224f9c17ce6358a9beb74e9047621804dbebb8",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-935ef119ea",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "星空源 v1.1",
+    "scriptName": "星空源",
+    "scriptVersion": "1.1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "high",
+    "obfHits": "evalCalls=0 total0x=4354 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 3 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "935ef119eaa6ae638ab351201b498508bc731d645ccb2f19b39dfd78b27037a4",
+   "copies": 3,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-959f9438e5",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "lx-music-source-free",
+    "scriptName": "肥猫",
+    "scriptVersion": "肥猫",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "fatcat.dns.army"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "959f9438e51df0fb8846d6e4fec737b89f0169ac75897b067c87ba77b7bdf2e6",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-96b4d9477a",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "lx官方自定义源（需要一定编程基础，格式UTF-8）",
+    "scriptName": "测试音乐源",
+    "scriptVersion": "1.0.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=1",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=1），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 4 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "96b4d9477aa9bbaeea98a422fdb0a59617388d47e5d472d27f3585415cb77769",
+   "copies": 4,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-9c0608698e",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "西瓜糖音乐(较低音质) v1",
+    "scriptName": "西瓜糖音乐",
+    "scriptVersion": "v1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=1",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=1），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 3 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "9c0608698ef91bd7e9e678d46193f6a16a104f7a941f7a726aff8514a56fac63",
+   "copies": 3,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-9fc0d63469",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "nya",
+    "scriptName": "示例音源",
+    "scriptVersion": "0.0.1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 3,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 2 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "9fc0d63469d6c0a6a0ee75930e96fb4dd60ed0f487738b585cb72e070241bc7c",
+   "copies": 2,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-a0bc874070",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "【聆川音源(公益版)v6】lx-music-source-free-1760800568795",
+    "scriptName": "聆川音源(公益版)",
+    "scriptVersion": "v6",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "a0bc8740702ac3da5da6a0cc9392d2668d95479df63922a84e0279ceae99bc66",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-a18bdd58fd",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "统一音乐源",
+    "scriptName": "统一音乐源",
+    "scriptVersion": "1.0.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 1,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=2",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=2），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 33 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "a18bdd58fd3f5e26d00c8c18d7b0825367f54a1c01bb8f8321ac7f5d374f1a7c",
+   "copies": 33,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-a407ffe0ab",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "1.2.1",
+    "scriptName": "六音音源",
+    "scriptVersion": "v1.2.1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "high",
+    "obfHits": "evalCalls=1 total0x=16316 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 3 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "a407ffe0ab23c29cd32ce249b83e61c8e2b70719895f16034566ad7557282785",
+   "copies": 3,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-a4e3ec3064",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "(第三个测试版)TuneFlow测试版 v1.0_beta",
+    "scriptName": "TuneFlow测试版",
+    "scriptVersion": "1.0_beta",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 3 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "a4e3ec3064f117fa6176451067cae2ef4bd440c770fac886108b67d4efe8c128",
+   "copies": 3,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-a4fb1c4057",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "lx-demo-source",
+    "scriptName": "lx-demo-source",
+    "scriptVersion": "",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "demo-backend.invalid",
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "a4fb1c40578c78e0f75dee66f887c1f55bb100bb0560d9dd99992f1181435f90",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-a9adeb4566",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "huibq",
+    "scriptName": "Huibq_lxmusic源",
+    "scriptVersion": "v1.2.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 27 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "a9adeb456690b523008038224091cee31977606302d79082eb06adb3c75c9146",
+   "copies": 27,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-aa82f61e16",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "聚合API接口(decrypt)",
+    "scriptName": "聚合API接口 (by lerd)（decrypt)",
+    "scriptVersion": "v2.0.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[URL]"
+    ],
+    "apiDownStreak": 3,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 2 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "aa82f61e16fb32093f9bba94d3b77e91dbb5dccf6c3ed964fb6d6c92ccbcc7b1",
+   "copies": 2,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-b459f3d92c",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "(二改公众号音源)微信公众号：极客会 内部源2",
+    "scriptName": "微信公众号：极客会 内部源2",
+    "scriptVersion": "",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "88.lxmusic.xn--fiqs8s"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 4 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "b459f3d92c555474abe63422162d2e61d3e0322381e85ed642eedc6ed7e9f8a7",
+   "copies": 4,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-b45e05b8c0",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "屿溪-终章",
+    "scriptName": "屿溪-终章",
+    "scriptVersion": "0.0.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "high",
+    "obfHits": "evalCalls=0 total0x=6602 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 6 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "b45e05b8c043f0e715f9856ea400707bdf131b9c05b5014e1de9d0821a9972a7",
+   "copies": 6,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-b753b2839c",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "聚合API",
+    "scriptName": "聚合API接口 (CF)",
+    "scriptVersion": "3",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 27 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "b753b2839c7f2a2982c77942afdbd2f03f61e42377ac64701f5bf3aac7daa5eb",
+   "copies": 27,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-be79044888",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "ikun-source",
+    "scriptName": "ikun公益音源",
+    "scriptVersion": "1.0.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "be790448887724d88dd8105fc4dc6970554cff3f2482c5ca2d8b78561792c2d9",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-bf604f0675",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "ikun音源(公益版)_v18",
+    "scriptName": "ikun音源(公益版)",
+    "scriptVersion": "v18",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=4",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=4），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "bf604f0675290273d6e299e6e17a933b87c1bcc95fecb8892e306101b2992737",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-c230509f0d",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "惜缘 v1",
+    "scriptName": "惜缘",
+    "scriptVersion": "v1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=4",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=4），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 4 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "c230509f0d15c64161d52aa6ede909c8928043ca8aea4dfdea2962f1bdff63a3",
+   "copies": 4,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-c6b539dd04",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "小熊猫音源 v1.1.2",
+    "scriptName": "小熊猫音源",
+    "scriptVersion": "v1.1.2",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[URL]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 2 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "c6b539dd04fa30e4061bb9d1643a6dc520e1c915d01616020bbb6a07c9ba1687",
+   "copies": 2,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-cc5150108b",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "【四大平台母带开放，你们亲爱的Ryn回来辣】HYWmusic_beta_公益测试",
+    "scriptName": "HYWmusic_beta_公益测试",
+    "scriptVersion": "v0.74.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 10 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "cc5150108b833a2e1d92a0d43cca7667e571055043c51bcfca1348cca610c681",
+   "copies": 10,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-ce5bfc7400",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "Free Listen_v1.1.2",
+    "scriptName": "Free listen",
+    "scriptVersion": "v1.1.2",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[URL]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 7 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "ce5bfc74007fd14d697ed94f4414f0c20fbd4437999647b906a6dff549061eae",
+   "copies": 7,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-d2f72c5c0d",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "xinghai",
+    "scriptName": "星海音乐源",
+    "scriptVersion": "v3.2.18",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]",
+     "[HOST]",
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 4 个副本；副本深检结果有 2 种（平台数=5 可用=0 失败=5 / 平台数=5 可用=2 失败=0 未测=3），本样本取最新一次检测；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "d2f72c5c0dde51fbaa32c9ca5c634a1ae43eafa952abc1e5a83dab4f578487ab",
+   "copies": 4,
+   "deepVariants": 2
+  },
+  {
+   "id": "r7b-d4adfe22f9",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "西瓜糖音乐(高品质解析) v1",
+    "scriptName": "西瓜糖音乐(高品质解析)",
+    "scriptVersion": "v1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=1",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=1），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 2 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "d4adfe22f9f46936f38f6b07ce48976814ccfa245a76ab2ec81e18026a7bba91",
+   "copies": 2,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-d694275f38",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "野草🌾",
+    "scriptName": "野草🌾",
+    "scriptVersion": "1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "rejected",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=5 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [],
+    "apiDownStreak": 0,
+    "suspected": false,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=1",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=1），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 25 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "d694275f382427d3fef809fc77338ef014dc330af710cca6b3233ece8740510f",
+   "copies": 25,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-d6a7866a31",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "梓澄公益音源",
+    "scriptName": "梓澄公益音源",
+    "scriptVersion": "v1.0.1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "d6a7866a31d92e220be3fbb8986079c45961eccc849be47a95782701bb505719",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-e0dc88c6ff",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "hywV1.0.0",
+    "scriptName": "HYW×Koneko-API-Charity",
+    "scriptVersion": "1.0.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "hywmusicsource.xn--9tra.work"
+    ],
+    "apiDownStreak": 1,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 2 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "e0dc88c6ff8085703818ccbeb28c3580ad70dcb55704a2eb20534c95177383a2",
+   "copies": 2,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-e19d3194ac",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "yibai酷我流式V4",
+    "scriptName": "yibai酷我流式(v4)",
+    "scriptVersion": "v114514",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 2,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=1",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=1），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 4 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "e19d3194acbb4de9fdefedc4cec10b8b4134739264e55f2da8a1f25428ad52f2",
+   "copies": 4,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-ebf4a0290d",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "demo_source_http",
+    "scriptName": "示例音源（网络请求自检）",
+    "scriptVersion": "1.0.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=1",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=1），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "ebf4a0290d82d9f83cb746464b57ff64503eed1eeb635c08606f6a9d5ff13932",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-efb013cc72",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "(二改FL)微信公众号：极客会 内部源1",
+    "scriptName": "微信公众号：极客会 内部源1",
+    "scriptVersion": "v1.1.2",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[URL]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]",
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 4 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "efb013cc726487d5cb4755b8c81df61d3a69ef7b6a8edb0c40d74bf10b2ef47f",
+   "copies": 4,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-f46a7ef9b8",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "聚合API V3(by lerd)",
+    "scriptName": "聚合API接口",
+    "scriptVersion": "3",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]"
+    ],
+    "apiDownStreak": 3,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=5",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=5），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "f46a7ef9b8ceb3fbe1ea3e8178b7ba770fc9fae027cb95a41d24d3ea4e78e035",
+   "copies": 1,
+   "deepVariants": 1
+  },
+  {
+   "id": "r7b-ff80b9ba05",
+   "kind": "R7",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795020621583,
+   "systemPrompt": null,
+   "input": {
+    "name": "极速稳定音源 v1.0.4(1.1.0)",
+    "scriptName": "极速稳定音源",
+    "scriptVersion": "1.1.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "probable",
+    "obfLevel": "",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=0 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [
+     "[HOST]",
+     "[HOST]"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=0 失败=3",
+    "installed": true
+   },
+   "expected": {
+    "verdict": "blacklist",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "本机深度实测全平台 0 可用（平台数=5 可用=0 失败=3），属规则可铁判的失效源，判 blacklist。"
+   },
+   "goldAct": "blacklist",
+   "annotation": {
+    "annotator": "rule-dead",
+    "at": 1795020621583,
+    "blind": false,
+    "note": "同时命中「同内容重复」与「存活池全平台0可用」；同一内容共 6 个副本；副本深检结果一致；代表条目实测可用 0 个平台；gold 由规则推导，非人工盲标"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "ff80b9ba0534c4238e56c36587d2643f42d45e88815455e2cb8bc73b4088a1ff",
+   "copies": 6,
+   "deepVariants": 1
+  }
+ ],
+ "excludedFromEval": true
+}

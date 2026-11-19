@@ -57,7 +57,8 @@
       <div class="cards">
         <div class="card stat"><div class="stat-num" id="stTotal">0</div><div class="stat-label">库内候选</div></div>
         <div class="card stat"><div class="stat-num ok" id="stUsable">0</div><div class="stat-label">检测可用</div></div>
-        <div class="card stat"><div class="stat-num warn" id="stSuspected">0</div><div class="stat-label">疑似音源</div></div>
+        <div class="card stat" title="库里有洛雪音源接口特征、但还没做深度实测的脚本。这些最值得点「检测」验证能不能真的取到歌。"><div class="stat-num warn" id="stSuspected">0</div><div class="stat-label">疑似音源·未检测</div></div>
+        <div class="card stat" title="已经下载检查过、脚本里没有洛雪音源接口特征，按经验判定不是音源的条目。它们没有进深度实测，一般不用管。"><div class="stat-num" id="stNotSource">0</div><div class="stat-label">已检测·不像音源</div></div>
         <div class="card stat"><div class="stat-num dead" id="stDead">0</div><div class="stat-label">失效</div></div>
         <div class="card stat"><div class="stat-num accent" id="stImported">0</div><div class="stat-label">已灌入</div></div>
       </div>
@@ -69,7 +70,8 @@
           <div class="seg" id="filterSeg">
             <button class="seg-btn active" data-f="all">全部</button>
             <button class="seg-btn" data-f="usable">可用</button>
-            <button class="seg-btn" data-f="suspected">疑似</button>
+            <button class="seg-btn" data-f="suspected" title="有洛雪音源接口特征、看着像音源，但还没做过深度实测的那批。最值得点「检测」验证。">疑似音源·未检测</button>
+            <button class="seg-btn" data-f="notSource" title="已经下载检查过、脚本里没有洛雪音源接口特征，按经验判定不是音源的条目。">已检测·不像音源</button>
             <button class="seg-btn" data-f="dead">失效</button>
             <button class="seg-btn" data-f="unchecked">未检测</button>
             <button class="seg-btn" data-f="confirmed">已实测</button>
@@ -82,7 +84,8 @@
             <option value="selected">导出：选中项</option>
             <option value="all">导出：全部</option>
             <option value="usable">导出：可用</option>
-            <option value="suspected">导出：疑似</option>
+            <option value="suspected">导出：疑似音源·未检测</option>
+            <option value="notSource">导出：已检测·不像音源</option>
             <option value="dead">导出：失效</option>
             <option value="unchecked">导出：未检测</option>
             <option value="imported">导出：已灌入</option>
@@ -115,7 +118,7 @@
                 <th class="c-name sortable" data-k="name" title="点击按名称排序（再点反向）">音源<span class="sort-arrow"></span></th>
                 <th class="c-plat sortable" data-k="plat" title="点击按综合质量排序：实测可用平台数 → p50 延迟 → 最高可播档（再点反向）。质量高的排在前面，可照着从上往下手动灌入。注意：巡检/初筛是「快速体检」（测到第一个可用平台就停，其余标未测），此时的平台数是体检下限、偏小；点「深度检测（打分）」才得到准确平台数与延迟">平台可用性<span class="sort-arrow"></span></th>
                 <th class="c-repo sortable" data-k="repo" title="点击按来源仓库排序（再点反向）">来源仓库<span class="sort-arrow"></span></th>
-                <th class="c-status sortable" data-k="status" title="点击按状态排序：可用 → 疑似 → 未检测 → 不可用 → 失效 → 已灌入（垫底，方便排除已灌入、只勾选未灌入的灌入；再点反向）">状态<span class="sort-arrow"></span></th>
+                <th class="c-status sortable" data-k="status" title="点击按状态排序：可用 → 疑似音源·未检测 → 已检测·不像音源 / 未检测 → 不可用 → 失效 → 已灌入（垫底，方便排除已灌入、只勾选未灌入的灌入；再点反向）">状态<span class="sort-arrow"></span></th>
                 <th class="c-op">操作</th>
               </tr>
             </thead>
@@ -854,6 +857,6 @@
 <div class="toast" id="toast" hidden></div>
 <script src="sorters.js?v=29"></script>
 <script src="web-bridge.js?v=60"></script>
-<script src="app.js?v=91"></script>
+<script src="app.js?v=92"></script>
 </body>
 </html>

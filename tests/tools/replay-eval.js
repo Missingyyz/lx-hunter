@@ -39,6 +39,7 @@
  *   --concurrency 4  并发数（默认 1；真调 provider 建议 1~3 防限流）
  *   --dry-run     只打印将要做什么，不写库
  *   --data DIR    数据目录（默认 ./_replay_data，避免污染真实库）
+ *   --allow-dirty 允许在「看起来是真实库」的目录上运行（默认拒绝，防污染 aiSuggestions）
  */
 
 const fs = require('fs')
@@ -48,7 +49,7 @@ const ROOT = path.join(__dirname, '..', '..')
 
 // ---------- 参数解析 ----------
 function parseArgs (argv) {
-  const a = { stub: false, live: false, mockops: false, limit: 0, kind: '', force: false, concurrency: 1, dryRun: false, data: '' }
+  const a = { stub: false, live: false, mockops: false, limit: 0, kind: '', force: false, concurrency: 1, dryRun: false, data: '', allowDirty: false }
   for (let i = 0; i < argv.length; i++) {
     const x = argv[i]
     if (x === '--stub') a.stub = true
@@ -56,6 +57,7 @@ function parseArgs (argv) {
     else if (x === '--mockops') a.mockops = true
     else if (x === '--force') a.force = true
     else if (x === '--dry-run') a.dryRun = true
+    else if (x === '--allow-dirty') a.allowDirty = true
     else if (x === '--limit') a.limit = Number(argv[++i]) || 0
     else if (x === '--kind') a.kind = String(argv[++i] || '').toUpperCase()
     else if (x === '--concurrency') a.concurrency = Math.max(1, Number(argv[++i]) || 1)
@@ -213,6 +215,45 @@ async function main () {
 
   const store = new Store(dataDir)
   const aiReview = new AIReview(store)
+
+  // ---- P0-3：防止回放污染 aiSuggestions ----
+  // aiReview.run() → 通用分支会调 suggest() 把每条结论写进 db.aiSuggestions。
+  // 那是给「真实 AI 复检」用的用户可见建议列表，回放产生的都是评测假数据，
+  // 塞进去会污染用户的建议面板（实测一次 438 条回放写了 439 条假建议）。
+  //
+  // 处理分两层：
+  //   ① 硬拦：如果 --data 指向的目录里已经有真实 aiSuggestions（说明这是用户的真实库），
+  //      直接拒绝运行，避免手滑把评测灌进生产目录。
+  //   ② 打桩：在内存里把 suggest 换成不落库的版本，回放只写 aiEvalLog，不碰 aiSuggestions。
+  //      选择打桩而不是给 aiReview 加 noPersist 参数，是为了不改动生产路径的代码——
+  //      生产链路上多一个「可以关掉落库」的开关，本身就是风险。
+  const preSug = Object.keys((store.db && store.db.aiSuggestions) || {}).length
+  const preLog = Object.keys((store.db && store.db.aiEvalLog) || {}).length
+  // 判定「真实库」：已有建议、且已有业务数据（sources 非空），说明不是本脚本建的临时目录。
+  // 只靠 aiSuggestions 非空会误伤「上次回放已被污染的临时目录」这种续跑场景。
+  const looksReal = preSug > 0 && Object.keys((store.db && store.db.sources) || {}).length > 0
+  if (looksReal && !args.allowDirty) {
+    console.error('')
+    console.error('[拒绝运行] --data 指向的目录看起来是真实数据目录：')
+    console.error('  ' + dataDir)
+    console.error('  其中已有 ' + preSug + ' 条 aiSuggestions、' +
+      Object.keys(store.db.sources || {}).length + ' 条 sources。')
+    console.error('  回放会往 aiSuggestions 写评测假建议，污染用户的 AI 建议面板。')
+    console.error('  请换一个空的临时目录（如 --data ./_replay_data）。')
+    console.error('  确实要在该目录上跑，加 --allow-dirty 显式确认。')
+    process.exit(3)
+  }
+  if (preSug > 0) console.log('[提示] 该目录已有 ' + preSug + ' 条 aiSuggestions；本次回放不会新增（suggest 已打桩）')
+  // 打桩：保留返回值形状（run() 会读 suggestion/suggestions），但不写 db
+  const realSuggest = aiReview.suggest.bind(aiReview)
+  aiReview.suggest = function (entryId, kind, conclusion, evidence, extra) {
+    const s = Object.assign({
+      id: 'dryrun-' + (kind || '?'), entryId: entryId || '', kind,
+      conclusion: conclusion || '', evidence: Array.isArray(evidence) ? evidence : []
+    }, extra || {})
+    return s   // 只给调用方用，不落 store.db
+  }
+  void realSuggest
 
   // ---- 断点续跑：已经回放过的 caseId 跳过 ----
   const done = new Set()

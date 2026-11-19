@@ -498,6 +498,44 @@ async function learnTests() {
     ok(/kind: 'R6'/.test(appSrc) && /window\.confirm\(/.test(appSrc), 'app.js 隔离区放行前调 R6 并 confirm')
     ok(/const kinds = \['R3', 'R4', 'R5', 'R7'\]/.test(appSrc), '批量按钮扩展 R3/R4/R5/R7（R6 留隔离区）')
     ok(/toast\('已完成 '/.test(appSrc) && /made \+=/.test(appSrc), '批量按钮按真实建议数 toast')
+
+    // ============================================================
+    console.log('\n=== P0-1：suspected 语义（正向音源特征打分，非「疑似非音源」）===')
+    // 背景：checker.classifyEntry = scoreEntry(...) >= 4，scoreEntry 是正向打分
+    // （名字像音源 +2、globalThis.lx +3、lx.request +2…），分越高越像音源。
+    // 所以 suspected===true 表示「通过音源特征筛选 / 疑似是音源」。
+    // 原先 R5 渲染成「疑似非音源」、R7 渲染成「命中本地启发式：是」，两处都把
+    // 真音源的证据说成了该杀的理由，导致真源被误判 nonSource。
+    const r5Src = REVIEW_PROMPTS.R5.buildText({ name: 'x', suspected: true })
+    const r5False = REVIEW_PROMPTS.R5.buildText({ name: 'x', suspected: false })
+    ok(/本地启发式：.*疑似音源/.test(r5Src) && !/疑似非音源/.test(r5Src),
+      'R5：suspected=true 渲染为「疑似音源」，且不含「疑似非音源」')
+    ok(/本地启发式：.*疑似非音源/.test(r5False),
+      'R5：suspected=false 渲染为「疑似非音源」')
+    ok(r5Src.indexOf('疑似非音源') === -1 && r5False.indexOf('疑似音源') === -1,
+      'R5：两个分支互斥，不会同时出现')
+
+    // R5 的 heuristic 在真实样本里 87/87 全是 undefined，短路必然落到 suspected 分支
+    const r5WithHeur = REVIEW_PROMPTS.R5.buildText({ name: 'x', suspected: true, heuristic: '自定义启发式文案' })
+    ok(/本地启发式：自定义启发式文案/.test(r5WithHeur),
+      'R5：显式给 heuristic 时优先用它（保持向后兼容）')
+
+    const r7Src = REVIEW_PROMPTS.R7.buildText({ name: 'x', status: 'ok', suspected: true })
+    ok(/本地音源特征筛选：.*通过/.test(r7Src),
+      'R7：suspected=true 渲染为「通过（命中音源特征，倾向保留）」')
+    ok(r7Src.indexOf('命中本地启发式') === -1,
+      'R7：不再出现「命中本地启发式」（删源语境下会被误读为命中可疑特征）')
+    ok(!/命中可疑|可疑特征|建议删除|该删/.test(r7Src),
+      'R7：文案不含任何「命中可疑/该删」字眼，不会被模型误认为删源依据')
+    const r7False = REVIEW_PROMPTS.R7.buildText({ name: 'x', status: 'ok', suspected: false })
+    ok(/本地音源特征筛选：.*未通过/.test(r7False), 'R7：suspected=false 渲染为「未通过」')
+
+    // 语义方向锁定：suspected 必须来自正向打分，不能是取反
+    const checkerSrc = fs.readFileSync(path.join(ROOT, 'src', 'core', 'checker.js'), 'utf8')
+    ok(/function classifyEntry\s*\([^)]*\)\s*\{\s*return scoreEntry\([^)]*\)\s*>=\s*4\s*\}/.test(checkerSrc),
+      'checker.classifyEntry 仍是 scoreEntry(...) >= 4（正向，未被取反）')
+    ok(!/suspected\s*=\s*!/.test(checkerSrc) && !/suspected:\s*!/.test(checkerSrc),
+      'checker 里没有任何地方把 suspected 取反赋值')
   } catch (e) {
     console.error(e)
     process.exitCode = 1

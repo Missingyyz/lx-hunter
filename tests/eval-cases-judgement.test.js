@@ -85,13 +85,24 @@ console.log('\n=== ② A2：三态判定与比率门槛 ===')
   const m = computeMetrics(logsOk, cases, { thresholds: ALL_ONE })
 
   // 全对 → 全部达标
-  ok('全对回放 + 门槛放开 → 各层全部"达标"', m.table.every(r => r.verdict === '达标'), m.table.map(r => r.verdict).join(','))
-  ok('overall 三态汇总为"达标"', m.overall.verdict === '达标', m.overall.verdict)
+  // 例外：R7|D1 两层在真实样本里 gold **全是 blacklist、没有一条 keep**，
+  // 删源误伤率的分母为 0 ⇒ 误伤无从观测，只能报「数据不足」。
+  // 这不是缺陷，而是这批样本测不了误伤——硬报「达标」就是拿 0 冒充「测出来是 0%」。
+  const unm = m.table.filter(r => r.verdict === '数据不足')
+  ok('全对回放 + 门槛放开 → 除「误伤率不可测量」的 R7|D1 外各层"达标"',
+    m.table.every(r => r.verdict === '达标' || (r.kind === 'R7' && r.danger === 'D1')),
+    m.table.map(r => r.stratum + ':' + r.verdict).join(','))
+  ok('【核心】R7|D1 因缺 gold=keep 样本 → 误伤率不可测量 → 报数据不足（不冒充达标）',
+    unm.length > 0 && unm.every(r => r.kind === 'R7' && r.danger === 'D1' && r.ratio && r.ratio.unmeasurable === true),
+    unm.map(r => r.stratum + ':' + r.reason).join(' | '))
+  ok('overall 因存在不可测量的层 → "数据不足"（不能说全达标）',
+    m.overall.verdict === '数据不足', m.overall.verdict)
 
-  // 故意做坏 → 未达标
+  // 故意做坏 → 未达标（同样除 R7|D1：它压根没 keep 样本可误伤，只能报数据不足）
   const bad = computeMetrics(mkLogs(cases, false), cases, { thresholds: ALL_ONE })
   ok('【核心】准确率不够 → "未达标"（原来只会打 evaluated）',
-    bad.table.every(r => r.verdict === '未达标'), bad.table.map(r => r.verdict).join(','))
+    bad.table.every(r => r.verdict === '未达标' || (r.kind === 'R7' && r.danger === 'D1')),
+    bad.table.map(r => r.stratum + ':' + r.verdict).join(','))
   ok('overall 有未达标层 → "未达标"', bad.overall.verdict === '未达标', bad.overall.verdict)
 
   // 三态齐全性
@@ -107,12 +118,13 @@ console.log('\n=== ② A2：三态判定与比率门槛 ===')
   ok('【核心】每行带 ratio（实际值 vs 门槛），不只给结论词',
     row && row.ratio && typeof row.ratio.value === 'number' && typeof row.ratio.threshold === 'number',
     JSON.stringify(row && row.ratio))
-  ok('reason 用人话写出百分比与比较方向',
-    row && /删源误判率 0% ≤ 上限 1%/.test(row.reason || ''), row && row.reason)
+  ok('reason 用人话写出百分比与比较方向（或说明误伤不可测量）',
+    row && (/删源误伤率 \d+(\.\d+)?% [≤>] 上限 1%/.test(row.reason || '') ||
+      /删源误伤率无法计算/.test(row.reason || '')), row && row.reason)
 
   // 分层选用正确的指标
   const r7d1 = m.table.find(r => r.stratum === 'R7|GREY|D1' || r.stratum === 'R7|HARD|D1')
-  ok('【核心】R7 + D1 → 删源误判率（falsePositive, 上限 0.01）',
+  ok('【核心】R7 + D1 → 删源误伤率（falsePositive, 上限 0.01）',
     r7d1 && r7d1.ratio.metric === 'falsePositive' && r7d1.ratio.threshold === 0.01, JSON.stringify(r7d1 && r7d1.ratio))
   const r6d1 = m.table.find(r => r.stratum.indexOf('R6|') === 0 && r.danger === 'D1')
   ok('【核心】R6 + D1 → 信任放行准确率（dangerPrecision 0.95）',
@@ -137,6 +149,64 @@ console.log('\n=== ② A2：三态判定与比率门槛 ===')
   ok('【核心】样本不足层不产出 ratio（不拿不足样本比比率给绿灯）',
     insuff.table.every(r => r.ratio === undefined), insuff.table.filter(r => r.ratio).length + ' 行不该有 ratio')
   ok('样本不足层 verdict 恒为"数据不足"', insuff.table.every(r => r.verdict === '数据不足'))
+})()
+
+// ============================================================
+console.log('\n=== ②b P0-2：误伤率必须只统计「危险方向」，不得用 1-accuracy ===')
+;(() => {
+  // 用合成样本造一层 gold 两向齐全的 R7|D1，才能真算出误伤率。
+  // 2026-11-19：样本集调整把规则推导的 R7 样本（rule-dedup/rule-dead）移到了
+  // moved-out/ 子目录，真实库里已不存在 R7|HARD|D1 分层。这里改为优先取真实样本做
+  // 结构模板，取不到就用内置最小模板兜底 —— 本测试验的是「误伤率必须只统计危险方向」
+  // 的计算语义，不依赖真实样本的具体分布。
+  const orig = cases.find(c => c.kind === 'R7' && c.expected.zone === 'HARD' && c.expected.danger === 'D1') ||
+    cases.find(c => c.kind === 'R7' && c.expected.zone === 'HARD') ||
+    cases.find(c => c.kind === 'R7') || {
+      id: 'syn-template',
+      kind: 'R7',
+      input: {},
+      expected: { verdict: 'blacklist', zone: 'HARD', danger: 'D1' },
+      goldAct: 'blacklist'
+    }
+  const mk = (id, verdict) => Object.assign({}, orig, {
+    id, expected: Object.assign({}, orig.expected, { verdict, zone: 'HARD', danger: 'D1' })
+  })
+  const synth = []
+  for (let i = 0; i < 10; i++) synth.push(mk('syn-k' + i, 'keep'))
+  for (let i = 0; i < 10; i++) synth.push(mk('syn-b' + i, 'blacklist'))
+  const run = aiFor => {
+    const logs = synth.map(c => ({ entryId: c.id, caseId: c.id, aiAct: aiFor(c), goldAct: c.expected.verdict, executed: false, auditId: null }))
+    const mm = computeMetrics(logs, synth, { thresholds: { minReversible: 1 } })
+    return mm.table.find(r => r.stratum === 'R7|HARD|D1')
+  }
+
+  // ① AI 一条都不删（全 keep）：误伤必须是 0%，漏判 100%
+  const allKeep = run(() => 'keep')
+  ok('【核心·P0-2】全判 keep → 误伤率 0%（AI 没删任何源）',
+    allKeep.ratio.value === 0 && allKeep.ratio.counters.harm === 0, JSON.stringify(allKeep.ratio))
+  ok('【核心·P0-2】全判 keep → 漏判率 100%（该删的没删，安全方向）',
+    allKeep.ratio.missValue === 1, String(allKeep.ratio.missValue))
+  ok('【核心·P0-2】全判 keep 不再被误报成「删源误伤率 100%」',
+    !/删源误伤率 100%/.test(allKeep.reason || ''), allKeep.reason)
+
+  // ② AI 全删：误伤必须 100%，且判未达标
+  const allBlack = run(() => 'blacklist')
+  ok('【核心·P0-2】全判 blacklist → 误伤率 100%（把 10 条可用源全删了）',
+    allBlack.ratio.value === 1 && allBlack.ratio.counters.harm === 10, JSON.stringify(allBlack.ratio))
+  ok('【核心·P0-2】全判 blacklist → 判「未达标」', allBlack.verdict === '未达标', allBlack.verdict)
+
+  // ③ 全对：误伤 0、漏判 0、达标
+  const allRight = run(c => c.expected.verdict)
+  ok('【核心·P0-2】全对 → 误伤 0%、漏判 0%、达标',
+    allRight.ratio.value === 0 && allRight.ratio.missValue === 0 && allRight.verdict === '达标',
+    allRight.reason)
+
+  // ④ 真实样本的 R7|D1 没有 keep 样本 → 误伤率不可测量，绝不能冒充 0% 达标
+  const realNoKeep = computeMetrics(mkLogs(cases, true), cases, { thresholds: ALL_ONE })
+    .table.filter(r => r.kind === 'R7' && r.danger === 'D1')
+  ok('【核心·P0-2】真实 R7|D1 缺 gold=keep → 标记 unmeasurable 且不判达标',
+    realNoKeep.length > 0 && realNoKeep.every(r => r.ratio.unmeasurable === true && r.verdict === '数据不足'),
+    realNoKeep.map(r => r.stratum + ':' + r.verdict + ':' + (r.ratio && r.ratio.unmeasurable)).join(','))
 })()
 
 // ============================================================

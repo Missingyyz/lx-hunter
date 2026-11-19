@@ -216,7 +216,12 @@ const REVIEW_PROMPTS = {
       '状态：' + (p.status || ''),
       '错误：' + (p.error || ''),
       '来源仓库：' + (p.repository || ''),
-      '本地启发式：' + (p.heuristic || (p.suspected === true ? '疑似非音源' : p.suspected === false ? '疑似音源' : '未知')),
+      // suspected 来自 checker.classifyEntry = scoreEntry(...) >= 4，是**正向**打分
+      // （名字像音源 +2、globalThis.lx +3、lx.request +2…），分越高越像音源。
+      // 所以 suspected===true 的真实含义是「高度疑似是音源 / 通过音源特征筛选」，
+      // 不是「疑似非音源」。此处两个分支原先写反，导致 81/87 条 R5 样本把
+      // 真音源的证据渲染成「疑似非音源」，模型据此把真源判成 nonSource（误杀）。
+      '本地启发式：' + (p.heuristic || (p.suspected === true ? '通过音源特征筛选（疑似音源）' : p.suspected === false ? '未通过音源特征筛选（疑似非音源）' : '未知')),
       '判定层级：' + (p.validTier || ''),
       '混淆等级：' + (p.obfLevel || '')
     ].join('\n')
@@ -296,7 +301,10 @@ const REVIEW_PROMPTS = {
         '本地已灌入：' + (installed ? '是' : '否（仅服务端存在，只禁不删）'),
         '外联域名：' + (Array.isArray(p.apiHosts) ? p.apiHosts.join('、') : (p.apiHosts || '')),
         '混淆特征：' + obfHitsText(p.obfHits),
-        '命中本地启发式：' + (p.suspected === true ? '是' : p.suspected === false ? '否' : '未知'),
+        // 同 R5：suspected 是正向音源特征打分结果（checker.classifyEntry），
+        // true = 命中音源特征 = **倾向于 keep 的理由**，绝不能被读成「命中可疑特征该删」。
+        // 原文案「命中本地启发式：是」在删源语境里会被模型误读成「命中可疑特征」，方向反了。
+        '本地音源特征筛选：' + (p.suspected === true ? '通过（命中音源特征，倾向保留）' : p.suspected === false ? '未通过（音源特征不明显）' : '未知'),
         '来源仓库：' + (p.repository || ''),
         '账本 hash：' + (led.hash || ''),
         '账本外来条目：' + (led.foreign === true ? '是' : led.foreign === false ? '否' : '未知')

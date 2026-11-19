@@ -505,8 +505,26 @@ class Store {
         if (cur.deprecated) { cur.deprecated = false; cur.dupOf = null; cur.dupReason = null }
         changed = true
       } else if (it.code && !cur.code) {
+        // v1.13.10：这条分支同样可能带来 contentHash 变化（旧条目没有正文，首次补到正文），
+        // 语义与上面「内容换版」完全一致，但此前只写了 code/contentHash 两项，其余派生状态
+        // 全部沿用旧值的 → size 与新内容不符、deep.hash 与新 contentHash 错配（用旧内容的
+        // 检测结果给新内容定可用性）、deprecated/dupOf 指向已不成立的重复关系。
+        // 统一走同一个收尾，两分支不再各写一套。
         cur.code = it.code
+        const hashChanged = !!(it.contentHash && it.contentHash !== cur.contentHash)
         if (it.contentHash) cur.contentHash = it.contentHash
+        if (hashChanged) {
+          cur.size = it.size != null ? it.size : cur.size
+          cur.status = 'unknown'
+          cur.suspected = it.suspected != null ? it.suspected : cur.suspected
+          cur.usable = false
+          cur.deep = null
+          cur.lastCheck = 0
+          cur.updated = true
+          cur.updatedAt = Date.now()
+          cur.stale = false
+          if (cur.deprecated) { cur.deprecated = false; cur.dupOf = null; cur.dupReason = null }
+        }
         changed = true
       }
       if (changed) res.updated++

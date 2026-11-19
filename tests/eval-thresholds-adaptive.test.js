@@ -108,7 +108,11 @@ console.log('\n=== ⑤ 接入 computeMetrics：每层用自己的样本数算门
 ;(() => {
   const cases = loadCases(path.join(ROOT, 'tests', 'eval-cases'))
   const m = computeMetrics([], cases)
-  ok('13 个分层（真实样本）', m.table.length === 13, String(m.table.length))
+  // 分层数随真实样本分布走（2026-11-19 样本集调整：规则推导的 R7 样本移入 moved-out/，
+  // 分层数从 13 变 12）。这里不能硬编码层数，改为断言「table 覆盖了样本里出现过的全部分层」。
+  const expectStrata = new Set(cases.map(c => c.kind + '|' + c.expected.zone + '|' + c.expected.danger))
+  ok('分层数 = 真实样本里出现过的分层数（' + expectStrata.size + ' 层）',
+    m.table.length === expectStrata.size, m.table.length + ' vs ' + expectStrata.size)
 
   for (const r of m.table) {
     const expect = sampleNeedFor(r.kind, r.zone, r.danger, r.n, m.thresholds)
@@ -127,12 +131,13 @@ console.log('\n=== ⑤ 接入 computeMetrics：每层用自己的样本数算门
     m.table.filter(r => r.n >= 20).every(r => /自适应/.test(r.needBasis)),
     m.table.filter(r => r.n >= 20).map(r => r.stratum + ':' + r.needBasis).join('|'))
 
-  // 危险层在真实数据下：样本量其实够了（need=max(20,n)），仍是「数据不足」的
-  // **唯一原因是 0 回放**——这正是降低门槛要暴露的东西，不能再把它写成「因为 380/100」。
-  ok('【核心】真实数据下 R7|D1 样本量已够（need=193），数据不足只因 0 回放',
-    m.table.filter(r => r.kind === 'R7' && r.danger === 'D1')
-      .every(r => r.sufficient === true && /没有回放记录/.test(r.reason)),
-    m.table.filter(r => r.kind === 'R7' && r.danger === 'D1').map(r => r.reason).join('|'))
+  // 危险层在真实数据下：need=max(20,n)，样本量够则「数据不足」的唯一原因是 0 回放。
+  // 2026-11-19 样本集调整后 R7|D1 只剩 14 条（<下限 20），此时数据不足也合理。
+  // 断言改成两向都对：样本够 → 只因 0 回放；样本不够 → 因样本量不足。模糊成"数据不足"就属回归。
+  const r7d1 = m.table.filter(r => r.kind === 'R7' && r.danger === 'D1')
+  ok('【核心】R7|D1 数据不足的原因必须如实（样本够→只因 0 回放；不够→因样本量）',
+    r7d1.length > 0 && r7d1.every(r => (r.n >= 20 ? (r.sufficient === true && /没有回放记录/.test(r.reason)) : (r.sufficient === false))),
+    r7d1.map(r => 'n=' + r.n + ' sufficient=' + r.sufficient + ' reason=' + r.reason).join('|'))
   ok('【核心】真实数据下 R6|D1 低于下限 20，数据不足因样本不足',
     m.table.filter(r => r.kind === 'R6' && r.danger === 'D1')
       .every(r => r.sufficient === false && /< 门槛 20/.test(r.reason)),

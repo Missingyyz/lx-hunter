@@ -398,6 +398,46 @@ function checkLiveEntry () {
     .finally(() => { try { fs.rmSync(store.dir, { recursive: true, force: true }) } catch (e) {} })
 }
 
+// ============================================================
+console.log('\n=== P0-3：回放不得污染 aiSuggestions ===')
+function checkNoPersist () {
+  const src = fs.readFileSync(path.join(ROOT, 'tests', 'tools', 'replay-eval.js'), 'utf8')
+  ok(/aiReview\.suggest\s*=\s*function/.test(src), 'replay-eval.js 对 suggest 打了桩（不落库）')
+  ok(/allowDirty/.test(src) && /拒绝运行/.test(src), 'replay-eval.js 有「真实库拒绝运行」硬拦')
+
+  // 端到端：在临时目录跑 stub 少量样本，确认只写 aiEvalLog、不写 aiSuggestions
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lxh-nopersist-'))
+  const { execFileSync } = require('child_process')
+  try {
+    execFileSync(process.execPath, [path.join(ROOT, 'tests', 'tools', 'replay-eval.js'),
+      '--stub', '--limit', '5', '--data', dir], { stdio: 'pipe', timeout: 120000 })
+    const db = JSON.parse(fs.readFileSync(path.join(dir, 'sources.json'), 'utf8'))
+    const sugN = Object.keys(db.aiSuggestions || {}).length
+    const logN = Object.keys(db.aiEvalLog || {}).length
+    ok(logN === 5, 'stub 回放 5 条 → aiEvalLog 写入 5 条（实际 ' + logN + '）')
+    ok(sugN === 0, '【核心·P0-3】回放后 aiSuggestions 仍为 0 条（实际 ' + sugN + '）')
+
+    // 再造一个「看起来像真实库」的目录，确认被拒绝
+    db.sources = { fake: { id: 'fake' } }
+    db.aiSuggestions = { s1: { id: 's1' } }
+    fs.writeFileSync(path.join(dir, 'sources.json'), JSON.stringify(db))
+    let rejected = false
+    let out = ''
+    try {
+      execFileSync(process.execPath, [path.join(ROOT, 'tests', 'tools', 'replay-eval.js'),
+        '--stub', '--limit', '1', '--data', dir], { stdio: 'pipe', timeout: 120000 })
+    } catch (e) {
+      rejected = true
+      out = String((e.stdout || '') + (e.stderr || ''))
+    }
+    ok(rejected, '【核心·P0-3】含真实 sources + aiSuggestions 的目录 → 拒绝运行（退出码非 0）')
+    ok(/拒绝运行/.test(out), '拒绝时给出明确提示文案')
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch (e) {}
+  }
+}
+
 checkLiveEntry()
+  .then(() => checkNoPersist())
   .then(() => console.log('\nai-eval-replay: PASS ' + pass + ' / FAIL 0'))
   .catch(e => { console.error('FAIL: ' + ((e && e.stack) || e)); process.exit(1) })

@@ -13,7 +13,11 @@
 })(typeof self !== 'undefined' ? self : globalThis, function () {
   const SORT_KEYS = ['name', 'plat', 'repo', 'status']
 
-  /** 已下载检测过、但内容不是洛雪音源脚本（疑似度不足，未进入深度检测） */
+  /**
+   * 已下载检测过、但内容不是洛雪音源脚本（scoreEntry 打分未过阈，未进入深度检测）。
+   * 注意语义：`!e.suspected` 在这里表示「没通过音源特征筛选」，
+   * 而 `e.suspected === true` 表示「通过了音源特征筛选、像音源」（checker.classifyEntry）。
+   */
   const isCheckedNoSource = e => !!e.lastCheck && e.status === 'ok' && !e.suspected && !e.deep
   /** 深检失效：无可播放平台、有实测失败、失败原因不像本机网络 */
   const isDeepDead = e => !!e.deep && !e.usable && e.deep.failKind === 'dead'
@@ -27,7 +31,7 @@
 
   /**
    * 状态排序权重（升序 = 越靠前），口径与状态徽章（statusCell）逐条对应：
-   *   10 可用 → 20 疑似 → 25 未检测 → 30 不可用（已检测）→ 40 失效 → 41 混淆高危
+   *   10 可用 → 20 疑似音源·未检测（suspected=true）→ 25 未检测 / 已检测·不像音源 → 30 不可用（已检测）→ 40 失效 → 41 混淆高危
    *   → 50 重复·已合并 → 60 已灌入（垫底：先处理未灌入的，已灌入的聚在最后好排除）
    * 「有更新·待检测」的条目检测结果已重置（deep=null），按「未检测」同权，不再单列。
    */

@@ -1799,9 +1799,15 @@ function renderStats() {
   const s = state.sources.filter(e => !e.deprecated)
   $('stTotal').textContent = s.length
   $('stUsable').textContent = s.filter(e => e.usable).length
-  // 「疑似音源」= 非典型脚本（缺洛雪接口特征）+ 深检全失败但原因像本机网络（可自救）；
-  // 深检确证失效的不再混进疑似，计入下面的「失效」
-  $('stSuspected').textContent = s.filter(e => !e.usable && e.status !== 'dead' && !isDeepDead(e) && (e.suspected || isCheckedNoSource(e))).length
+  // 统计卡口径（P0-4 修正）：原来把两个**方向相反**的集合加成一个数，看着像同一类东西，实际一个是
+  // 「像音源、还没实测」（suspected=true，正向特征打分通过），另一个是「测过了、判定不是音源」
+  // （isCheckedNoSource）。合成一个数字既误导又没法指导操作，所以拆成两张卡。
+  // 「疑似音源」= 有音源特征、还没深检（接下来值得去实测的那批）
+  // 「不像音源」= 已下载检查、判定不是音源（没有深检，通常不用管）
+  const notUsable = s.filter(e => !e.usable && e.status !== 'dead' && !isDeepDead(e))
+  $('stSuspected').textContent = notUsable.filter(e => e.suspected).length
+  const stNoSrc = $('stNotSource')
+  if (stNoSrc) stNoSrc.textContent = notUsable.filter(e => !e.suspected && isCheckedNoSource(e)).length
   $('stDead').textContent = s.filter(e => e.status === 'dead' || isDeepDead(e)).length
   // 「已灌入」= **当前账号**口径（v1.8.0 用户要求：卡片上的数要和「已灌入」页对得上）。
   // 三个账号各有一份时，跨账号合计既不是任何单个账号的数、也不是任何一份服务端列表的长度，
@@ -1855,7 +1861,10 @@ function matchFilter(e) {
   const q = state.query.trim().toLowerCase()
   switch (state.filter) {
     case 'usable': if (!e.usable) return false; break
-    case 'suspected': if (!(e.status !== 'dead' && !isDeepDead(e) && !e.usable && (e.suspected || isCheckedNoSource(e)))) return false; break
+    // P0-4：suspected=true 是「像音源但还没实测」（正向特征打分通过），
+    // notSource 是「测过了、判定不是音源」，两者方向相反，筛选也分开，不能再合成一档。
+    case 'suspected': if (!(e.status !== 'dead' && !isDeepDead(e) && !e.usable && e.suspected)) return false; break
+    case 'notSource': if (!(e.status !== 'dead' && !isDeepDead(e) && !e.usable && !e.suspected && isCheckedNoSource(e))) return false; break
     case 'dead': if (!(e.status === 'dead' || isDeepDead(e))) return false; break
     // 「未检测」= 完全没跑过检测的；已检测但不是音源脚本的也算已检测
     // 已合并的重复项不算「未检测」：它不需要检测，是内容/名称与保留项重复
@@ -2136,9 +2145,20 @@ function statusCell(e) {
   if (e.usable) return '<span class="badge ok">可用</span>'
   if (e.status === 'quarantined') return `<span class="badge warn" title="${esc(obfTip(e))}">混淆隔离</span>`
   if (e.status === 'dead') return '<span class="badge fail">失效</span>'
-  // 缺少洛雪音源接口特征的脚本与疑似音源合并显示（都归入「疑似音源」），但 tooltip 区分
-  if (e.suspected) return '<span class="badge warn">疑似</span>'
-  if (isCheckedNoSource(e)) return '<span class="badge warn" title="疑似音源：脚本缺少洛雪音源接口特征，未进入深度检测">疑似</span>'
+  // ⚠ 语义（务必看准）：suspected 来自 checker.classifyEntry = scoreEntry(...) >= 4，
+  // 是**正向**音源特征打分（名字含「音源/source」+2、globalThis.lx +3、lx.request +2…），
+  // 分越高越像音源。所以这两个分支的方向是**相反**的，绝不能再共用一个「疑似」字样：
+  //   e.suspected === true      → 像音源（但还没实测过）
+  //   isCheckedNoSource(e)      → 测过了，判定不是音源
+  // 旧代码把两者都渲染成黄色「疑似」且前者没有 tooltip，用户完全无法区分，也读不出方向。
+  // 文案分工：界面沿用本文件既有的「已检测/未检测」口径（见 validTierBadge），
+  // 日志侧保留 suspected / scoreEntry 等技术表述（见 hunter.js 的计数日志），各有各的话。
+  if (e.suspected) {
+    return '<span class="badge warn" title="脚本里带洛雪音源接口特征，看着像音源，但还没做过深度实测（没验证过能不能真的取到歌）。点这一行的「检测」可以实测。"">疑似音源·未检测</span>'
+  }
+  if (isCheckedNoSource(e)) {
+    return '<span class="badge gray" title="已经下载检查过了：脚本里没有洛雪音源接口特征，按经验判断它不是音源，所以没进深度实测。如果你确认它是音源，可以手动点「检测」强制实测。"">已检测·不像音源</span>'
+  }
   // 混淆风险标注（v1.7.1，依据 lx-ikun issue#8 科普）：检测时评估，重危红/局部黄
   if (e.obfLevel === 'high') {
     return `<span class="badge fail" title="${esc(obfTip(e))}">⚠混淆高危</span>`
@@ -2169,9 +2189,12 @@ function statusCell(e) {
   return '<span class="badge gray">未检测</span>'
 }
 
-/** validTier 中文标签（v1.9.10，对齐 lxhub 的 confirmed/probable 两级置信） */
+/** validTier 中文标签（v1.9.10，对齐 lxhub 的 confirmed/probable 两级置信）
+ *  P0-4：probable 来自 checker.js:974 `else if (e.suspected) e.validTier = 'probable'`，
+ *  语义同样是「像音源、但没实测通过」。文案与状态徽章统一成「疑似音源·未检测」口径，
+ *  避免同一件事在表格里叫「疑似未测」、在状态列叫「疑似」，用户对不上。 */
 function vtLabel(t) {
-  return t === 'confirmed' ? '已实测' : (t === 'probable' ? '疑似未测' : (t === 'rejected' ? '已排除' : ''))
+  return t === 'confirmed' ? '已实测' : (t === 'probable' ? '疑似音源·未检测' : (t === 'rejected' ? '已排除' : ''))
 }
 
 function apiAliveBadge(e) {
@@ -3794,7 +3817,8 @@ $('btnExport').addEventListener('click', async () => {
 function matchScope(e, k) {
   switch (k) {
     case 'usable': return !!e.usable
-    case 'suspected': return !e.usable && e.status !== 'dead' && (e.suspected || isCheckedNoSource(e))
+    case 'suspected': return !e.usable && e.status !== 'dead' && e.suspected
+    case 'notSource': return !e.usable && e.status !== 'dead' && !e.suspected && isCheckedNoSource(e)
     case 'dead': return e.status === 'dead' || isDeepDead(e)
     // 已合并的重复项不该出现在「导出未检测」里：它们不是漏检，是重复
     case 'unchecked': return !e.deprecated && !e.deep && e.status !== 'dead' && e.status !== 'quarantined' && !isCheckedNoSource(e)
@@ -3805,7 +3829,7 @@ function matchScope(e, k) {
 }
 function scopeLabel(k) {
   if (k === 'selected') return `选中 ${state.selected.size} 条`
-  return { all: '全部', usable: '可用', suspected: '疑似', dead: '失效', unchecked: '未检测', imported: '已灌入' }[k] || k
+  return { all: '全部', usable: '可用', suspected: '疑似音源·未检测', notSource: '已检测·不像音源', dead: '失效', unchecked: '未检测', imported: '已灌入' }[k] || k
 }
 function exportIds(scope) {
   // 「选中项」严格按用户勾选导出（保持勾选顺序），其余按整体范围导出

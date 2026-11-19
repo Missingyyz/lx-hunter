@@ -270,6 +270,21 @@ function thresholdFor(caseOrKey, th, existing) {
 }
 
 /**
+ * 「危险方向」错误映射：key 是 gold，value 是**造成不可逆损害**的误判结果。
+ *
+ * 只有不可逆动作才有危险方向，可逆动作改错了能回退，不进这张表。
+ *   R7：gold=keep（源仍可用）→ AI 判 blacklist（删源，不可逆）
+ *   R6：gold=reject（可疑脚本）→ AI 判 trust（信任放行，把混淆源放进库）
+ *   R5：gold=source（真音源）→ AI 判 nonSource（进特征库屏蔽，杀掉真源）
+ * R4（追更提示）没有不可逆后果，故不入表 ⇒ 误伤恒 0。
+ */
+const HARM_DIR = {
+  keep: 'blacklist',
+  reject: 'trust',
+  source: 'nonSource'
+}
+
+/**
  * 取某分层该用哪个**比率门槛**，以及怎么算这个比率。
  *
  * 分层不是按 danger 平均切的，因为 `danger=D1` 并不等于「不可逆动作」——实测
@@ -288,13 +303,31 @@ function stratumRule(row, th) {
   const z = String(row.zone || '')
   const d = String(row.danger || '')
   const acc = _num(row.accuracy, 0)
-  // 不可逆动作里最贵的一档：删源。用「误判率」表达，门槛 0.01 是上限。
+  // 不可逆动作里最贵的一档：删源。用「误伤率」表达，门槛 0.01 是上限。
+  //
+  // ⚠ 口径（2026-11-19 P0 修复）：误伤率**只能**用「gold=keep 却判 blacklist」算，
+  // 不能用 `1 - accuracy`。原因：accuracy 是纯一致率，把两类错误混在一起——
+  // AI 一条源都没删（全判 keep）时 accuracy=0，用 1-accuracy 会报「误判率 100%」，
+  // 把用户最能容忍的「漏判」显示成最不能忍的「乱删源」，方向完全反了。
+  // 漏判（gold=blacklist 却判 keep）单独给一个比率，不混进误伤。
   if (k === 'R7' && d === 'D1') {
+    const keepN = _num(row.keepGoldCount, 0)
+    const harm = _num(row.harmCount, 0)
+    const blackN = _num(row.blackGoldCount, 0)
+    const miss = _num(row.missCount, 0)
     return {
       metric: 'falsePositive',
-      label: '删源误判率',
-      value: 1 - acc,
-      threshold: _num(T.blacklistFalsePositive, EVAL_THRESHOLDS.blacklistFalsePositive)
+      label: '删源误伤率',
+      // 分母是「gold=keep 的条数」。**没有 keep 样本时误伤率不可测量**，
+      // 绝不能拿 0 冒充「测出来是 0%」——那正是「把没跑说成通过」的又一副面孔。
+      // （实测：R7|HARD|D1 的 193 条样本 gold 全是 blacklist，keepGold=0，
+      //   所以这一层的误伤率目前根本没被测量过。）
+      value: keepN > 0 ? harm / keepN : 0,
+      unmeasurable: keepN === 0,
+      threshold: _num(T.blacklistFalsePositive, EVAL_THRESHOLDS.blacklistFalsePositive),
+      // 附带的漏判率（安全方向，仅供展示与解释，不参与 pass/fail 判定）
+      missValue: blackN > 0 ? miss / blackN : 0,
+      counters: { harm, keepGold: keepN, miss, blackGold: blackN }
     }
   }
   // 另一个不可逆动作：信任放行（把混淆源放进库）。
@@ -324,8 +357,11 @@ function stratumRule(row, th) {
   }
 }
 
-/** 比率是否够格。falsePositive 是「越小越好」，accuracy 是「越大越好」。 */
+/** 比率是否够格。falsePositive 是「越小越好」，accuracy 是「越大越好」。
+ *  误伤率不可测量（该层没有 gold=keep 样本）时**一律不算够格**——
+ *  没测过的东西不能说通过，否则「AI 一条都没删」会被报成「误伤率 0%，达标」。 */
 function ratioPass(rule) {
+  if (rule && rule.unmeasurable === true) return false
   const v = _num(rule.value, 0)
   const t = _num(rule.threshold, 0)
   return rule.metric === 'falsePositive' ? v <= t : v >= t
@@ -336,9 +372,19 @@ function ratioText(rule) {
   const v = _num(rule.value, 0)
   const t = _num(rule.threshold, 0)
   const pct = x => (Math.round(x * 10000) / 100) + '%'
+  if (rule && rule.unmeasurable === true) {
+    return rule.label + '无法计算（该层没有 gold=keep 的样本，误伤无从观测）' +
+      (rule.missValue != null ? '；漏判率 ' + pct(rule.missValue) + '（安全方向，不参与判定）' : '')
+  }
   const cmp = rule.metric === 'falsePositive' ? (v <= t ? '≤' : '>') : (v >= t ? '≥' : '<')
   const need = rule.metric === 'falsePositive' ? '上限' : '门槛'
-  return rule.label + ' ' + pct(v) + ' ' + cmp + ' ' + need + ' ' + pct(t)
+  let s = rule.label + ' ' + pct(v) + ' ' + cmp + ' ' + need + ' ' + pct(t)
+  // 删源这类「误伤/漏判」两向错误代价不对称的分层，把漏判率一起说清楚，
+  // 否则用户只看到 0% 误伤，会以为 AI 正常工作，实则可能一条都没删。
+  if (rule.missValue != null) {
+    s += '；漏判率 ' + pct(rule.missValue) + '（安全方向，不参与判定）'
+  }
+  return s
 }
 
 /**
@@ -370,6 +416,20 @@ function computeMetrics(logs, cases, opts) {
     const stratumLogs = (Array.isArray(logs) ? logs : []).filter(l => cs.some(c => c.id === l.entryId || c.id === l.caseId))
     const withAi = stratumLogs.filter(l => l.aiAct != null && l.aiAct !== '')
     const correct = stratumLogs.filter(l => l.goldAct != null && l.aiAct === l.goldAct)
+    // ---- 危险方向的错误（误伤）与安全方向的错误（漏判/错杀）必须分开计 ----
+    // accuracy 是纯一致率，把两类错误混在一起。对「删源」这种不可逆动作，
+    // 「AI 一条都没删」与「AI 乱删可用源」在 accuracy 里都是 0 分，但代价天差地别：
+    // 前者只是没干活（用户明确「宁可漏判」），后者会毁掉好源。
+    // 所以在这里先算清楚计数，交给 stratumRule 按分层语义取用。
+    //   harmCount   ：危险方向错误（R7: gold=keep 判 blacklist；R6: gold=reject 判 trust；
+    //                 R5: gold=source 判 nonSource）
+    //   missCount   ：安全方向错误（该动手却没动手 / 该放行却拒了）
+    //   keepGoldCount / blackGoldCount：两个 gold 方向各自的样本数，作比率分母
+    const isHit = l => l.goldAct != null && l.aiAct != null && l.aiAct !== ''
+    const harmCount = stratumLogs.filter(l => isHit(l) && l.aiAct !== l.goldAct && HARM_DIR[l.goldAct] === l.aiAct).length
+    const keepGoldCount = stratumLogs.filter(l => isHit(l) && l.goldAct === 'keep').length
+    const blackGoldCount = stratumLogs.filter(l => isHit(l) && l.goldAct === 'blacklist').length
+    const missCount = stratumLogs.filter(l => isHit(l) && l.aiAct !== l.goldAct).length - harmCount
     const sufficient = n >= need
     // 对抗样本：样本显式标 adversarial:true 才计（当前恒 0，见 EVAL_THRESHOLDS.ADVERSARIAL 注释）
     for (const c of cs) if (c && c.adversarial === true) adversarialCount++
@@ -388,6 +448,9 @@ function computeMetrics(logs, cases, opts) {
       // 此时 insufficient 已经为 true，不会被当成「准确率 0」下结论。
       coverage: stratumLogs.length ? withAi.length / stratumLogs.length : 0,
       accuracy: stratumLogs.length ? correct.length / stratumLogs.length : 0,
+      // 两个方向的错误分开计数，供 stratumRule 按分层语义取用（P0-2）。
+      // accuracy 仍是纯一致率（保持向后兼容），但不可逆分层的判定不再看它。
+      harmCount, keepGoldCount, blackGoldCount, missCount,
       // 只读红线：回放不得执行真实动作、不得写审计
       readonlyOk: stratumLogs.every(l => l.executed === false && l.auditId == null),
       insufficient: !sufficient
@@ -404,8 +467,21 @@ function computeMetrics(logs, cases, opts) {
       const rule = stratumRule(row, th)
       const pass = ratioPass(rule)
       row.ratio = { metric: rule.metric, label: rule.label, value: rule.value, threshold: rule.threshold, pass }
-      row.reason = ratioText(rule) + (pass ? '（达标）' : '（未达标）')
-      row.verdict = pass ? '达标' : '未达标'
+      if (rule.missValue != null) row.ratio.missValue = rule.missValue
+      if (rule.unmeasurable === true) row.ratio.unmeasurable = true
+      if (rule.counters) row.ratio.counters = rule.counters
+      if (rule.unmeasurable === true) {
+        // 比率**不可测量**：该层缺少计算这个比率所必需的样本方向
+        // （例如 R7|D1 的样本 gold 全是 blacklist，没有一条 keep，误伤无从观测）。
+        // 这时既不能说「达标」（没测过），也不该说「未达标」（测都没测，谈不上差）——
+        // 正确结论是「数据不足」：样本构成不全。与三态语义一致，也让 overall 不会
+        // 因为一个没测过的层而把整体判成「未达标」。
+        row.verdict = '数据不足'
+        row.reason = ratioText(rule)
+      } else {
+        row.reason = ratioText(rule) + (pass ? '（达标）' : '（未达标）')
+        row.verdict = pass ? '达标' : '未达标'
+      }
     }
     table.push(row)
   }

@@ -1496,13 +1496,168 @@ class Hunter {
     }
     res.weakSkipped = weakSkipped
     res.pendingDuel = pendingDuel
-    if (res.dupContent || res.oldVersion || res.dupFile || pendingDuel) {
+    // ④ 收尾一致性（v1.13.10）：①②③ 三处都只「写自己那条」，谁也管不了
+    //    「我这条成了别人的 keeper，但我自己后来也被废了」。于是库里会长出
+    //    指向废弃条目的 dupOf 链、互指成环、甚至整组同内容副本全灭（活跃 0 = 内容丢失）。
+    //    这里在保存之前一次性抹平，三条不变量按顺序恢复：
+    //      a) 指针归一：dupOf 只能指向「终局存活者」，成环/悬空/超深一律复活该条
+    //      b) 组内兜底：每个 contentHash 组活跃副本数必须 ≥ 1（全灭则择优复活一条）
+    //      c) 矛盾态修正：已废弃条目不得对外宣称 usable
+    //    顺序不可调换：b 要在 c 之前——b 复活的那条必须保留它自己的 usable，
+    //    c 才能把「组里已有活跃副本」的其余副本正确置为不可用。
+    const fix = this._dedupeInvariants(all)
+    res.revived = fix.revived
+    res.repointed = fix.repointed
+    res.usableFixed = fix.usableFixed
+    if (res.dupContent || res.oldVersion || res.dupFile || pendingDuel || fix.changed) {
       this.store.saveDb()
       this.log(`去重完成：废弃同内容 ${res.dupContent} 条、同名旧版本 ${res.oldVersion} 条、同仓库同名 ${res.dupFile} 条` +
         (pendingDuel ? `（同名待测对决 ${pendingDuel} 对留待真实检测裁决）` : '') +
-        (weakSkipped ? `（弱文件名 ${weakSkipped} 条不按名判重，留待指纹确认）` : ''), '去重')
+        (weakSkipped ? `（弱文件名 ${weakSkipped} 条不按名判重，留待指纹确认）` : '') +
+        (fix.changed ? `；一致性收尾：指针归一 ${fix.repointed} 条、复活 ${fix.revived} 条、usable 矛盾态修正 ${fix.usableFixed} 条` : ''), '去重')
     }
     return res
+  }
+
+  /**
+   * 去重不变量的收尾修复（v1.13.10）。
+   *
+   * 背景：dedupe() 的 ①②③ 与 runCheck 的即时去重共 5 处写 deprecated，全部都是
+   * 「标记我自己并记下 dupOf」的单向写入，没有任何一处会回头修正「指向我的那些条目」。
+   * 一旦某条 keeper 因任何原因（同名裁决②、mergeFrom 导入、restoreDedupe 部分撤销、
+   * 内容换版）变成废弃，指向它的条目就永久悬空；最坏情况是一组同内容副本全部废弃，
+   * 这份内容从活跃库中彻底消失（8197 实测 100 组 / 480 条）。
+   *
+   * 判据口径（用户 2026-11-19 裁定）：成环或超深时**复活**而不是留着不动。
+   * 代价不对称——复活是可逆的（下轮检测会重新判），丢内容不可逆。
+   * 复活只清 deprecated/dupOf/dupReason，不动 usable/deep/status，
+   * 让下一次检测自然裁决，不人为预设它可用。
+   *
+   * @param {Array} all store.getSources() 的结果（就地修改条目）
+   * @returns {{revived:number, repointed:number, usableFixed:number, changed:boolean}}
+   */
+  _dedupeInvariants(all) {
+    const out = { revived: 0, repointed: 0, brokenPointers: 0, usableFixed: 0, changed: false }
+    if (!Array.isArray(all) || !all.length) return out
+    const byId = {}
+    for (const e of all) if (e && e.id) byId[e.id] = e
+
+    // a) 指针归一：沿 dupOf 走到第一个未废弃者；成环/悬空/超深 → 交给 b 的组内兜底裁决
+    //
+    //    两个设计要点（都是实测踩出来的）：
+    //    1) 断链时**不直接复活**。一条副本的 dupOf 断了不代表它该复活——它所在的组里
+    //       可能已有活的 keeper（那它就是多余副本，复活会导致同内容留两份。原方案
+    //       「断链即复活」在 8197 真实库上实测确实让 5 个组各留了 2 份）。
+    //    2) 判定与落盘分两轮。必须先把所有条目的目标算完再统一改，否则就地清 dupOf 会
+    //       让后面遍历到的条目误判成 dangling（实测把 B→C 这种本该重定向的记错了）。
+    const MAX_HOPS = 32
+    const plan = []   // { e, target|null, broken }
+    for (const e of all) {
+      if (!e || !e.deprecated || !e.dupOf) continue
+      let cur = e
+      let hops = 0
+      let target = null
+      let broken = ''
+      const seen = new Set([e.id])
+      while (cur && cur.dupOf) {
+        if (hops >= MAX_HOPS) { broken = 'over-depth'; break }
+        const next = byId[cur.dupOf]
+        if (!next) { broken = 'dangling'; break }
+        if (seen.has(next.id)) { broken = 'cycle'; break }
+        if (!next.deprecated) { target = next; break }
+        seen.add(next.id)
+        cur = next
+        hops++
+      }
+      if (target) plan.push({ e, target, broken: '' })
+      else if (broken) plan.push({ e, target: null, broken })
+    }
+    const brokenIds = []
+    for (const p of plan) {
+      if (p.target) {
+        if (p.e.dupOf !== p.target.id) { p.e.dupOf = p.target.id; out.repointed++ }
+        continue
+      }
+      // 指不到终局存活者：记下来，由 b/d 按组形态决定去哪
+      if (brokenIds.indexOf(p.e.id) === -1) brokenIds.push(p.e.id)
+    }
+    out.brokenPointers = brokenIds.length
+
+    // b) 同内容多副本组兜底：每个 contentHash 组的活跃副本数必须恰好 1
+    //
+    //    ★ 只处理「多副本组」（g.length >= 2）。单条组被废弃几乎都是同名裁决/手动废弃
+    //    造成的（它是那个内容的唯一副本，不存在「内容丢失」），绝不能当内容丢失复活——
+    //    原实现漏了这个约束，在 crawl-releases 的 ②b 翻案用例上把「新版实测失效被废弃」
+    //    这条唯一副本又复活了，造成同名去重当场失效（实测回归 3 项）。
+    const groups = {}
+    for (const e of all) {
+      if (!e || !e.contentHash) continue
+      ;(groups[e.contentHash] = groups[e.contentHash] || []).push(e)
+    }
+    const brokenSet = new Set(brokenIds)
+    for (const hash of Object.keys(groups)) {
+      const g = groups[hash]
+      if (g.length < 2) continue                     // 单条组不是「内容丢失」，不兜底
+      if (g.some(e => !e.deprecated)) continue       // 组里还有活的，无需兜底
+      // 全灭：择优复活一条。口径 = 实测可用 > 有深检 > 更新时间 > 版本号 > id 小者
+      let pick = null
+      for (const e of g) {
+        if (!pick) { pick = e; continue }
+        const en = usableCount({ deep: e.deep }), pn = usableCount({ deep: pick.deep })
+        if (en !== pn) { if (en > pn) pick = e; continue }
+        if (this.betterKeeper(e, pick)) pick = e
+      }
+      if (!pick) continue
+      pick.deprecated = false
+      pick.dupOf = null
+      pick.dupReason = null
+      out.revived++
+      this.log(`dedupe: revive hash=${String(hash).slice(0, 12)} id=${pick.id} reason=group-all-deprecated copies=${g.length}`, '去重', 'warn')
+      // 组内其余副本：把指针补到刚复活的代表上，保证「dupOf 必须指向活跃条目」
+      for (const e of g) {
+        if (e === pick || !e.deprecated) continue
+        if (e.dupOf !== pick.id) { e.dupOf = pick.id; out.repointed++ }
+      }
+    }
+
+    // c) 矛盾态修正：已废弃条目不得对外宣称可用（b 之后跑，复活的那条已不再 deprecated）
+    for (const e of all) {
+      if (!e || !e.deprecated || e.usable !== true) continue
+      e.usable = false
+      out.usableFixed++
+    }
+
+    // d) 收尾：所有「dupOf 指不到活跃条目」的（成环/悬空/指向废弃），按「谁是本组代表」
+    //    统一改写指针。只跑一次、只改指针，不复活任何东西。
+    //
+    //    为什么必须放在最后：a 只处理了「能走到活跃目标」的重定向，2 元环互指
+    //    （A→B、B→A）在 a 里会被判成 cycle 而搁置，b 又因为组里已有活副本不介入，
+    //    结果环原样留下（生产库实测残留 15 条）。这里用「每个 contentHash 组选定一个
+    //    活跃代表」的事实做最终归一，成环必然被打散。
+    const liveRepByHash = {}
+    for (const e of all) {
+      if (!e || !e.contentHash || e.deprecated) continue
+      if (!liveRepByHash[e.contentHash]) liveRepByHash[e.contentHash] = e
+    }
+    for (const e of all) {
+      if (!e || !e.deprecated) continue
+      const t = e.dupOf != null ? byId[e.dupOf] : null
+      if (t && !t.deprecated && t.id !== e.id) continue   // 已指向活跃条目，合规
+      const rep = e.contentHash ? liveRepByHash[e.contentHash] : null
+      if (rep && rep.id !== e.id) {
+        if (e.dupOf !== rep.id) { e.dupOf = rep.id; out.repointed++ }
+        if (!e.dupReason) e.dupReason = '同内容重复'
+      } else {
+        // 组内没有别的活跃代表（单条组 / 组内就它自己）：清指针，不能指向自己或死人
+        if (e.dupOf != null) { e.dupOf = null; out.repointed++ }
+        // 原因如实化：保留方已不在，还写「已有更新版本」是假话
+        if (/已有更新版本/.test(String(e.dupReason || ''))) e.dupReason = '同名旧版本（保留方已失效）'
+        else if (!e.dupReason) e.dupReason = '同内容重复'
+      }
+    }
+
+    out.changed = !!(out.revived || out.repointed || out.usableFixed)
+    return out
   }
 
   /**
@@ -2270,6 +2425,13 @@ class Hunter {
               }
               if (rec) { rec.deep = e.deep || d; if (rec.resolve) { rec.resolve(rec.deep); rec.resolve = null } }
               e.usable = usableCount(e) > 0
+              // v1.13.10：已废弃条目被「强制重测」时会走到这里（runCheck 的 force 分支
+              // 把 deprecated 纳入检测名单）。重测写出 usable=true 但没人动 deprecated，
+              // 于是库里长出「实测可用却标记废弃」的矛盾态（8197 实测 96 条，界面显示
+              // 「可用平台 N 个」但该源根本不参与候选/灌入/排序，比直接显示不可用更误导）。
+              // 这里不解除废弃：是否复活由 dedupe 收尾的组内兜底按「组里还有没有活的副本」
+              // 统一裁决（组内已有活跃副本 → 它是多余副本；组内已全灭 → 它会被复活）。
+              if (e.deprecated) e.usable = false
               applyProbeRecord(e, e.deep)   // v1.9.9：把深检结论固化为可记录的探针/validTier
               this.applyQualityGate(e)      // v1.12.0：版本回归对比（质量守门，软标记）
               // 混淆标注（v1.7.1）：checkBasic 已把 obfLevel/obfHits 写到条目上，
@@ -2486,6 +2648,10 @@ class Hunter {
             if (e.deep && e.deep.hash && e.deep.hash !== e.contentHash) {
               e.deep = null; e.usable = false
               e.updated = true; e.updatedAt = Date.now()   // 内容确实变了：标「有更新」，灌入时走同名替换
+              // v1.13.10：内容已换版 = 旧的「与谁重复」这个结论已经不成立，必须一并撤销，
+              // 否则库里会留着「标着同内容重复、实际 hash 早已不同」的陈旧 dupReason
+              // （8197 实测 14 条）。清标记后交给下一次 dedupe 按新内容重新裁决。
+              if (e.deprecated) { e.deprecated = false; e.dupOf = null; e.dupReason = null }
             }
             groupHash(e)
           } else failed++
