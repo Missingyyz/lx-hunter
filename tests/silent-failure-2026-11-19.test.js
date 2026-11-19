@@ -436,7 +436,11 @@ console.log('\n=== ⑬ 旧版对照：checker.obfuscationRisk 判级零漂移（
   let oldSrc = null
   for (const sha of shas) {
     const cand = runGit(['show', sha + '^:src/core/checker.js'])
-    if (cand && /function obfuscationRisk/.test(cand)) { oldSrc = cand; break }
+    // 筛选口径必须与下方断言一致：既要含改造前的 obfuscationRisk，
+    // 又不能含改造后新增的 classifyQuarantineTrust。否则会选中"两者都有"的
+    // 边界版本（如引入三档函数的那次提交的父版本），断言随即失败。
+    // 提交历史推进后第一个候选可能变成这种边界版本，故这里显式排除。
+    if (cand && /function obfuscationRisk/.test(cand) && !/classifyQuarantineTrust/.test(cand)) { oldSrc = cand; break }
   }
   if (!oldSrc) {
     console.log('  SKIP 取不到旧版 checker.js（浅克隆/历史被裁）')
