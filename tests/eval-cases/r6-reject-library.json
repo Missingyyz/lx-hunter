@@ -1,0 +1,168 @@
+{
+ "version": 1,
+ "note": "R6 reject 样本（补「误放行」观测缺口）：从真实库按 R6 prompt 的拒绝条件构造。P1=实测可用>=1 但带硬恶意特征（门槛③不满足）；P2=实测可用>=1 但非常规外联域名>=4（域名独立拒绝条件）。一个 contentHash 一条。gold 由规则推导（annotator=rule-reject），非人工盲标。input 已脱敏（域名保留，R6 需据此判断）。",
+ "cases": [
+  {
+   "id": "r6r-038fe9ee9e",
+   "kind": "R6",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795057115076,
+   "systemPrompt": null,
+   "input": {
+    "name": "lx-source-v8.14.0",
+    "scriptName": "豆包定制[聚合音源]",
+    "scriptVersion": "8.14.0",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "confirmed",
+    "obfLevel": "high",
+    "obfHits": "evalCalls=0 total0x=0 totalUni=2841 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [
+     "api.music.lerd.dpdns.org",
+     "yy.zddyr.top",
+     "c.wwwweb.top",
+     "175.27.166.236",
+     "musicapi.haitangw.net",
+     "music.haitangw.cc",
+     "musicserver.haitangw.cc"
+    ],
+    "apiHosts": [
+     "oiapi.net",
+     "api.xcvts.cn",
+     "lxmusicapi.onrender.com",
+     "api.music.lerd.dpdns.org",
+     "yy.zddyr.top",
+     "music.163.com",
+     "search.kuwo.cn",
+     "antiserver.kuwo.cn"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": true,
+    "deep": "平台数=5 可用=5 失败=0"
+   },
+   "expected": {
+    "verdict": "reject",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "【P2】本机实测可用>=1 且三条客观门槛均满足，但外联域名中非常规/动态解析域名 >= 4 个 → 按 R6 prompt「域名可疑是独立拒绝条件」判 reject；本条实测 平台数=5 可用=5 失败=0，硬特征 spinLoops=0/evalCalls=0/selfSchedCalls=0，非常规外联域名 9 个（api.music.lerd.dpdns.org、yy.zddyr.top、c.wwwweb.top、175.27.166.236）。判 reject 是拒绝放行，不是删除该脚本。"
+   },
+   "goldAct": "reject",
+   "annotation": {
+    "annotator": "rule-reject",
+    "at": 1795057115076,
+    "blind": false,
+    "note": "gold 由 prompt 门槛推导（P2），非人工盲标；实测可用 5 个平台；硬特征 spinLoops=0/evalCalls=0/selfSchedCalls=0；非常规外联域名 9 个"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "038fe9ee9ecec1ac2a3be3823751753190e7c84f197032d01ee4efb6cb4a04aa",
+   "copies": 1,
+   "rejectTier": "P2"
+  },
+  {
+   "id": "r6r-4360487058",
+   "kind": "R6",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795057115076,
+   "systemPrompt": null,
+   "input": {
+    "name": "洛雪音乐源 1.0.0 v2-fix",
+    "scriptName": "洛雪音乐源",
+    "scriptVersion": "1.0.0 v2-fix",
+    "status": "quarantined",
+    "error": "混淆隔离：重度混淆脚本，已移入「混淆隔离」区，可在该页信任后放行",
+    "repository": "[REPO]",
+    "validTier": "confirmed",
+    "obfLevel": "high",
+    "obfHits": "evalCalls=0 total0x=1161 totalUni=0 totalExotic=0 spinLoops=1 selfSchedCalls=1 jsjiamiMarks=2 perKbExotic=0",
+    "obfDomains": [],
+    "apiHosts": [],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": false,
+    "deep": "平台数=5 可用=1 失败=0 未测=4"
+   },
+   "expected": {
+    "verdict": "reject",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "【P1】本机实测可用>=1（门槛②满足）但带硬恶意特征（门槛③\"evalCalls/spinLoops/selfSchedCalls 全为 0\"不满足）→ 按 R6 prompt「三条门槛缺一即 reject」判 reject；本条实测 平台数=5 可用=1 失败=0 未测=4，硬特征 spinLoops=1/evalCalls=0/selfSchedCalls=1，非常规外联域名 0 个（）。判 reject 是拒绝放行，不是删除该脚本。"
+   },
+   "goldAct": "reject",
+   "annotation": {
+    "annotator": "rule-reject",
+    "at": 1795057115076,
+    "blind": false,
+    "note": "gold 由 prompt 门槛推导（P1），非人工盲标；实测可用 1 个平台；硬特征 spinLoops=1/evalCalls=0/selfSchedCalls=1；非常规外联域名 0 个"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "43604870581e3782662b092d9762f432f209b82e987d06cb241e26760e06cb6f",
+   "copies": 1,
+   "rejectTier": "P1"
+  },
+  {
+   "id": "r6r-6cd2ccb983",
+   "kind": "R6",
+   "source": "library-export",
+   "status": "labeled",
+   "frozenAt": 1795057115076,
+   "systemPrompt": null,
+   "input": {
+    "name": "latest",
+    "scriptName": "音乐源",
+    "scriptVersion": "1.0.1",
+    "status": "ok",
+    "error": "",
+    "repository": "[REPO]",
+    "validTier": "confirmed",
+    "obfLevel": "high",
+    "obfHits": "evalCalls=0 total0x=5732 totalUni=2 totalExotic=0 spinLoops=0 selfSchedCalls=0 jsjiamiMarks=0 perKbExotic=0",
+    "obfDomains": [
+     "music-dl.sayqz.com",
+     "mcp.nianxinxz.com",
+     "music.nxinxz.com",
+     "music.lzmhhh.com",
+     "api.317ak.cn",
+     "api.ygking.cn",
+     "api.canxiang.cn",
+     "175.27.166.236",
+     "musicserver.haitangw.cc"
+    ],
+    "apiHosts": [
+     "music-dl.sayqz.com",
+     "mcp.nianxinxz.com",
+     "nmobi.kuwo.cn",
+     "oiapi.net",
+     "api.xcvts.cn",
+     "music.nxinxz.com",
+     "api.chksz.top",
+     "music.lzmhhh.com"
+    ],
+    "apiDownStreak": 0,
+    "suspected": true,
+    "usable": true,
+    "deep": "平台数=5 可用=1 失败=0 未测=4"
+   },
+   "expected": {
+    "verdict": "reject",
+    "zone": "HARD",
+    "danger": "D1",
+    "criteria": "【P2】本机实测可用>=1 且三条客观门槛均满足，但外联域名中非常规/动态解析域名 >= 4 个 → 按 R6 prompt「域名可疑是独立拒绝条件」判 reject；本条实测 平台数=5 可用=1 失败=0 未测=4，硬特征 spinLoops=0/evalCalls=0/selfSchedCalls=0，非常规外联域名 13 个（music-dl.sayqz.com、mcp.nianxinxz.com、music.nxinxz.com、music.lzmhhh.com）。判 reject 是拒绝放行，不是删除该脚本。"
+   },
+   "goldAct": "reject",
+   "annotation": {
+    "annotator": "rule-reject",
+    "at": 1795057115076,
+    "blind": false,
+    "note": "gold 由 prompt 门槛推导（P2），非人工盲标；实测可用 1 个平台；硬特征 spinLoops=0/evalCalls=0/selfSchedCalls=0；非常规外联域名 13 个"
+   },
+   "sensitivity": "pii-free",
+   "contentHash": "6cd2ccb98351bbe1cfc046cbd5eb22ea2187237edbb00c45d54ea71e9dd822a4",
+   "copies": 1,
+   "rejectTier": "P2"
+  }
+ ]
+}

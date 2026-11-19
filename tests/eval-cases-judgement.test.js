@@ -85,24 +85,37 @@ console.log('\n=== ② A2：三态判定与比率门槛 ===')
   const m = computeMetrics(logsOk, cases, { thresholds: ALL_ONE })
 
   // 全对 → 全部达标
-  // 例外：R7|D1 两层在真实样本里 gold **全是 blacklist、没有一条 keep**，
-  // 删源误伤率的分母为 0 ⇒ 误伤无从观测，只能报「数据不足」。
-  // 这不是缺陷，而是这批样本测不了误伤——硬报「达标」就是拿 0 冒充「测出来是 0%」。
+  // ⚠ 2026-11-19 B1 后：真实 R7 样本已补上 128 条 gold=keep，R7|D1 的误伤率**可测量了**，
+  // 不再出现 unmeasurable。unmeasurable 机制本身改用下面「⑤ 构造样本」专项验证，
+  // 不能因为真实样本补好了就把机制测试删掉——否则哪天 keep 样本又被清空，
+  // 就没人守住「不可测量不得冒充 0%」这条底线了。
   const unm = m.table.filter(r => r.verdict === '数据不足')
-  ok('全对回放 + 门槛放开 → 除「误伤率不可测量」的 R7|D1 外各层"达标"',
-    m.table.every(r => r.verdict === '达标' || (r.kind === 'R7' && r.danger === 'D1')),
+  ok('全对回放 + 门槛放开 → 各层全部"达标"（keep 样本补齐后不再有不可测量层）',
+    m.table.every(r => r.verdict === '达标'),
     m.table.map(r => r.stratum + ':' + r.verdict).join(','))
-  ok('【核心】R7|D1 因缺 gold=keep 样本 → 误伤率不可测量 → 报数据不足（不冒充达标）',
-    unm.length > 0 && unm.every(r => r.kind === 'R7' && r.danger === 'D1' && r.ratio && r.ratio.unmeasurable === true),
-    unm.map(r => r.stratum + ':' + r.reason).join(' | '))
-  ok('overall 因存在不可测量的层 → "数据不足"（不能说全达标）',
-    m.overall.verdict === '数据不足', m.overall.verdict)
+  ok('【核心】真实 R7|D1 现在有 gold=keep 样本 → 误伤率可测量（unmeasurable 应为 0 层）',
+    unm.length === 0, unm.map(r => r.stratum + ':' + r.reason).join(' | '))
+  ok('keep 样本补齐后 overall 可以为"达标"（不再被不可测量层拖住）',
+    m.overall.verdict === '达标', m.overall.verdict)
 
-  // 故意做坏 → 未达标（同样除 R7|D1：它压根没 keep 样本可误伤，只能报数据不足）
+  // 故意把 R7 全判成 blacklist（真正的误伤方向）→ R7|D1 必须判未达标
+  const badR7Logs = cases.map(c => ({
+    entryId: c.id,
+    aiAct: c.kind === 'R7' ? 'blacklist' : (c.expected.verdict === 'trust' ? 'reject' : c.expected.verdict),
+    goldAct: c.expected.verdict,
+    executed: false,
+    auditId: null
+  }))
+  const badDel = computeMetrics(badR7Logs, cases, { thresholds: ALL_ONE })
+  const badR7H = badDel.table.find(r => r.stratum === 'R7|HARD|D1')
+  ok('【核心】R7 全判删（真误伤）→ R7|HARD|D1 "未达标"',
+    !!badR7H && badR7H.verdict === '未达标', badR7H && badR7H.verdict)
+  // 非法 verdict（既不是 keep 也不 blacklist）在误伤率口径下不构成误伤，
+  // 这层判"达标"是语义正确的——AI 没有删任何真源。用非 R7 层验证整体仍能判未达标。
   const bad = computeMetrics(mkLogs(cases, false), cases, { thresholds: ALL_ONE })
-  ok('【核心】准确率不够 → "未达标"（原来只会打 evaluated）',
-    bad.table.every(r => r.verdict === '未达标' || (r.kind === 'R7' && r.danger === 'D1')),
-    bad.table.map(r => r.stratum + ':' + r.verdict).join(','))
+  const nonR7 = bad.table.filter(r => r.kind !== 'R7' || r.danger !== 'D1')
+  ok('【核心】非误伤率口径的层判错 → "未达标"（原来只会打 evaluated）',
+    nonR7.every(r => r.verdict === '未达标'), nonR7.filter(r => r.verdict !== '未达标').map(r => r.stratum + ':' + r.verdict).join(','))
   ok('overall 有未达标层 → "未达标"', bad.overall.verdict === '未达标', bad.overall.verdict)
 
   // 三态齐全性
@@ -201,12 +214,45 @@ console.log('\n=== ②b P0-2：误伤率必须只统计「危险方向」，不�
     allRight.ratio.value === 0 && allRight.ratio.missValue === 0 && allRight.verdict === '达标',
     allRight.reason)
 
-  // ④ 真实样本的 R7|D1 没有 keep 样本 → 误伤率不可测量，绝不能冒充 0% 达标
-  const realNoKeep = computeMetrics(mkLogs(cases, true), cases, { thresholds: ALL_ONE })
-    .table.filter(r => r.kind === 'R7' && r.danger === 'D1')
-  ok('【核心·P0-2】真实 R7|D1 缺 gold=keep → 标记 unmeasurable 且不判达标',
-    realNoKeep.length > 0 && realNoKeep.every(r => r.ratio.unmeasurable === true && r.verdict === '数据不足'),
-    realNoKeep.map(r => r.stratum + ':' + r.verdict + ':' + (r.ratio && r.ratio.unmeasurable)).join(','))
+  // ④ unmeasurable 机制专项（用**构造样本**，不依赖真实样本的 keep 数量）。
+  //    B1 补齐真实 keep 样本后，真实 R7|D1 已可测量；但机制测试不能因此消失——
+  //    它守的是「分母为 0 时绝不能报 0% 达标」这条底线，一旦哪天真样本又被清空，
+  //    靠它拦住「把没测说成测过」。
+  const synthOnlyBlack = [
+    // 只有 blacklist 的 R7|D1 层：keepGold=0
+    { id: 'syn1-1', kind: 'R7', expected: { verdict: 'blacklist', zone: 'HARD', danger: 'D1' }, input: {}, goldAct: 'blacklist' },
+    { id: 'syn1-2', kind: 'R7', expected: { verdict: 'blacklist', zone: 'HARD', danger: 'D1' }, input: {}, goldAct: 'blacklist' },
+    // 有 keep 的对照层：keepGold>0
+    { id: 'syn1-3', kind: 'R7', expected: { verdict: 'keep', zone: 'GREY', danger: 'D1' }, input: {}, goldAct: 'keep' }
+  ]
+  const synthLogs = synthOnlyBlack.map(c => ({ ok: true, kind: 'R7', zone: c.expected.zone, danger: c.expected.danger, aiAct: 'keep', goldAct: c.goldAct, caseId: c.id, executed: false, auditId: null }))
+  const sm = computeMetrics(synthLogs, synthOnlyBlack, { thresholds: ALL_ONE })
+  const synRow = sm.table.find(r => r.stratum === 'R7|HARD|D1')
+  ok('【核心·P0-2】构造「只有 blacklist 的层」→ 标记 unmeasurable 且不判达标',
+    !!synRow && synRow.ratio && synRow.ratio.unmeasurable === true && synRow.verdict === '数据不足',
+    synRow && (synRow.verdict + ':' + JSON.stringify(synRow.ratio)))
+  ok('【核心·P0-2】unmeasurable 时 reason 明确说"无法计算"而不是"0%"',
+    !!synRow && /无法计算/.test(synRow.reason || ''), synRow && synRow.reason)
+  const synKeep = sm.table.find(r => r.stratum === 'R7|GREY|D1')
+  ok('【核心·P0-2】对照层有 keep 样本 → 不标 unmeasurable，正常给比率',
+    !synKeep || !synKeep.ratio || synKeep.ratio.unmeasurable !== true,
+    synKeep && JSON.stringify(synKeep.ratio))
+
+  // ⑤ 真实样本的误伤方向必须真的能测出「全删 = 100% 误伤」
+  const realR7d1 = cases.filter(c => c.kind === 'R7' && c.expected.danger === 'D1')
+  const realAllDel = realR7d1.map(c => ({ ok: true, kind: 'R7', zone: c.expected.zone, danger: c.expected.danger, aiAct: 'blacklist', goldAct: c.goldAct, caseId: c.id, executed: false, auditId: null }))
+  const realAllKeep = realR7d1.map(c => ({ ok: true, kind: 'R7', zone: c.expected.zone, danger: c.expected.danger, aiAct: 'keep', goldAct: c.goldAct, caseId: c.id, executed: false, auditId: null }))
+  const hardDel = computeMetrics(realAllDel, cases, { thresholds: ALL_ONE }).table.find(r => r.stratum === 'R7|HARD|D1')
+  const hardKeep = computeMetrics(realAllKeep, cases, { thresholds: ALL_ONE }).table.find(r => r.stratum === 'R7|HARD|D1')
+  ok('【核心·B1】真实 R7|HARD|D1 已有 gold=keep 分母 → usable 误伤率可算',
+    !!hardDel && hardDel.ratio && hardDel.ratio.counters && hardDel.ratio.counters.keepGold > 0,
+    hardDel && JSON.stringify(hardDel.ratio && hardDel.ratio.counters))
+  ok('【核心·B1】全部判删 → 误伤率 100% 且判"未达标"（补样本前这一层根本测不出来）',
+    !!hardDel && hardDel.ratio.value === 1 && hardDel.verdict === '未达标',
+    hardDel && (hardDel.ratio && hardDel.ratio.value) + ':' + (hardDel && hardDel.verdict))
+  ok('【核心·B1】全部判留 → 误伤率 0%',
+    !!hardKeep && hardKeep.ratio.value === 0,
+    hardKeep && (hardKeep.ratio && hardKeep.ratio.value))
 })()
 
 // ============================================================
