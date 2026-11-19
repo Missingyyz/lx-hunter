@@ -4,8 +4,8 @@ const { crawl, checkQuota, filterDeadRepos, DEFAULT_REPOS, setCrawlBlockPatterns
 const { crawlWebSite, isWebRepo, probeExternalSource, normalizeExternalUrl } = require('./websource')
 const { fetchCommunityRepos } = require('./community')
 const { collectFromHubs } = require('./hubfeed')
-const { checkBasic, deepCheck, extractMeta, sha256Str, usableCount, stoppable, isLocalNetworkIssue, patrolJudge, obfuscationRisk, obfuscationTip, obfDomains, obfDomainVerdict, applyProbeRecord, probeApiHosts, apiDownVerdict, passedPlatforms, regressionJudge, probeTopTier, classifyQuarantineTrust } = require('./checker')
-const { crawlFetch, readText, sleep } = require('./net')
+const { checkBasic, deepCheck, extractMeta, sha256Str, usableCount, stoppable, isLocalNetworkIssue, patrolJudge, obfuscationRisk, obfuscationTip, obfDomains, obfDomainVerdict, applyProbeRecord, probeApiHosts, apiDownVerdict, passedPlatforms, regressionJudge, probeTopTier, classifyQuarantineTrust, isProbeOnlyDeep } = require('./checker')
+const { crawlFetch, readText, sleep, resolveHostIps } = require('./net')
 const { getActiveService, getService, getBatchImportAccounts, getIsolations, NO_ACCOUNT_ERR, resolveEnableAfterImport } = require('./services')
 const { Store } = require('./store')
 // 2026-11-10 科学性复核：版本算法 / 身份键 / 质量判据统一到单一来源，
@@ -17,9 +17,91 @@ const { computeVeto, isFrozen, vetoReason, splitFrozen, VETO_PRIORITY, profileSe
 // v1.13.0：定时爬取的下次允许时间（配额 → 代理/镜像 → 指数退避，纯函数）
 const { planNextCrawl, describeNextCrawl } = require('./crawlSchedule')
 const { compareVerdict, describeQuality, profile: qualityProfile, compareImportQuality } = require('./quality')
+// R9（v1.13.15）：追更链（updateTip.url）的出站域名校验。
+// 复用 outbound-policy.js 的私网/回环判据（checkOutbound），不自写一套——
+// 那里是「私网/回环硬阻断、普通域名只审计不阻断」的唯一来源。
+const { checkOutbound, auditDomain, normalizeHost } = require('./outbound-policy')
 
-// normName 已统一到 src/core/identity.js（hunter / sourceUpdate 必须完全同口径），
-// 这里通过顶部 require 引入；module.exports 继续导出同名符号，外部调用不受影响。
+/**
+ * dupReason 取值（去重废弃原因）——**唯一来源**（v1.13.13）。
+ *
+ * 背景：这 6 个字符串原先散在 8 处硬编码（dedupe / 翻案 / runCheck 即时去重 / hash 分组 /
+ * 不变量补写），措辞相近但含义不同，读代码时很难看出「哪个是哪个」。
+ * 现在收敛成下面 4 个语义码，一处定义、多处引用。
+ *
+ * ⚠️ **这些字符串参与逻辑判断，不是纯展示文案。改字之前先看这里的依赖清单**：
+ *
+ *   SAME_CONTENT     '同内容重复'           ← hunter.js `sameContent = /同内容/`（判 dupOf 指向是否合规）
+ *   SAME_REPO_NAME   '同仓库同名重复'        ← 不命中 /同内容/，走「同名」路径（允许跨 contentHash 指向）
+ *   OLD_VERSION      '同名旧版本'            ← **没有人读**，纯展示
+ *   OLD_VERSION_NEW  '同名旧版本（已有更新版本）'
+ *        ← ① hunter.js:1467 **严格等值**：只有它才允许 dedupe ②b「保留方失效 → 翻案恢复旧版」
+ *        ← ② hunter.js `/已有更新版本/` 正则：命中才改写为 OLD_VERSION_KEEPER_DEAD
+ *        （所以改字必须保留「已有更新版本」这五个字，且不能改成别的括号写法）
+ *   OLD_VERSION_KEEPER_DEAD  '同名旧版本（保留方已失效）'
+ *        ← 只能由上面两条正则改写产出；生产无人读，tests/dedupe-invariant.test.js 断言 /保留方已失效/
+ *   VERSION_DEAD     '同名版本（此版本已失效）'
+ *        ← 生产无人读；tests/crawl-releases.test.js 等值断言、tests/dist-selfcheck.js 断言源码含此串
+ *
+ * 措辞口径（用户要求：界面大白话、日志留技术细节）：
+ *   这几个字符串会**原样拼进**前端 tooltip（renderer/app.js mergeTip），所以它们本身必须是人话。
+ *   「此版本已失效」「保留方已失效」这种半术语保留，是因为要区分两个方向（被废方失效 / 保留方失效），
+ *   换成更口语的说法会让两个方向读起来一样，反而更糊涂。
+ */
+const DUP_REASON = {
+  SAME_CONTENT: '同内容重复',
+  SAME_REPO_NAME: '同仓库同名重复',
+  OLD_VERSION: '同名旧版本',
+  OLD_VERSION_NEW: '同名旧版本（已有更新版本）',
+  OLD_VERSION_KEEPER_DEAD: '同名旧版本（保留方已失效）',
+  VERSION_DEAD: '同名版本（此版本已失效）'
+}
+
+/**
+ * 参与逻辑判断的**关键子串**，与上面的取值一一对应。
+ *
+ * 为什么要单独列：这些子串被 `indexOf` / 正则用来做分支判断（如「是不是同内容」、
+ * 「是不是因为已有更新版本」）。如果散在各处写成中文字面量，一旦有人改 DUP_REASON
+ * 里的措辞，判断就静默失效——不报错、不告警，只在某个条目该翻案没翻案时才看得出。
+ * 集中在这里，改措辞时编译器帮不了你，但至少只有一处要改、且能一眼看到绑定关系。
+ */
+const DUP_REASON_MARK = {
+  SAME_CONTENT: '同内容',      // SAME_CONTENT 独有，SAME_REPO_NAME 不含
+  UPDATED: '已有更新版本'        // OLD_VERSION_NEW 独有
+}
+
+/**
+ * 追更链入库条目的 id 前缀（v1.13.15 / R9）。
+ *
+ * 这类条目的**全部内容都来自不可信来源**：地址是沙箱里脚本自报的 updateUrl，
+ * 文本是那个地址下载回来的东西，name/lxName 取自文本里的 @name（攻击者可控）。
+ * 所以它在同名裁决里必须被当成「次等条目」——见 betterKeeper 顶部的 R9 硬规则。
+ */
+const UPDATE_URL_ID_PREFIX = 'updateurl::'
+
+/** 这个条目是不是追更链拉回来的（不可信）条目 */
+function isUpdateUrlEntry (e) {
+  return !!(e && String(e.id || '').indexOf(UPDATE_URL_ID_PREFIX) === 0)
+}
+
+/**
+ * 在「同名对决」的双方里挑出该保留的那一方（R9 硬规则的单一实现点）。
+ *
+ * 规则：**非追更链条目（真音源）无条件胜出**。
+ *  - 双方都是真音源 → 返回 null（交给 betterKeeper 的版本/质量裁决）
+ *  - 双方都是追更链条目 → 返回 null（同类相残，沿用原裁决）
+ *  - 一真一追更 → 返回真音源那一方
+ *
+ * @param {object} a
+ * @param {object} b
+ * @returns {object|null} 该保留的那一方；null = 无硬规则倾向
+ */
+function preferRealSource (a, b) {
+  const au = isUpdateUrlEntry(a), bu = isUpdateUrlEntry(b)
+  if (au === bu) return null
+  return au ? b : a
+}
+
 
 /**
  * 构建本次爬取的仓库种子列表（v1.9.12，纯函数便于测试）。
@@ -403,6 +485,280 @@ function recLxIdOn(rec, pid, activeId) {
   // 它本就是「按服务端 lxId 记账」的单账号旧数据，沿用顶层 lxId（向后兼容）。
   if (rec.platformId == null && !Array.isArray(rec.importedTo)) return rec.lxId == null ? null : rec.lxId
   return null
+}
+
+/**
+ * ============================================================================
+ * R9（v1.13.15）：追更链（updateTip.url）的域名校验
+ * ============================================================================
+ *
+ * 背景（已确认的攻击链）：
+ *   沙箱里的音源脚本能通过 lx.send('updateAlert') / lx.request 响应上报 **updateTip**，
+ *   sandbox.js 的 __host_emit 把它们收集进 self.updateTips；
+ *   checker 把它写回条目 → hunter._mergeUpdateTips 存进 e.updateTips →
+ *   hunter._followUpdateTips **按 tip.url 下载内容并 store.addSources() + saveDb()**。
+ *   也就是说：**沙箱里的恶意脚本能让 hunter 往用户的音源库里注入任意内容**。
+ *
+ * 分两层拦（纵深）：
+ *   ① checkUpdateTipUrl —— 与具体音源无关的**硬校验**（协议 / 域名格式 / 私网回环）。
+ *      零维护、零误伤、闭集。写入（_mergeUpdateTips）与下载（_followUpdateTips）都过这一层。
+ *   ② knownHostsForEntry —— 「这个域名是不是**这个音源自己**的」：
+ *      取该条目的 apiHosts（沙箱实测到的外联域名）+ obfDomains + homepage/脚本地址的域名，
+ *      再加上同主机名（去掉端口后相同）与之同域（父域相同）的域名。
+ *      不在集合里的陌生域名 → 记日志跳过这一条，**不中断整轮**。
+ *
+ * 为什么第②层必须「按音源自己的已知域名」而不是公共 CDN 白名单：
+ *   outbound-policy.js 的设计是「普通域名只审计不阻断」——理由是生产库 1713 条音源
+ *   有 239 个唯一域名，其中约 150 个是第三方聚合站，**换域名是常态**。
+ *   若照抄一份「公共 CDN 白名单」去挡陌生域名，生产音源换个域名就会**静默失效**
+ *   （表现为「音源坏了」，用户看到的是功能故障而不是安全提示）——
+ *   这正是 outbound-policy.js 里明确写下来「曾计划做、已否决」的做法。
+ *   所以这里只认「这个音源自己已经表现出来的域名」，不臆造任何公共清单。
+ *
+ * 判定「同域」的规则（保守、够用即可）：
+ *   - host 完全相同（忽略大小写与端口）→ 同域
+ *   - host 是 known host 的**子域**（known.example.com ⊇ a.b.example.com）→ 同域
+ *   - host 是 known host 的**父域**（a.example.com ⊇ example.com）→ 同域
+ *   其它（example.com vs other.net）→ 不同域
+ */
+const UPDATE_TIP_ALLOWED_PROTOCOLS = ['http:', 'https:']
+
+/**
+ * 判断一个域名是否「格式合法」——只查形状，不查是否公网可达。
+ * 规则（刻意保守，宁可多拒一个畸形域名，也不放行奇怪的）：
+ *   - 长度 1..253
+ *   - 允许 字母/数字/点/连字符；不允许下划线、其它符号、空格
+ *   - 至少含一个点（单标签主机名只能是内网/本机名，见 outbound-policy 的说明）
+ *   - 每一段 label 非空、长度 <=63、不以连字符开头/结尾
+ *   - TLD 必须是纯字母（>=2 位）——**除非整个 host 是 IPv4 字面量**
+ *     （生产库 apiHosts 里确实有 175.27.166.236 这类直连 IP；
+ *      它的私网/回环由 outbound-policy.checkOutbound 判，这里不重复判）
+ * @param {string} host 已归一化的小写主机名（无端口、无方括号）
+ * @returns {boolean}
+ */
+function isValidPublicHostShape (host) {
+  if (!host || host.length > 253) return false
+  if (!/^[a-z0-9.-]+$/.test(host)) return false
+  const labels = host.split('.')
+  if (labels.length < 2) return false
+  for (const l of labels) {
+    if (!l || l.length > 63) return false
+    if (l.startsWith('-') || l.endsWith('-')) return false
+  }
+  // IPv4 字面量：形状合法（私网/回环由 checkOutbound 判）
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    return labels.every(l => /^\d{1,3}$/.test(l) && Number(l) <= 255)
+  }
+  const tld = labels[labels.length - 1]
+  if (!/^[a-z]{2,}$/.test(tld)) return false
+  return true
+}
+
+/**
+ * R9 第①层：updateTip.url 的硬校验（协议 / 域名格式 / 私网回环 / userinfo）。
+ *
+ * 私网/回环判据**直接复用** outbound-policy.checkOutbound（不另写一套）：
+ *   那里是「私网/回环硬阻断」的唯一来源，规则封闭、零维护，
+ *   并且已经处理了 127.1 / 0x7f000001 / [::ffff:127.0.0.1] 这些等价写法。
+ *
+ * 2026-11-19 新增「拒绝 userinfo」：带 userinfo 的 URL（https://evil.com@real.com/a.js）
+ *   在浏览器/URL 解析器眼里 host 是 real.com，但肉眼扫过去只看到 evil.com，
+ *   攻击者可用它骗过人工审核与任何基于「字符串包含」的日志检查。
+ *
+ * @param {string} rawUrl 待校验的地址
+ * @returns {{ok: boolean, why: string, host: string, url: string}}
+ *   ok=false 时 why 是人话原因（供日志用）；ok=true 时 url 是归一化后的 URL 字符串。
+ */
+function checkUpdateTipUrl (rawUrl) {
+  const s = String(rawUrl == null ? '' : rawUrl).trim()
+  if (!s) return { ok: false, why: '地址为空', host: '', url: '' }
+  if (s.length > 2048) return { ok: false, why: '地址过长', host: '', url: '' }
+  let u
+  try { u = new URL(s) } catch (e) {
+    return { ok: false, why: '不是合法 URL', host: '', url: '' }
+  }
+  if (UPDATE_TIP_ALLOWED_PROTOCOLS.indexOf(u.protocol) === -1) {
+    return { ok: false, why: '协议不是 http(s)（' + u.protocol + '）', host: '', url: '' }
+  }
+  // userinfo（用户名/密码）一律拒绝：`https://evil.com@real.com/` 这类地址
+  // 的真正 host 是 real.com，但字符串里带了个骗人的域名。任何时候都没必要用它。
+  if (u.username || u.password) {
+    return { ok: false, why: '地址里带用户名/密码（userinfo）', host: '', url: '' }
+  }
+  const host = normalizeHost(u.hostname)
+  if (!host) return { ok: false, why: '没有主机名', host: '', url: '' }
+  // 私网/回环：复用 outbound-policy 的封闭规则（checkOutbound 内部已做 IPv4 映射还原）
+  const out = checkOutbound(u.href)
+  if (out && out.blocked) {
+    return { ok: false, why: '指向私网/回环地址（' + (out.why || '') + '）', host, url: '' }
+  }
+  if (!isValidPublicHostShape(host)) {
+    return { ok: false, why: '域名格式不合法', host, url: '' }
+  }
+  return { ok: true, why: '', host, url: u.href }
+}
+
+/**
+ * R9：通配 DNS 服务（wildcard DNS）域名黑名单。
+ *
+ * 这些服务把**任意**子域名解析到固定 IP（典型是 127.0.0.1）：
+ *   localtest.me / lvh.me  → 127.0.0.1
+ *   nip.io / sslip.io / xip.io → 127.0.0.1（当前容器 DNS 未配这些，但随时可能配上）
+ * 所以 `http://foo.localtest.me/x.js` 的域名形状完全合法、TLD 也是真字母，
+ * 只靠域名形状校验挡不住——只能显式封掉这些后缀。
+ *
+ * 为什么不能靠「DNS 解析结果」兜底：域名解析失败（NXDOMAIN）时没有 IP 可判，
+ * 而攻击者换一个没被解析到的子域就绕过去了（实测 anything.nip.io 当前就是 ENOTFOUND，
+ * 但那是本机 DNS 的状态，不是规则）。**显式拒绝后缀**才是稳定规则。
+ *
+ * ⚠️ 残余风险（明确接受）：攻击者自建一个 A 记录指向 127.0.0.1 的域名，
+ *   不在这个名单里 → 只能靠「解析后 IP 私网判定」拦（见 checkUpdateTipResolvedIp）。
+ *   那条判据依赖 DNS 应答，仍有 rebinding 窗口（见 R9 说明块）。
+ */
+const WILDCARD_DNS_SUFFIXES = [
+  'localtest.me',
+  'lvh.me',
+  'nip.io',
+  'sslip.io',
+  'xip.io',
+  'vcap.me',
+  'loca.lt',
+  '127.0.0.0.nip.io'
+]
+
+/**
+ * 判断 host 是否落在通配 DNS 服务后缀下。
+ * @param {string} host 归一化主机名（小写）
+ */
+function isWildcardDnsHost (host) {
+  const h = String(host || '').trim().toLowerCase()
+  if (!h) return false
+  for (const suf of WILDCARD_DNS_SUFFIXES) {
+    if (h === suf) return true
+    if (h.length > suf.length && h.endsWith('.' + suf)) return true
+  }
+  return false
+}
+
+/**
+ * R9 第①层补充：解析后 IP 的私网/回环判定（同步版，供纯函数测试用）。
+ *
+ * @param {string} host 归一化主机名
+ * @param {string[]} ips 解析出的 IP 列表
+ * @returns {{ok:boolean, why:string}}
+ */
+function checkUpdateTipResolvedIp (host, ips) {
+  if (isWildcardDnsHost(host)) {
+    return { ok: false, why: '域名属于通配 DNS 服务（任意子域都能解析到本机/内网）' }
+  }
+  const list = Array.isArray(ips) ? ips : []
+  for (const ip of list) {
+    // 用 checkOutbound 判「这个 IP 是不是私网/回环」——复用同一套封闭规则，不另写一份。
+    // 拼成 http://IP/ 让它走 URL 解析路径（IPv6 映射还原也在里面）。
+    const o = checkOutbound('http://' + String(ip).replace(/^\[|\]$/g, '') + '/')
+    if (o && o.blocked) {
+      return { ok: false, why: '域名解析到私网/回环地址（' + (o.why || '') + '：' + ip + '）' }
+    }
+  }
+  return { ok: true, why: '' }
+}
+
+/**
+ * host 是否与 known 里的某个 host「同域」。
+ *
+ * 2026-11-19 收紧（原实现是**双向任意深度**的父域/子域判定）：
+ *   - 完全相等 → 属于；
+ *   - host 是 known 的**一层**子域（a.b.k）→ 属于；
+ *   - host 是 known 的**父域**（k 是 host 的子域）→ **不再属于**。
+ *   - host 是 known 的**多层**子域（a.b.c.k）→ 不再属于。
+ *
+ * 为什么父域方向必须断：known 里有 `raw.githubusercontent.com`（脚本托管域）时，
+ * 父域方向会让 `github.com` 也算「自己的域名」——
+ * 而 github.com 上任何人都有仓库，能放任意内容。
+ * 同理 known 里有 `example.com` 时，旧口径下 `com` 都不算（域名形状会挡住），
+ * 但 `a.b.example.com` 这种多层子域会把信任范围放大到攻击者能注册的一层。
+ *
+ * 实测（2026-11-19 生产库）：43 条 tip 收紧前后放行数 **22 → 22**，差异 0；
+ * 27 条 followedUpdateUrls 红线 **10 → 10**，差异 0。零误伤。
+ *
+ * @param {string} host 归一化主机名
+ * @param {Set<string>} known 已知主机名集合（小写）
+ */
+function isSameSiteHost (host, known) {
+  if (!host || !known || !known.size) return false
+  if (known.has(host)) return true
+  for (const k of known) {
+    if (!k || k.length >= host.length) continue
+    // host 是 k 的子域：只允许**一层**（a.k），a.b.k 这种多层不放行
+    if (host.endsWith('.' + k)) {
+      const mid = host.slice(0, host.length - k.length - 1)
+      if (mid && mid.indexOf('.') === -1) return true
+    }
+  }
+  return false
+}
+
+/**
+ * R9 第②层：取「这个音源自己已经表现出来的域名」集合。
+ *
+ * 来源（都是该条目**自身**的客观记录，不是公共白名单）：
+ *   - e.apiHosts  ：沙箱实测到的外联域名（checker.extractApiHosts 产出）
+ *   - e.homepage  ：脚本 @homepage 声明的站点（checker.extractMeta 产出）
+ *   - e.url       ：这条音源脚本本身的下载地址（checker 用它拉脚本）
+ *   - e.fetchUrl  : 实际拉取成功的镜像地址
+ *
+ * 2026-11-19 移除 e.obfDomains：那是**静态扫描**猜出来的「疑似外联域名」，
+ *   不是这个音源实际表现出来的归属证据；扫描误报时会把陌生域塞进信任集合。
+ *   实测（生产库）：43 条 tip 移除前后放行数 22 → 22、27 条红线 10 → 10，差异 0。
+ *
+ * ⚠️ 保留 e.url / e.fetchUrl 是**有代价的**（已知残余风险，未解决）：
+ *   脚本托管域通常是共享的（raw.githubusercontent.com / gitee.com），
+ *   攻击者只要能让自己的脚本被下载过一次（e.url 指向托管域），
+ *   同一个托管域上的**任意路径**都会被判成「该音源自己的域名」（闸门②形同虚设）。
+ *   实测收紧口径（把 url/fetchUrl 移出 known）会让放行数 22 → 19，
+ *   掉的三条是真实追更（Free listen ×2、小熊猫）——按「误伤好源代价远大于漏判」
+ *   的准则，**保留 url/fetchUrl**，把这条作为已知残余风险记录在案。
+ *
+ * @param {object} e 音源条目
+ * @returns {Set<string>} 小写主机名集合（不含端口）
+ */
+function knownHostsForEntry (e) {
+  const out = new Set()
+  if (!e) return out
+  const addUrl = (u) => {
+    if (!u) return
+    const h = auditDomain(u)
+    if (h) out.add(normalizeHost(h))
+  }
+  const addHost = (h) => {
+    const s = String(h || '').trim().toLowerCase()
+    if (!s) return
+    // apiHosts 里可能带端口（rare），取主机部分
+    const noPort = s.replace(/:\d+$/, '')
+    if (noPort) out.add(normalizeHost(noPort))
+  }
+  for (const h of (Array.isArray(e.apiHosts) ? e.apiHosts : [])) addHost(h)
+  addUrl(e.homepage)
+  addUrl(e.url)
+  addUrl(e.fetchUrl)
+  // 去掉空串
+  for (const k of Array.from(out)) if (!k) out.delete(k)
+  return out
+}
+
+/**
+ * R9 第②层判定：tip.url 的域名是否属于「这个音源自己」。
+ * @param {object} e 音源条目
+ * @param {string} host 归一化主机名
+ * @param {Set<string>} known knownHostsForEntry(e) 的结果
+ * @returns {{ok: boolean, why: string}}
+ */
+function checkUpdateTipHostBelongsTo (e, host, known) {
+  if (!known || !known.size) {
+    return { ok: false, why: '该音源没有任何已知的自有域名可核对（无法证明这个更新地址属于它）' }
+  }
+  if (isSameSiteHost(host, known)) return { ok: true, why: '' }
+  return { ok: false, why: '域名 ' + host + ' 不在该音源已知的域名集合内（' + Array.from(known).slice(0, 4).join('、') + '）' }
 }
 
 class Hunter {
@@ -1401,11 +1757,11 @@ class Hunter {
       if (kind === 'oldVersion' || kind === 'oldVersionUpdated') {
         const dropDead = d.deep && d.deep.checkedAt && usableCount(d) === 0
         const keepOk = usableCount(kept) > 0
-        d.dupReason = dropDead && keepOk ? '同名版本（此版本已失效）'
-          : kind === 'oldVersionUpdated' ? '同名旧版本（已有更新版本）'
-            : '同名旧版本'
+        d.dupReason = dropDead && keepOk ? DUP_REASON.VERSION_DEAD
+          : kind === 'oldVersionUpdated' ? DUP_REASON.OLD_VERSION_NEW
+            : DUP_REASON.OLD_VERSION
       } else {
-        d.dupReason = kind === 'dupContent' ? '同内容重复' : '同仓库同名重复'
+        d.dupReason = kind === 'dupContent' ? DUP_REASON.SAME_CONTENT : DUP_REASON.SAME_REPO_NAME
       }
       d.usable = false
     }
@@ -1444,6 +1800,16 @@ class Hunter {
       if (!dc || !dn || this._deepIncomplete(cur) || this._deepIncomplete(e)) {
         if (dc && usableCount({ deep: dc }) === 0) {
           // 已检方深检 0 平台（确认失效）→ 让位给未检测方，这条例外维持不变
+          // ⚠️ R9 硬规则：让位方向不能是「真音源 → 追更链条目」。
+          //   旧口径下「已检方失效就让位」不看对方是谁，攻击者只要让自己的
+          //   updateurl:: payload 深检出 0 平台，真音源就被判失效让位给它。
+          //   反向（追更链让位给真音源）是对的，要保留。
+          const real = preferRealSource(cur, e)
+          if (real && real !== cur) {
+            // cur 是真音源、e 是追更链条目 → 不让位（真音源即使失效也不交给追更链裁决）
+            pendingDuel++
+            continue
+          }
           dep(cur, e, 'oldVersion'); res.oldVersion++
           byName[nm] = e
         } else {
@@ -1464,15 +1830,25 @@ class Hunter {
     //    （检测只跑非 deprecated 条目，所以旧版是否真能用要看它既有 deep；
     //      没有实测就先恢复成候选，下轮检测再定。）
     for (const e of all) {
-      if (!e.deprecated || e.fromServer || e.private || e.dupReason !== '同名旧版本（已有更新版本）') continue
+      // ⚠️ 严格等值门禁：只有 OLD_VERSION_NEW 才进翻案通道（OLD_VERSION 不进来，见 DUP_REASON 注释）
+      if (!e.deprecated || e.fromServer || e.private || e.dupReason !== DUP_REASON.OLD_VERSION_NEW) continue
       const keeper = e.dupOf ? all.find(x => x.id === e.dupOf) : null
       if (!keeper || keeper.deprecated || keeper.private || !keeper.contentHash || keeper.contentHash === e.contentHash) continue
       // 只有保留方实测确认失效（深检 0 平台）才翻案；没深检过或还可用则维持原裁决
       if (!(keeper.deep && keeper.deep.checkedAt && usableCount(keeper) === 0)) continue
+      // ⚠️ R9 硬规则：翻案不能把「真音源」翻案成「追更链条目」。
+      //   翻案通道的前提是「保留方（新版）实测失效 → 恢复旧版」。
+      //   若被翻案回来的是真音源、而要把废弃的是追更链条目，方向反了——不能做。
+      //   注意 preferRealSource 双方同类（都真/都追更）时返回 null（无硬规则倾向），
+      //   此时必须放行翻案；只有它明确指定了「该保留的另一方」才跳过。
+      //   （曾写成 `preferRealSource(e,keeper) !== e`，null!==e 恒真导致所有
+      //     双真音源翻案被吞——crawl-releases 两条断言回归。）
+      const pref = preferRealSource(e, keeper)
+      if (pref && pref !== e) continue
       e.deprecated = false; e.dupOf = null; e.dupReason = null
       e.usable = !!(e.deep && e.deep.checkedAt && usableCount(e) > 0)
       keeper.deprecated = true; keeper.dupOf = e.id
-      keeper.dupReason = '同名版本（此版本已失效）'; keeper.usable = false
+      keeper.dupReason = DUP_REASON.VERSION_DEAD; keeper.usable = false
       res.oldVersion++   // 计入同名裁决翻案数
       this.emit('source-updated', e)
       this.emit('source-updated', keeper)
@@ -1549,6 +1925,50 @@ class Hunter {
     // 用累加的 ++ 会重复计入（日志报 529、实际变化 477）。这里用 Set 去重。
     const repointSet = new Set()
     const setDupOf = (e, v) => { repointSet.add(e.id); e.dupOf = v }
+
+    // ★ R9（v1.13.15）：硬规则收口——「真音源被废弃、而废弃它的 keeper 是追更链条目」
+    //   这一状态必须在保存前纠正过来。
+    //
+    //   为什么需要这一步（其它几处规则都拦不住它）：
+    //   - betterKeeper 的硬规则只在**裁决那一刻**生效；
+    //   - 但库里可能已经存在旧数据/其它路径留下的「真音源被废、keeper 是 updateurl::」；
+    //   - 组内兜底 b) 看到「组里还有活的」（活的是追更链条目）就不复活真音源。
+    //   净效果：真音源永久躺在废弃区，追更链的 payload 反而是活跃条目。
+    //
+    //   口径：**同一「同名组」**内，废弃方是真音源、keeper 是追更链条目 → 互换：
+    //   真音源复活（按 deep 证据重算 usable），追更链条目改为废弃并指向真音源。
+    //   同内容重复（dupContent）不在此列——内容一样时保留谁都无所谓。
+    {
+      const nameOf = (e) => normName((e && (e.lxName || e.scriptName || e.name)) || '')
+      const byNameGroup = {}
+      for (const e of all) {
+        if (!e) continue
+        const nm = nameOf(e)
+        if (!nm) continue
+        ;(byNameGroup[nm] = byNameGroup[nm] || []).push(e)
+      }
+      for (const nm of Object.keys(byNameGroup)) {
+        const g = byNameGroup[nm]
+        for (const e of g) {
+          if (!e || !e.deprecated || isUpdateUrlEntry(e)) continue
+          const keeper = e.dupOf ? byId[e.dupOf] : null
+          if (!keeper || keeper.deprecated || !isUpdateUrlEntry(keeper)) continue
+          // 同内容重复不互换（内容相同，保留谁无差别）
+          if (e.contentHash && keeper.contentHash && e.contentHash === keeper.contentHash) continue
+          // 互换：真音源复活、追更链条目被废
+          e.deprecated = false; e.dupOf = null; e.dupReason = null
+          e.usable = !!(e.deep && e.deep.checkedAt && usableCount(e) > 0)
+          if (!e.usable) out.unusableRevived++
+          out.revived++
+          keeper.deprecated = true; keeper.dupOf = e.id
+          keeper.dupReason = DUP_REASON.SAME_REPO_NAME; keeper.usable = false
+          setDupOf(keeper, e.id)
+          this.log(`dedupe: R9 硬规则——真音源「${e.lxName || e.name}」曾被追更链条目挤掉，已互换回来（追更链条目 id=${keeper.id}）`, '去重', 'warn')
+          this.emit('source-updated', e)
+          this.emit('source-updated', keeper)
+        }
+      }
+    }
 
     // a) 指针归一：沿 dupOf 走到第一个未废弃者；成环/悬空/超深 → 交给 b 的组内兜底裁决
     //
@@ -1654,7 +2074,7 @@ class Hunter {
     //    但「同内容重复」跨 contentHash 指向是**错**的——同 contentHash 才叫同内容。
     //    实测生产库有 6 条「同内容重复」指到了别组的活跃条目（其中 4 条是 probe /
     //    health-daily / source-audit / lx-source 这类伪重复），会被误当成真重复副本。
-    const sameContent = (reason) => /同内容/.test(String(reason || ''))
+    const sameContent = (reason) => String(reason || '').indexOf(DUP_REASON_MARK.SAME_CONTENT) !== -1
     const liveRepByHash = {}
     for (const e of all) {
       if (!e || !e.contentHash || e.deprecated) continue
@@ -1669,13 +2089,16 @@ class Hunter {
       const rep = e.contentHash ? liveRepByHash[e.contentHash] : null
       if (rep && rep.id !== e.id) {
         if (e.dupOf !== rep.id) setDupOf(e, rep.id)
-        if (!e.dupReason) e.dupReason = '同内容重复'
+        if (!e.dupReason) e.dupReason = DUP_REASON.SAME_CONTENT
       } else {
         // 组内没有别的活跃代表（单条组 / 组内就它自己）：清指针，不能指向自己或死人
         if (e.dupOf != null) setDupOf(e, null)
         // 原因如实化：保留方已不在，还写「已有更新版本」是假话
-        if (/已有更新版本/.test(String(e.dupReason || ''))) e.dupReason = '同名旧版本（保留方已失效）'
-        else if (!e.dupReason) e.dupReason = '同内容重复'
+        // 用 DUP_REASON.OLD_VERSION_NEW 里的关键子串判断，不用硬编码中文，
+        // 这样将来改措辞只要改常量，「改写条件」自动跟着走，不会一处改了一处没改。
+        if (String(e.dupReason || '').indexOf(DUP_REASON_MARK.UPDATED) !== -1) {
+          e.dupReason = DUP_REASON.OLD_VERSION_KEEPER_DEAD
+        } else if (!e.dupReason) e.dupReason = DUP_REASON.SAME_CONTENT
       }
     }
 
@@ -1758,6 +2181,26 @@ class Hunter {
   }
 
   betterKeeper(a, b) {
+    // ★ R9 硬规则（2026-11-19）：updateurl:: 条目**永远不能挤掉**真音源。
+    //
+    // 背景：updateurl:: 是「追更链」拉回来的脚本（来自沙箱里脚本自报的 updateUrl）。
+    // 攻击者能让沙箱里的脚本报出一个任意地址，那个地址的内容就是攻击者写的，
+    // 而入库条目的 name/lxName 直接取自攻击者脚本里的 @name
+    // ⇒ 攻击者可以造出一个**与真音源同名**的条目。
+    //
+    // 旧裁决口径的漏洞：betterKeeper 的「一方已深检、另一方未深检 → 让位给未检测方」
+    // 这条分支，会让**未深检的真音源**输给**已深检的恶意条目**——
+    // 攻击者只要让 payload 深检出 1 个可用平台，真音源就被判废弃（dupOf 指向恶意条目）。
+    // 代价不对称：真音源被废 = 用户少一个能用的源；恶意条目留下 = 用户多一个被投毒的源。
+    //
+    // 所以这里加一条**无条件**规则：一方是 updateurl::、另一方不是 → 永远保留非 updateurl:: 那方。
+    // 双方都是 updateurl:: → 沿用原来的版本/质量裁决（它们都是追更来的，同类相残）。
+    //
+    // ⚠️ 这条规则**只**作用于「同名裁决」。同内容重复（dupContent）另有口径：
+    //   内容一样时保留谁都无所谓（脚本功能完全相同），不在这条规则管辖范围内。
+    if (isUpdateUrlEntry(a) !== isUpdateUrlEntry(b)) {
+      return !isUpdateUrlEntry(a)
+    }
     const da = a && a.deep && a.deep.checkedAt ? a.deep : null
     const db = b && b.deep && b.deep.checkedAt ? b.deep : null
     if (da && db) {
@@ -2163,7 +2606,11 @@ class Hunter {
         // 音乐生态白名单（内置 + config.trustedObfDomains 自定义）→ 自动写入信任指纹放行。
         // 局限如实：混淆脚本可条件触发恶意行为，沙箱一轮实测看不见——自动信任是初筛
         // 自动化而非安全结论，条目打 obfAutoTrust 标注可追溯，内容更新自动重新隔离。
-        if (cfg.autoTrustCleanObf !== false && e.contentHash && !trustedHashes.includes(e.contentHash) && e.deep && e.deep.checkedAt) {
+        // ⚠️ 试跑（probeOnly）产出的 deep 必须视为「没有 deep」，绝不能进自动信任。
+        // 否则「隔离区点一次试跑 → 下次扫描自动写入 trustedObfHashes → 永久放行」，
+        // 用户全程没确认过，与「不自动帮用户启用」的红线直接冲突。
+        // 这个条件是本条自动信任路径的**唯一入口闸门**，不要因为「反正是 allow 档」删掉它。
+        if (cfg.autoTrustCleanObf !== false && e.contentHash && !trustedHashes.includes(e.contentHash) && e.deep && e.deep.checkedAt && !isProbeOnlyDeep(e)) {
           // P-1432 OPT-1 / v1.10.8：判据收敛到 checker.classifyQuarantineTrust 单一来源，
           // 不再在这里抄第三份「spin/selfSched/eval 任一命中」的字面量。
           // 自动信任是**无人确认**的自动化路径，因此只认 allow 档（零可疑特征）——
@@ -2193,7 +2640,7 @@ class Hunter {
         e.status = 'quarantined'
         e.quarantined = true
         e.usable = false
-        e.error = '混淆隔离：重度混淆脚本，已移入「混淆隔离」区，可在该页信任后放行'
+        e.error = '混淆隔离：重度混淆脚本，已移入「混淆隔离」区（可在该页点「试跑一次」看实测，或直接信任后放行）'
         rejected++
         this.emit('source-updated', e)
         continue
@@ -2203,7 +2650,7 @@ class Hunter {
     if (rejected) {
       list.length = 0
       list.push(...kept)
-      this.log(`${phase}隔离 ${rejected} 条重度混淆脚本（已移入「混淆隔离」区，可在该页信任后放行）`, '安全', 'warn')
+      this.log(`${phase}隔离 ${rejected} 条重度混淆脚本（已移入「混淆隔离」区，可在该页「试跑一次」看实测或直接信任后放行）`, '安全', 'warn')
       this.store.saveDb()
     }
     if (autoTrusted) {
@@ -2272,13 +2719,115 @@ class Hunter {
         e.status = 'quarantined'
         e.quarantined = true
         e.usable = false
-        e.error = '混淆隔离：重度混淆脚本，已移入「混淆隔离」区，可在该页信任后放行'
+        e.error = '混淆隔离：重度混淆脚本，已移入「混淆隔离」区（可在该页点「试跑一次」看实测，或直接信任后放行）'
       }
       this.log(`已取消信任「${name}」${(e.obfLevel === 'high' && cfg.excludeHighRiskObfuscated) ? '，重新移入混淆隔离区' : ''}`, '安全', 'info')
     }
     this.emit('source-updated', e)
     this.store.saveDb()
     return { id: e.id, trusted: !!trust, status: e.status, usable: e.usable, trustedHashes: hashes.length }
+  }
+
+  /**
+   * 隔离区「试跑一次」（v1.13.12）——**只实测，不信任**。
+   *
+   * ============================================================================
+   * 解决的是什么问题
+   * ============================================================================
+   * 混淆闸门把高危脚本移入隔离区后会 `continue` 跳过深检（hunter.js 的 applyObfGate），
+   * 而 R6 判 trust 的硬门槛是「深检可用平台数 >= 1」，深检又只在 `status === 'ok'` 时触发。
+   * 于是：要信任 → 需 R6 判 trust → 需有实测 → 需先信任。永久成环。
+   * 更荒唐的是这条环把举证责任全推给用户：**先信任才能验证，而验证本该是信任的前提**。
+   *
+   * 这个入口就是拆环的那一下：让用户在**不签字**的前提下看到「这个脚本到底能不能出链接」。
+   *
+   * ============================================================================
+   * 三条硬约束（改这个函数前务必读懂，否则会造出绕过用户确认的暗道）
+   * ============================================================================
+   *   ① 绝不改 `status` / `quarantined` / `usable` / `obfTrusted` —— 试跑完条目仍在隔离区；
+   *   ② 绝不写 `trustedObfHashes` —— 这是「用户签字」的落点，只有 trustObfSource 能碰；
+   *   ③ 绝不调 `dedupe()` —— 试跑不参与裁决，不推动任何自动流程。
+   *
+   * 产出 `deep.probeOnly = true`，配合 checker.isProbeOnlyDeep 做到数据层隔离：
+   *   - `classifyQuarantineTrust` 把 probeOnly 的 deep 当「没有 deep」→ 档位不会被降级；
+   *   - `applyObfGate` 的自动信任路径同样跳过 probeOnly；
+   *   - R6 会看到这份实测，但 prompt 里会明确标注「这是试跑，不代表已信任」。
+   * 三者缺一，就会出现「试跑一次 → 下一轮自动放行」。
+   *
+   * @param {string} id 条目 id
+   * @param {object} [opts] { confirmBlock:boolean, budget:object } 由调用方（IPC 层）负责确认与配额
+   * @returns {Promise<object>} 试跑结果摘要（供 UI 展示，不含任何状态变更）
+   */
+  async probeQuarantined(id, opts) {
+    const o = opts || {}
+    const e = this.store.db.sources[id]
+    if (!e || e.deprecated) throw new Error('音源不存在或已废弃')
+    const code = typeof e.code === 'string' ? e.code : ''
+    if (!code) throw new Error('该条目没有本地脚本正文，无需试跑：直接点检测即可')
+    // 只对隔离中的条目开放。非隔离条目走常规检测，避免这里变成第二个检测入口
+    const inQuarantine = e.status === 'quarantined' || e.quarantined === true
+    if (!inQuarantine) throw new Error('该条目不在隔离区，请直接使用常规检测')
+
+    const cfg = this.store.config
+    const cls = classifyQuarantineTrust(e, cfg)
+    // block 档（有 CPU 空转死循环特征等）必须二次确认：这类脚本试跑可能吃满一个核。
+    // 判档仍走 classifyQuarantineTrust 单一来源，这里不抄字面量。
+    if (cls.level === 'block' && !o.confirmBlock) {
+      const err = new Error('该脚本有空转死循环特征，试跑可能吃满 CPU。需要二次确认后再试跑。')
+      err.code = 'NEED_CONFIRM_BLOCK'
+      err.qzLevel = cls.level
+      err.qzReasons = cls.reasons
+      throw err
+    }
+
+    const started = Date.now()
+    const name = e.lxName || e.scriptName || e.name || id
+    this.emit('probe-start', { id, name, qzLevel: cls.level })
+    let deep
+    try {
+      deep = await deepCheck(e, code, cfg, (t, p) => this.emit(t, p), () => this.cancelRequested)
+    } catch (err) {
+      this.emit('probe-done', { id, name, ok: false, error: String(err && err.message || err) })
+      throw err
+    }
+    // 打标记：这份 deep 是试跑产出，任何自动化判定都必须当它不存在
+    deep.probeOnly = true
+    deep.probeAt = Date.now()
+
+    // 只落 deep 这一个字段。status/quarantined/usable/obfTrusted 一个都不碰。
+    e.deep = deep
+    e.probe = {
+      at: deep.probeAt,
+      usableN: usableCount(e),
+      qzLevel: cls.level,
+      ms: Date.now() - started
+    }
+    this.store.saveDb()
+
+    const usableN = usableCount(e)
+    const plats = deep.platforms || {}
+    const summary = {
+      id: e.id,
+      name,
+      probeOnly: true,
+      qzLevel: cls.level,
+      loadable: !!deep.loadable,
+      inited: !!deep.inited,
+      usableN,
+      platforms: Object.keys(plats).map(k => ({
+        platform: k,
+        status: (plats[k] && plats[k].status) || 'unknown',
+        message: String((plats[k] && plats[k].message) || '').slice(0, 200)
+      })),
+      ms: Date.now() - started,
+      // 明确告诉 UI：试跑没有改变任何状态，条目仍在隔离区
+      stillQuarantined: true,
+      trustedHashesUnchanged: true
+    }
+    this.log(`隔离区试跑「${name}」完成：实测可用平台 ${usableN} 个（仅查看，未信任、未放行）`, '安全', 'info')
+    this.emit('probe-done', summary)
+    this.emit('source-updated', e)
+    return summary
   }
 
   async runCheck(ids, opts) {
@@ -2429,7 +2978,7 @@ class Hunter {
               }
               e.deprecated = true
               e.dupOf = twin.entry.id
-              e.dupReason = '同内容重复'
+              e.dupReason = DUP_REASON.SAME_CONTENT
               e.usable = false
               depInline++
             } else {
@@ -2473,7 +3022,10 @@ class Hunter {
                   // 双方留待检测收尾的「同名并存自动深检」收敛（doujs r2 实测：限流瞬间的
                   // 3/5 vs 5/5 会被 quick 证据当场废掉可救产物）
                   if (this._deepIncomplete(prev.entry) || this._deepIncomplete(e)) continue
-                  const keep = this.betterKeeper(prev.entry, e) ? prev.entry : e
+                  // ⚠️ R9 硬规则：真音源不因同名对决被追更链条目挤掉
+                  //   （betterKeeper 内部已有该规则，这里是「即时去重」这条独立路径的兜底）
+                  const hardKeep = preferRealSource(prev.entry, e)
+                  const keep = hardKeep || (this.betterKeeper(prev.entry, e) ? prev.entry : e)
                   const drop = keep === prev.entry ? e : prev.entry
                   delete drop.checking   // P-1432：被废条目若残留检测中标记一并清掉，避免状态卡「检测中…」
                   if (drop.usable) usable--
@@ -2482,7 +3034,7 @@ class Hunter {
                   drop.dupOf = keep.id
                   // 可用度裁决的措辞：被废方实测失效而保留方可用 → 说明是「失效让位」
                   drop.dupReason = (drop.deep && drop.deep.checkedAt && usableCount(drop) === 0 && usableCount(keep) > 0)
-                    ? '同名版本（此版本已失效）' : '同名旧版本'
+                    ? DUP_REASON.VERSION_DEAD : DUP_REASON.OLD_VERSION
                   depInline++
                   nameByNorm[nmKey] = { entry: keep, deep: keep.deep }
                   this.emit('source-updated', drop)
@@ -2700,7 +3252,7 @@ class Hunter {
       const drop = keep === prev ? e : prev
       drop.deprecated = true
       drop.dupOf = keep.id
-      drop.dupReason = '同内容重复'
+      drop.dupReason = DUP_REASON.SAME_CONTENT
       drop.usable = false
       byHash[e.contentHash] = keep
       this.emit('source-updated', drop)
@@ -3825,18 +4377,73 @@ class Hunter {
 
   /**
    * P-1432（v1.13.8）：合并沙箱收集的更新信号到条目（按 url 去重，保留最新 msg/at）。
+   *
+   * R9（v1.13.15）：写入前做**纵深校验**——只接受「协议合法 + 域名格式合法 + 非私网/回环」
+   * 的 tip.url。理由：updateTip 是**沙箱里的脚本**上报的，而沙箱正是恶意脚本的地盘；
+   * 伪造的 tip.url 会被 _followUpdateTips 下载并 store.addSources() + saveDb()，
+   * 等于让沙箱里的脚本往用户的音源库里注入任意内容（这不是「作者换域名」的问题，
+   * 是「攻击者能往库里塞东西」）。
+   *
+   * 这一层是**纵深**：只做格式/私网/回环的硬校验（零维护、零误伤），
+   * 「这个域名是不是这个音源自己的」由 _followUpdateTips 的已知域名集合把关
+   * （那层知道具体是哪个音源、它的 apiHosts 是什么）。
+   *
+   * ⚠️ 关键：写入阶段**只丢这一条 tip**，绝不中断整轮合并——
+   * 一条坏 tip 不能让其它正常更新提示（以及整个检测流程）失败。
    */
   _mergeUpdateTips(e, tips) {
     if (!tips || !tips.length) return
     const cur = Array.isArray(e.updateTips) ? e.updateTips : []
+    let dropped = 0
     for (const t of tips) {
       if (!t || !t.url) continue
+      const v = checkUpdateTipUrl(t.url)
+      if (!v.ok) {
+        dropped++
+        this.log(`更新提示的地址未通过校验（${v.why}），已丢弃这一条更新提示：${String(t.url).slice(0, 80)}`, '采集', 'warn')
+        continue
+      }
       const prev = cur.find(x => x.url === t.url)
       if (prev) { prev.msg = t.msg || prev.msg; prev.at = t.at || prev.at }
       else cur.push({ url: String(t.url), msg: String(t.msg || ''), at: t.at || Date.now() })
     }
     e.updateTips = cur.slice(-5)
+    if (dropped) this.log(`更新提示合并：本轮 ${tips.length} 条里有 ${dropped} 条地址不合法被丢弃，其余正常合并`, '采集', 'warn')
     this.emit('source-updated', e)
+  }
+
+  /**
+   * R9 第③层：域名解析结果的可信度检查（通配 DNS / 解析到私网）。
+   *
+   * 为什么第①②层不够：URL 里的域名形状合法、TLD 是真字母，不等于它解析到公网。
+   *  - 通配 DNS 服务（localtest.me / nip.io …）把**任意**子域解析到 127.0.0.1；
+   *  - 自建域名可以把 A 记录指向 10.x / 192.168.x。
+   * 这两种都能让「下载到的东西」来自本机/内网。
+   *
+   * 口径（重要）：
+   *  - **解析失败（NXDOMAIN / DNS 抖动）→ 放行**。真实追更域名解析失败时下载本来也会失败，
+   *    拦下来只是把「网络抖动」变成「音源被静默拒绝」，误伤代价更大。
+   *  - 解析成功但指向私网/回环 → **拦截**（硬判据，复用 outbound-policy.checkOutbound）。
+   *
+   * ⚠️ 残余风险（明确接受，本轮不解决）：**DNS rebinding**。
+   *   这里解析出来的 IP 与 fetch 实际连的 IP 之间仍可能不同——攻击者控制的 DNS
+   *   可以第一次应答给公网 IP（通过校验）、第二次应答给 127.0.0.1（实际连接）。
+   *   要根治必须把「解析出的 IP」钉死到连接上（自定义 lookup / 固定 IP 连接），
+   *   那是部署层 R6「DNS 受控解析器」的事，不在代码层这轮范围内。
+   *
+   * @param {string} host 归一化主机名
+   * @returns {Promise<{ok:boolean, why:string}>}
+   */
+  async _checkUpdateTipResolvedIp (host) {
+    const r = await resolveHostIps(host)
+    if (!r.ok || !r.ips.length) {
+      // 解析失败：放行（理由见上方口径说明），但记一条日志便于事后追溯
+      this.log(`updateUrl 域名 ${host} 解析失败（${r.err || '无应答'}），按「不拦截」处理；若该域名本应可用，可能是本机 DNS 故障`, '采集', 'warn')
+      return { ok: true, why: '' }
+    }
+    const v = checkUpdateTipResolvedIp(host, r.ips)
+    if (!v.ok) return v
+    return { ok: true, why: '' }
   }
 
   /**
@@ -3849,6 +4456,14 @@ class Hunter {
    *  - 入库后走既有全管线：检测（混淆闸门/域名画像）→ 同名裁决（版本高+质量不劣 → 删旧装新）。
    * updateUrl 是脚本作者指定的任意地址，但下载内容过全部既有闸门，无新增信任面。
    * 预算：单条 20s / 整轮 3 分钟 / 上限 10 条；开关 cfg.autoFollowScriptUpdate（默认开）。
+   *
+   * R9（v1.13.15）：**下载前**加域名校验（详见文件上方 R9 说明块）。
+   *   - 第①层 checkUpdateTipUrl：协议 / 域名格式 / 私网回环（硬校验，与音源无关）；
+   *   - 第②层 checkUpdateTipHostBelongsTo：域名必须属于「这个音源自己」
+   *     （取该条目 apiHosts / obfDomains / homepage / 脚本地址的域名集合）。
+   *   任一层不过 → **记日志并跳过这一条**，**绝不断言整轮**（其它 tip 继续处理）。
+   *   ⚠️ 被跳过的 tip **不**记进 followedUpdateUrls：它没被成功跟进，
+   *   下轮检测时若音源更新了已知域名，还能再试一次。
    */
   async _followUpdateTips(cfg) {
     const items = this.store.getSources().filter(e => !e.deprecated && Array.isArray(e.updateTips) && e.updateTips.length)
@@ -3857,25 +4472,68 @@ class Hunter {
     const MAX = 10
     const startedAt = Date.now()
     let followed = 0
+    let skipped = 0
     const hashes = new Set(Object.values(this.store.db.sources || {}).map(x => x && x.contentHash).filter(Boolean))
     for (const e of items) {
       e.followedUpdateUrls = Array.isArray(e.followedUpdateUrls) ? e.followedUpdateUrls : []
+      // 该音源自己的已知域名集合（一次算好，本条目所有 tip 共用）
+      const known = knownHostsForEntry(e)
       for (const tip of e.updateTips) {
+        if (!tip || !tip.url) continue
         if (e.followedUpdateUrls.includes(tip.url)) continue
         if (this.cancelRequested) return
         if (followed >= MAX || Date.now() - startedAt > TOTAL_BUDGET_MS) {
           this.log(`updateUrl 追更停止（预算/上限，已跟进 ${followed} 条），其余下次检测继续`, '采集', 'warn')
           return
         }
+        // ── R9：下载前校验（两层）──
+        const v = checkUpdateTipUrl(tip.url)
+        if (!v.ok) {
+          skipped++
+          this.log(`updateUrl 追更跳过：更新地址未通过校验（${v.why}）→ 不下载（来自「${e.lxName || e.scriptName || e.name}」）`, '采集', 'warn')
+          continue
+        }
+        const own = checkUpdateTipHostBelongsTo(e, v.host, known)
+        if (!own.ok) {
+          skipped++
+          this.log(`updateUrl 追更跳过：更新地址的域名不是该音源自己的（${own.why}）→ 不下载（来自「${e.lxName || e.scriptName || e.name}」）`, '采集', 'warn')
+          continue
+        }
+        // 第③层：解析后 IP 私网判定（通配 DNS / 自建 A 记录指向内网）
+        const ipCheck = await this._checkUpdateTipResolvedIp(v.host)
+        if (!ipCheck.ok) {
+          skipped++
+          this.log(`updateUrl 追更跳过：更新地址的域名解析结果不可信（${ipCheck.why}）→ 不下载（来自「${e.lxName || e.scriptName || e.name}」）`, '采集', 'warn')
+          continue
+        }
         followed++
         this.log(`updateUrl 追更：「${e.lxName || e.scriptName || e.name}」拉取 ${tip.url.slice(0, 60)}…`, '采集', 'info')
         let text = ''
         try {
-          const r = await crawlFetch(tip.url, { timeoutMs: 15000 })
-          if (!r.res || !r.res.ok) { this.log(`updateUrl 追更拉取失败（HTTP ${r.status || '?'})→ 下轮重试`, '采集', 'warn'); continue }
+          // ⚠️ R9：必须**逐跳校验**。默认 fetch 会自动跟随重定向，
+          //   那样第②层只在第一跳生效——攻击者让第一跳（合法域）302 到自己的域就绕过了。
+          //   这里用 redirect:'manual' 自己跟，每一跳都重跑全部三层校验。
+          const guard = async (hopUrl) => {
+            const hv = checkUpdateTipUrl(hopUrl)
+            if (!hv.ok) return { ok: false, why: '第①层: ' + hv.why }
+            const hown = checkUpdateTipHostBelongsTo(e, hv.host, known)
+            if (!hown.ok) return { ok: false, why: '第②层: ' + hown.why }
+            const hip = await this._checkUpdateTipResolvedIp(hv.host)
+            if (!hip.ok) return { ok: false, why: '第③层: ' + hip.why }
+            return { ok: true, why: '' }
+          }
+          const r = await crawlFetch(tip.url, { guard }, 15000)
+          if (!r.res || !r.res.ok) { this.log(`updateUrl 追更拉取失败（HTTP ${r.res && r.res.status || '?'}）→ 下轮重试`, '采集', 'warn'); continue }
           text = String(await r.res.text()).slice(0, 1024 * 1024)
         } catch (err) {
-          this.log(`updateUrl 追更拉取异常（${String((err && err.message) || err).slice(0, 60)}）→ 下轮重试`, '采集', 'warn')
+          const why = String((err && err.message) || err)
+          if (err && err.code === 'REDIRECT_BLOCKED') {
+            this.log(`updateUrl 追更跳过：重定向目标未通过校验（${why}）→ 不下载（来自「${e.lxName || e.scriptName || e.name}」）`, '采集', 'warn')
+          } else if (err && err.code === 'REDIRECT_TOO_MANY') {
+            this.log(`updateUrl 追更跳过：重定向跳数过多（${why}）→ 不下载（来自「${e.lxName || e.scriptName || e.name}」）`, '采集', 'warn')
+          } else {
+            this.log(`updateUrl 追更拉取异常（${why.slice(0, 60)}）→ 下轮重试`, '采集', 'warn')
+          }
           continue
         }
         const isScript = /@name\s+(.+)/.test(text.slice(0, 5000)) || /lx\.on\s*\(|lx\.send\s*\(|EVENT_NAMES/.test(text.slice(0, 5000)) || /lx\.on\s*\(/.test(text)
@@ -3900,6 +4558,7 @@ class Hunter {
       this.store.saveDb()
     }
     if (followed) this.log(`updateUrl 追更完成：跟进 ${followed} 条更新信号`, '采集', 'info')
+    if (skipped) this.log(`updateUrl 追更：本轮有 ${skipped} 条更新信号因地址不合法/不属于该音源被跳过（已记日志，不影响其它条目）`, '采集', 'warn')
   }
 
   /**
@@ -4899,4 +5558,9 @@ class Hunter {
   }
 }
 
-module.exports = { Hunter, normName, identityMismatch, formatIntervalHours, patrolSchedule, renameSelfCheck, versionNum, patrolAutoDeleteWanted, buildPatrolItems, buildRepoSeeds, rankRepoSeeds, replaceRetryDelay, REPLACE_UPLOAD_POLL_MS }
+module.exports = { Hunter, normName, identityMismatch, formatIntervalHours, patrolSchedule, renameSelfCheck, versionNum, patrolAutoDeleteWanted, buildPatrolItems, buildRepoSeeds, rankRepoSeeds, replaceRetryDelay, REPLACE_UPLOAD_POLL_MS, DUP_REASON, DUP_REASON_MARK,
+  // R9（v1.13.15）：追更链域名校验的纯函数（供测试直接验证，不依赖 Hunter 实例）
+  checkUpdateTipUrl, knownHostsForEntry, checkUpdateTipHostBelongsTo, isSameSiteHost, isValidPublicHostShape,
+  // R9（v1.13.15）：通配 DNS 封堵 + 解析后 IP 判定 + updateurl:: 硬规则的判定函数
+  isWildcardDnsHost, WILDCARD_DNS_SUFFIXES, checkUpdateTipResolvedIp,
+  isUpdateUrlEntry, preferRealSource, UPDATE_URL_ID_PREFIX }
