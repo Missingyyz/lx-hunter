@@ -323,7 +323,7 @@ function genR7 (raw, opts) {
   return { cases, stats, excluded, noHashEntries: noHashEntries.length }
 }
 
-module.exports = { genR7, scrubText, deepSummary, usableCount, obfHitsText, pickRepresentative, zoneFor, normSources }
+module.exports = { genR7, scrubText, scrubList, deepSummary, usableCount, obfHitsText, pickRepresentative, zoneFor, normSources }
 
 // ---------- CLI ----------
 if (require.main === module) {

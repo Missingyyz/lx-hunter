@@ -19,6 +19,7 @@ const zlib = require('zlib')
 const { Store } = require('../core/store')
 const { Hunter, formatIntervalHours, patrolSchedule } = require('../core/hunter')
 const { getActiveService, getService, resolveService, TYPE_LABELS, NO_ACCOUNT_ERR } = require('../core/services')
+const { makeProbeQueue } = require('../core/probeQueue')
 const { createUpdater } = require('../core/sourceUpdate')
 
 const { DEFAULT_REPOS } = require('../core/crawler')
@@ -392,7 +393,16 @@ route('POST', '/api/config', guard(async (req, res, ctx) => {
   }
   const prevProxy = store.config.crawlProxy
   const prevPolicy = store.config.proxyPolicy
-  store.saveConfig(ctx.body)
+  // S3（2026-11-19）：写盘失败必须让调用方知道。
+  // store._write 返回 true/false（磁盘满 / 目录权限不足 → false），
+  // 原来这里**忽略返回值**，等于用户点了「保存」而配置根本没落盘，
+  // 界面上还显示成功——典型的静默失败（同一问题 main/index.js:292 已修）。
+  // 这里按本文件既有约定处理：记 error 级日志 + 抛错，
+  // 由 guard() 统一包成 {ok:false,error:...}（并打上 X-Lxh-Error 头）。
+  if (store.saveConfig(ctx.body) === false) {
+    pushLog({ msg: '配置写盘失败（磁盘空间或目录权限不足），本次设置没有保存成功', module: '系统', level: 'error', at: Date.now() })
+    throw new Error('配置写盘失败（磁盘空间或目录权限），这次修改没有保存成功')
+  }
   const netmod = require('../core/net')
   // 换了代理地址或策略，旧的失败计数/冷却不该继承
   if (store.config.crawlProxy !== prevProxy || store.config.proxyPolicy !== prevPolicy) netmod.resetProxyHealth()
@@ -837,6 +847,16 @@ route('POST', '/api/check', guard(async (req, res, ctx) => await hunter.runCheck
 // v1.12.0 第三方探针对照（报告层只读）：按 sha256 对齐库内 contentHash，产出「我们 vs 对方」差异报告
 // 混淆隔离：信任/取消信任（v1.10.7）——body {id, trust}
 route('POST', '/api/sources/trust-obf', guard(async (req, res, ctx) => await hunter.trustObfSource(String((ctx.body || {}).id || ''), !!(ctx.body || {}).trust)))
+// 隔离区「试跑一次」（v1.13.13）：只实测、不信任，跑完条目仍在隔离区。
+// A1 修复：桌面端有这条通道，Web 端原先**没有**——但界面上的「试跑一次」按钮照样渲染，
+// 点了必然失败（web-bridge 没这个方法 → 前端报「试跑失败」）。补上路由让两端行为一致。
+// block 档需要 confirmBlock=true 二次确认，缺了 hunter 会抛 NEED_CONFIRM_BLOCK（前端据此弹确认）。
+// 配额/串行走 core/probeQueue（与桌面 IPC 同一份实现，避免两端漂移）。
+const probeQueue = makeProbeQueue()
+route('POST', '/api/sources/probe-quarantined', guard(async (req, res, ctx) => {
+  const b = ctx.body || {}
+  return await probeQueue.run(() => hunter.probeQuarantined(String(b.id || ''), { confirmBlock: !!b.confirmBlock }))
+}))
 route('POST', '/api/hash', guard(async (req, res, ctx) => await hunter.runHash(ctx.body.ids)))
 // v1.8.0：body.platformIds 可显式指定灌入目标（不给则用设置里标记「参与批量灌入」的账号）
 route('POST', '/api/import', guard(async (req, res, ctx) => await hunter.runImport(ctx.body.ids, { platformIds: ctx.body.platformIds })))

@@ -2,6 +2,7 @@
 /** 音源检测：下载 → 疑似识别 → vm 沙箱深度检测（真实取链 + 音频魔数校验） */
 const crypto = require('crypto')
 const { Sandbox } = require('./sandbox')
+const { SandboxProcess } = require('./sandbox-process')
 const { crawlFetch, readText, fetchAnyWithTimeout, describeNetError, dohLookup, UA } = require('./net')
 // 单一来源：音质档位 → 能力分只由 quality.js 定义。
 // quality.js 不 require checker，无循环依赖。
@@ -136,12 +137,70 @@ function scoreEntry(path, content) {
 function classifyEntry(path, content) { return scoreEntry(path, content) >= 4 }
 
 /**
+ * 判断一个 Unicode 码点是不是「汉字」（CJK）。
+ *
+ * 覆盖两个最常见的块：
+ *  - U+4E00-U+9FFF  CJK 统一表意文字（基本区，绝大多数汉字在此）
+ *  - U+3400-U+4DBF  CJK 扩展 A（罕用字/生僻字，真实音源脚本里也出现过）
+ *
+ * 为什么需要它（v1.13.15）：洛雪音源脚本**普遍**把中文写成 \uXXXX 转义
+ * （豆包定制 v9.1.0 聚合源实测：3197 个转义里 93.6% 是汉字）。
+ * 老口径把**所有** \uXXXX 都算成混淆指标 → 那个源 perKbUni=9.23（阈值 8）
+ * → 正常音源被判 high → 被误隔离。汉字转义是「作者把中文写成转义」的正常写法，
+ * 不是藏代码，必须与真正的转义混淆分开计数。
+ *
+ * ⚠️ 注意本函数只回答「是不是汉字」，**不参与任何阈值判定**；
+ * 阈值（HIGH_UNI / MID_UNI）一律保持原值，只改统计口径。
+ *
+ * @param {number} cp Unicode 码点
+ * @returns {boolean}
+ */
+function isCjkCodePoint (cp) {
+  if (!Number.isFinite(cp)) return false
+  if (cp >= 0x4e00 && cp <= 0x9fff) return true   // CJK 统一表意文字（基本区）
+  if (cp >= 0x3400 && cp <= 0x4dbf) return true   // CJK 扩展 A
+  return false
+}
+
+/**
+ * 数一数「非 CJK 的 \uXXXX 转义」有多少个。
+ *
+ * 为什么要分字符类别（v1.13.15）：
+ *   洛雪音源脚本**普遍**把中文写成 \uXXXX 转义（豆包定制 v9.1.0 聚合源实测：
+ *   3197 个转义里 93.6% 是汉字）。老口径把**所有** \uXXXX 都算成混淆指标，
+ *   那个正常音源 perKbUni=9.23（阈值 8）→ 被判 high → 被误隔离。
+ *   汉字转义是「作者把中文写成转义」的正常写法，不是藏代码；
+ *   真正用来藏代码的转义是 \u0072\u0065\u0071… 这类 **ASCII 码点**。
+ *
+ * @param {string} t 源码全文
+ * @returns {number} 非 CJK 的 \uXXXX 转义个数
+ */
+function countNonCjkUniEscape (t) {
+  const s = String(t || '')
+  if (!s) return 0
+  const re = /\\u([0-9a-fA-F]{4})/g
+  let m
+  let n = 0
+  while ((m = re.exec(s))) {
+    if (!isCjkCodePoint(parseInt(m[1], 16))) n++
+  }
+  return n
+}
+
+/**
  * 混淆风险评估（v1.7.1，依据 lx-ikun-music-sources issue#8 的科普）：
  * 音源脚本没必要混淆 —— 混淆的主要用途是藏代码（木马/后门/统计上报）。
  * 用三类特征判级，阈值按实测样本标定（23 个真实音源扫描）：
  *  - _0x 十六进制变量名：重混淆样本 37~52 个/KB，良性偶用 < 1 个/KB
  *  - \uXXXX unicode 转义：独家V5 样本 14 个/KB，正常脚本 ≈ 0
  *  - 阿拉伯/异体 Unicode 字符（参与运算的小语种字符）：独家V5 47 个/KB，正常 ≈ 0
+ *
+ * v1.13.15 修正「\uXXXX 转义」这一项的**统计口径**（不动任何阈值）：
+ * 真实洛雪音源脚本普遍把中文写成 \uXXXX 转义（豆包定制 v9.1.0 聚合源实测
+ * 3197 个转义里 93.6% 是汉字，perKbUni=9.23 越过 HIGH_UNI=8 → 正常音源被隔离）。
+ * 现在**只有非 CJK 的 \uXXXX 才计入混淆指标**：汉字转义是作者的正常写法，
+ * 真正用来藏代码的转义（\u0072\u0065\u0071… 这类 ASCII 码点）照旧计数。
+ * 阈值 HIGH_UNI=8 / MID_UNI=1 **一个都没改**，只改「数哪些」。
  *
  * v1.9.5 增补「反调试 / 自调度」硬特征（依据 2026-10-15 NAS CPU 占用定位实测）：
  * lxserver 上 44 音源实例单核 60%+、内存 513MB，二分定位到 jsjiami.com.v7 混淆的
@@ -167,7 +226,12 @@ function obfuscationRisk(content) {
   const kb = t.length / 1024
   const count = re => (t.match(re) || []).length
   const n0x = count(/_0x[0-9a-f]{4,6}/gi)
-  const nUni = count(/\\u[0-9a-fA-F]{4}/g)
+  // \uXXXX 转义：按**解码后的字符类别**分开计数（v1.13.15）。
+  //   只把**非 CJK** 的转义（真正用来藏代码的：\u0072\u0065\u0071… 这类 ASCII 码点）
+  //   计入混淆指标 nUni；CJK（汉字）转义是洛雪音源脚本的正常写法，**不计入**。
+  // ⚠️ hits 的**结构一个字都不能变**（对外接口契约，见 obfuscationRisk 的注释），
+  //   所以 CJK 的计数不进 hits，只在本函数内部用于判定。
+  const nUni = countNonCjkUniEscape(t)
   const nExotic = count(/[\u0600-\u06FF\uFB50-\uFEFF]/g)
   // eval / new Function 动态执行：混淆脚本的常用执行出口，单独计数供 tooltip
   const nEval = count(/\beval\s*\(|new\s+Function\s*\(/g)
@@ -576,6 +640,65 @@ async function testPlatform(sb, src, cfg, onEvent, bail, displayName, def) {
 
 /** 沙箱深度检测：初始化脚本 + 平台真实取链
  *  - quickCheck（默认开）：拿到第一个可用平台即通过，剩余平台标记跳过，大幅提速
+/**
+ * 创建检测用沙箱（v1.13.14）：优先用 **--permission 子进程**，失败才降级回 vm。
+ *
+ * 为什么默认走子进程：vm 加固的验证成本不可穷尽（四次复核各发现一类新漏点），
+ * 而 `--permission` 是运行时级边界，逃逸成功后 fs/child_process 仍然被拒。
+ * 容器 A/B 实测：同一攻击脚本，关掉 permission 时能读 /data/config.json、
+ * 能写文件、能 execSync；打开后逃逸照样成功但**什么都干不了**，且检测功能正常。
+ *
+ * 降级策略：子进程起不来（平台不支持 --permission、Node 版本过老、worker 缺失）
+ * 时退回 vm 版，但必须**明确告警**——不能让用户以为还有操作系统级隔离。
+ *
+ * @param {object} opts Sandbox / SandboxProcess 的同名选项
+ * @param {(msg:string)=>void} warn 告警出口（上层一般接 onEvent）
+ */
+function makeSandbox(opts, warn) {
+  const o = opts || {}
+  // 显式指定后端（仅测试/对照用）：
+  //   'vm'                   → 进程内 vm（旧生产实现）
+  //   'process'              → 子进程 + --permission（新生产实现，默认）
+  //   'process-nopermission' → 子进程但不加 --permission（A/B 对照的基准组）
+  const force = o.backend
+  if (force !== 'vm') {
+    try {
+      const spOpts = Object.assign({}, o)
+      if (force === 'process-nopermission') spOpts.noPermission = true
+      // 子进程后端：全平台都超时 = 脚本整体卡死，累计若干次后收掉子进程省 CPU。
+      // 为什么不是「一超时就杀」：实测（tests/sandbox-timeout-kill.test.js A/B）
+      // 同一脚本里若一个平台异步挂起、另一个正常可用，杀了进程会把可用平台一起废掉
+      // （usable → failed），等于把「一条平台慢」升级成「整条音源不可用」。
+      // PLATFORMS 共 5 个，取 4 次：留一次余量，避免 4 平台脚本被误杀。
+      if (spOpts.killAfterTimeouts == null) spOpts.killAfterTimeouts = 4
+      // 堆上限：默认不设（会误伤吃内存的混淆源，见 heap-eval 实测）。
+      // 显式配置才生效，便于按实测数据决定。
+      if (spOpts.maxOldSpaceMb == null && Number(o.maxOldSpaceMb) > 0) {
+        spOpts.maxOldSpaceMb = Number(o.maxOldSpaceMb)
+      }
+      return new SandboxProcess(spOpts)
+    } catch (e) {
+      if (warn) {
+        warn('本次检测无法启用操作系统级隔离（子进程启动失败：' +
+          String((e && e.message) || e).slice(0, 120) + '），已降级为进程内沙箱')
+      }
+    }
+  }
+  return new Sandbox(o)
+}
+
+/**
+ * 检测沙箱子进程是否真的带上了 --permission（供自检与测试断言）。
+ * 降级到 vm 时返回 null（没有子进程）。
+ */
+function sandboxIsolation(sb) {
+  if (!sb || !sb.child) return null
+  const argv = (sb.child.spawnargs || []).join(' ')
+  return { pid: sb.child.pid, hasPermission: /--permission\b/.test(argv), argv }
+}
+
+/**
+ * 深度检测：在沙箱里执行脚本本体 + 逐平台真实取链。
  *  - 脚本未注册的平台直接跳过，不发请求
  *  - 结果记录内容指纹 hash，供「跳过已检测且内容未变」使用 */
 async function deepCheck(entry, code, cfg, onEvent, shouldStop) {
@@ -588,13 +711,23 @@ async function deepCheck(entry, code, cfg, onEvent, shouldStop) {
   let sb = null
   let recovered = false
   try {
-    sb = new Sandbox({
+    sb = makeSandbox({
       id: entry.id,
       fetchTimeout: cfg.timeoutMs,
       dispatchTimeout: Number(cfg.linkTimeoutMs) || 20000,
       initGraceMs: Number(cfg.initGraceMs) || 4000,
-      initGraceMaxMs: Number(cfg.initGraceMaxMs) || 15000
-    })
+      initGraceMaxMs: Number(cfg.initGraceMaxMs) || 15000,
+      // ⚠ 仅测试用：把「放行私网/回环」透传给沙箱。生产调用链不传这个字段，
+      // 沙箱侧默认阻断（见 outbound-policy.js）。测试需要它是因为靶子服务器都在 127.0.0.x。
+      allowPrivateHosts: cfg.allowPrivateHosts === true,
+      // 显式指定后端（'vm' | 'process'）；生产不传 = 默认子进程
+      backend: cfg.sandboxBackend,
+      // ⚠ 仅 A/B 对照用：关掉 --permission 以等价「旧行为」。
+      // 生产代码**绝不**传它；它的存在是为了让「有没有 permission」成为唯一变量。
+      noPermission: cfg.noPermission === true
+    }, msg => { if (onEvent) onEvent({ type: 'warn', msg }) })
+    // 把隔离状态挂到结果上，便于 UI/日志证明「这次检测有没有操作系统级隔离」
+    result.isolation = sandboxIsolation(sb)
     const initRes = await sb.init(code, {
       name: meta.name, description: meta.description, version: meta.version,
       author: meta.author, homepage: meta.homepage, rawScript: code
@@ -772,12 +905,15 @@ async function probeTopTier(entry, code, cfg, opts) {
   const want = Array.isArray(o.platforms) && o.platforms.length ? o.platforms.slice(0, 2) : null
   let sb = null
   try {
-    sb = new Sandbox({
+    sb = makeSandbox({
       id: (entry && entry.id) || 'tier-probe',
       fetchTimeout: c.timeoutMs,
       dispatchTimeout: Number(c.linkTimeoutMs) || 20000,
       initGraceMs: Number(c.initGraceMs) || 4000,
-      initGraceMaxMs: Number(c.initGraceMaxMs) || 15000
+      initGraceMaxMs: Number(c.initGraceMaxMs) || 15000,
+      allowPrivateHosts: c.allowPrivateHosts === true,
+      backend: c.sandboxBackend,
+      noPermission: c.noPermission === true
     })
     const meta = extractMeta(code) || {}
     const initRes = await sb.init(code, {
@@ -1080,6 +1216,39 @@ function regressionJudge(prevPassed, newPassed, newFailed) {
 }
 
 /**
+ * 判断一份 deep 是否只是「试跑产出」（probeOnly）。
+ *
+ * 背景（v1.13.12 隔离区试跑）：隔离区里的条目被混淆闸门拦下后，深检根本不会跑，
+ * 于是「要信任需 R6 判 trust → R6 要求有实测 → 要实测需先信任」成了死锁。
+ * 解法是给隔离区开一个「只实测、不信任」的试跑入口——它产出的 deep 必须与
+ * 「正式检测」的 deep 严格区分，否则会引出两条绕过用户确认的暗道：
+ *
+ *   ① 自动信任：applyObfGate 看到「有 deep + allow 档 + 域名干净」就自动写入
+ *      trustedObfHashes，以后永久放行。试跑一次 → 系统自动信任 = 用户没确认过。
+ *   ② 档位污染：usableN 从 0 变成 >0，block（要求 usable=0）会自动降成 risky/allow。
+ *      连起来就是「试跑 → 档位降级 → 下一轮自动信任」，两步绕开所有确认。
+ *
+ * 所以凡是「拿 deep 当证据做判定」的地方，都必须先过这个函数。
+ * 试跑结果只给**人**看（隔离页展示实测情况）和给 R6 看（附上「这是试跑」的事实），
+ * 绝不参与任何自动化决策。
+ *
+ * @param {object} e 音源条目
+ * @returns {boolean} true = 这份 deep 是试跑产出，不能当正式证据用
+ */
+function isProbeOnlyDeep(e) {
+  const deep = e && e.deep
+  if (!deep) return false
+  // 只认严格 true。写成 1 / 'true' 会静默退化成「正式证据」——上面那两条暗道就会重新打开，
+  // 而且不报错、不告警，只在某个条目被自动信任时才看得出来。这里直接抛错，让写错的地方
+  // 第一次跑就炸，而不是留到生产里变成一条没人发现的自动放行记录。
+  if (deep.probeOnly != null && deep.probeOnly !== true && deep.probeOnly !== false) {
+    throw new Error('deep.probeOnly 必须是布尔 true（实际为 ' + typeof deep.probeOnly + ': '
+      + String(deep.probeOnly).slice(0, 20) + '）；写成 1/"true" 会让试跑结果被当成正式证据')
+  }
+  return deep.probeOnly === true
+}
+
+/**
  * 隔离区「信任放行」分级（v1.10.8）——**唯一来源**。
  *
  * 背景：以前同一套「命中硬特征即不可信任」被抄了三份（前端 qzHardHits、applyObfGate 的 hardHit、
@@ -1119,7 +1288,11 @@ function classifyQuarantineTrust(e, cfg) {
     : (Number(h.selfSchedCalls) || 0)
 
   const deep = (e && e.deep) || null
-  const deepDone = !!(deep && deep.checkedAt)
+  // 试跑（probeOnly）产出的 deep 在这里一律视为「没有实测」。
+  // 理由见 isProbeOnlyDeep 的注释：否则「试跑一次」就能把 block 档降级，
+  // 再配合自动信任形成两条绕过用户确认的暗道。
+  // 注意：usableN/testedN 是档位判定的核心输入，必须在源头掐掉，不能只靠 UI 不显示。
+  const deepDone = !!(deep && deep.checkedAt) && !isProbeOnlyDeep(e)
   const usableN = deepDone ? usableCount(e) : 0
   const plats = (deep && deep.platforms) || {}
   const testedN = deepDone
@@ -1135,13 +1308,27 @@ function classifyQuarantineTrust(e, cfg) {
   } catch (err) { suspect = 0 }
 
   // 大白话风险清单（UI 直接渲染；技术原文由 renderer 的 obfTipLog / 后端日志负责）
+  // 注意：判定用的 deepDone 排除试跑（probeOnly），但**文案不能说"从没实测过"**——
+  // 用户可能已经点过「试跑一次」，那样这句话就是错的、还会让人以为没有别的办法。
+  // 所以文案单独看 e.deep.probeOnly，把"试过的"如实说出来，同时不改变任何判定。
+  const probedOnly = !!(deep && deep.checkedAt && isProbeOnlyDeep(e))
   const reasons = () => {
     const r = []
     if (spin >= 1) r.push(`脚本里有 ${spin} 处代码会让 CPU 空转，可能是故意防调试`)
     if (evalN >= 1) r.push(`脚本里有 ${evalN} 处动态执行代码，能运行额外代码（风险点是这个）`)
     if (schedTimer >= 1) r.push(`脚本里有 ${schedTimer} 处定时器调用（被加密过的写法，通常是正常轮询）`)
-    if (!deepDone) r.push('这条从没实测过，不确定能不能用')
-    else if (usableN === 0) r.push(`实测过 ${testedN} 个平台，都没能出链接`)
+    if (!deepDone) {
+      if (probedOnly) {
+        // 试跑过：如实说结果，并点明为什么它不改变档位（用户口径：大白话）
+        const pob = (deep && deep.platforms) || {}
+        const pn = Object.keys(pob).filter(k => pob[k] && pob[k].status === 'usable').length
+        r.push(pn > 0
+          ? `试跑过，能出链接（${pn} 个平台可用）；试跑只供参考，不算正式实测`
+          : '试跑过，没能出链接；试跑只供参考，不算正式实测')
+      } else {
+        r.push('这条从没实测过，不确定能不能用（可点「试跑一次」看它到底能不能出链接）')
+      }
+    } else if (usableN === 0) r.push(`实测过 ${testedN} 个平台，都没能出链接`)
     else r.push(`实测能出链接（${testedN} 个平台里 ${usableN} 个可用）`)
     if (suspect >= 4) r.push(`有 ${suspect} 个陌生的外联域名`)
     return r
@@ -1164,5 +1351,6 @@ module.exports = {
   checkBasic, deepCheck, usableCount, stoppable, testPlatform, sameReasonHint, patrolJudge, probeTopTier, planTierProbe,
   aggregateMetrics, declaredQualities,
   isTransient, isLocalNetworkIssue, deepFailKind, applyProbeRecord, extractApiHosts, probeApiHosts, apiDownVerdict,
-  passedPlatforms, regressionJudge, classifyQuarantineTrust
+  passedPlatforms, regressionJudge, classifyQuarantineTrust, isProbeOnlyDeep,
+  makeSandbox, sandboxIsolation
 }

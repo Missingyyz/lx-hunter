@@ -492,7 +492,18 @@ console.log('\n=== ⑬ 旧版对照：checker.obfuscationRisk 判级零漂移（
     '真实=' + realPick.length + ' 合成=' + synth.length + ' 合计=' + all.length)
 
   const NEWKEYS = ['selfSchedTimer', 'selfSchedDecode', 'selfSchedUnknown']
-  let levelDiff = 0, hitsDiff = 0, crashes = 0
+  // v1.13.15：\uXXXX 的统计口径改了——只有**非 CJK**（非汉字）的转义计入混淆指标。
+  // 理由：洛雪音源脚本普遍把中文写成 \uXXXX 转义（豆包定制 v9.1.0 聚合源实测
+  // 3197 个转义里 93.6% 是汉字），老口径把这些正常写法算成混淆指标 → 正常音源被隔离。
+  // 所以 totalUni / perKbUni 这两个字段**允许**与旧版不同（仅当样本含汉字转义时），
+  // 但必须满足新口径：totalUni(新) + 汉字转义数 === totalUni(旧)。
+  // 其余字段仍必须**逐字一致**——那是「不许影响其它判据」的底线。
+  const CJK_KEYS = ['totalUni', 'perKbUni']
+  const cjkEscCount = (code) => (String(code || '').match(/\\u[0-9a-fA-F]{4}/g) || []).filter(x => {
+    const cp = parseInt(x.slice(2), 16)
+    return (cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3400 && cp <= 0x4dbf)
+  }).length
+  let levelDiff = 0, hitsDiff = 0, crashes = 0, cjkBad = 0
   const diffs = []
   for (const s of all) {
     let o, n
@@ -503,12 +514,16 @@ console.log('\n=== ⑬ 旧版对照：checker.obfuscationRisk 判级零漂移（
     const keys = new Set([...Object.keys(o.hits || {}), ...Object.keys(n.hits || {})])
     for (const k of keys) {
       if (NEWKEYS.indexOf(k) !== -1) continue
+      if (CJK_KEYS.indexOf(k) !== -1) continue
       if (String((o.hits || {})[k]) !== String((n.hits || {})[k])) { hitsDiff++; if (diffs.length < 8) diffs.push(s.name + ' hits.' + k) }
     }
+    // 新口径自洽性：totalUni(新) + 汉字转义数 === totalUni(旧)
+    if (o.hits && n.hits && Number(n.hits.totalUni) + cjkEscCount(s.code) !== Number(o.hits.totalUni)) cjkBad++
   }
   ok('样本全部可跑（无异常）', crashes === 0, 'crashes=' + crashes)
   ok('【核心】level 判级零漂移（旧版 vs 新版）', levelDiff === 0, '不一致 ' + levelDiff + ' / ' + all.length + (diffs.length ? ' :: ' + diffs.join('; ') : ''))
-  ok('【核心】旧字段 hits 值零漂移（新三字段除外）', hitsDiff === 0, '不一致 ' + hitsDiff + (diffs.length ? ' :: ' + diffs.join('; ') : ''))
+  ok('【核心】旧字段 hits 值零漂移（新三字段 + 已改口径的 totalUni/perKbUni 除外）', hitsDiff === 0, '不一致 ' + hitsDiff + (diffs.length ? ' :: ' + diffs.join('; ') : ''))
+  ok('【核心·v1.13.15】totalUni(新) + 汉字转义数 === totalUni(旧)（新口径自洽）', cjkBad === 0, '不自洽 ' + cjkBad)
 
   // 新版三字段必须存在且为数字（新增字段的契约）。
   // 注意 obfuscationRisk 对 <200 字符内容直接返回 {level:'', hits:null}（:166），

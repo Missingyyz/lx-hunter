@@ -3,7 +3,25 @@
 // 用相对于本文件的路径解析：写死绝对路径会在换工作区目录后直接 MODULE_NOT_FOUND
 const NET = require('path').join(__dirname, '..', 'src', 'core', 'net.js')
 const Module = require('module')
-const EP = require.resolve('electron')
+// ⚠️ 纯 Node 环境（容器里没有 electron 依赖）下 require.resolve('electron') 会直接抛
+//   MODULE_NOT_FOUND，测试连第 1 行断言都跑不到。
+//   更关键的是：net.js 里是 `require('electron')`（**裸标识符**），
+//   按路径往 require.cache 里塞假模块**根本拦不住**它——require('electron')
+//   会走 node_modules 解析，解析不到就抛，被 net.js 的 try/catch 吞掉，
+//   于是 Chromium 通道永远缺席，「有 net.fetch 时走 Chromium 网络栈」这条必挂。
+//   正确做法：拦 Module._load，让 require('electron') 直接拿到假模块。
+let FAKE_ELECTRON = {}          // 默认：装上了 electron，但没有 net.fetch
+const prevLoad = Module._load
+Module._load = function (request, parent, isMain) {
+  if (request === 'electron') return FAKE_ELECTRON
+  return prevLoad.apply(this, arguments)
+}
+let EP
+try {
+  EP = require.resolve('electron')
+} catch (e) {
+  EP = require('path').join(__dirname, '__virtual_electron__.js')
+}
 
 let bad = 0
 const ck = (n, c, x) => { if (!c) bad++; console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${x ? '  -> ' + x : ''}`) }
@@ -16,10 +34,15 @@ function loadNet(chromiumImpl) {
     id: EP, filename: EP, loaded: true, children: [], paths: [],
     exports: chromiumImpl ? { net: { fetch: chromiumImpl } } : {}
   }
+  // 关键：net.js 里是 require('electron')（裸标识符），必须让 Module._load 能命中。
+  FAKE_ELECTRON = chromiumImpl ? { net: { fetch: chromiumImpl } } : {}
   delete require.cache[require.resolve(NET)]
   const mod = require(NET)
   // 注意：必须在拿到 mod 之后、真正发起请求之后再恢复，否则 hostFetch() 惰性解析时会取到真 electron
-  const restore = () => { if (prevHad) require.cache[EP] = prevCache; else delete require.cache[EP] }
+  const restore = () => {
+    FAKE_ELECTRON = {}
+    if (prevHad) require.cache[EP] = prevCache; else delete require.cache[EP]
+  }
   return { mod, restore }
 }
 

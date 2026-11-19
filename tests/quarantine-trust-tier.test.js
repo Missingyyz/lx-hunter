@@ -89,7 +89,7 @@ function oldImpl(t0) {
   if (hits.perKb0x >= 2 || hits.perKbUni >= 1 || hits.perKbExotic >= 2) return { level: 'mid', hits }
   return { level: '', hits }
 }
-let lvDiff = 0, hitDiff = 0, checked = 0
+let lvDiff = 0, hitDiff = 0, checked = 0, cjkBad = 0
 const lvDist = {}
 const genFrags = ['', 'while(!![]){}', 'while(true){}', 'var a=_0x1a2b(_0x3c4d,0x7d0);',
   'var a=_0x1a2b(_0x3c4d,0xd800);', 'eval("x")', 'new Function("a")', 'jsjiami', 'var _0xaaaa=1;',
@@ -104,10 +104,27 @@ for (let i = 0; i < 400; i++) {
   const l = (a.level || '(空)')
   lvDist[l] = (lvDist[l] || 0) + 1
   if (a.level !== b.level) lvDiff++
-  if (a.hits && b.hits) for (const k of Object.keys(a.hits)) if (a.hits[k] !== b.hits[k]) { hitDiff++; break }
+  // v1.13.15：\uXXXX 的统计口径改了（只有**非 CJK** 的转义计入混淆指标，
+  // 因为洛雪音源脚本普遍把中文写成 \uXXXX 转义——汉字转义不是藏代码）。
+  // 所以 totalUni/perKbUni 这两个字段**允许**与旧实现不同（只在样本含汉字转义时），
+  // 但必须满足新口径：差值正好等于「汉字转义的个数」。
+  // 其余字段（perKb0x / perKbExotic / evalCalls / total0x / totalExotic / spinLoops …）
+  // 仍必须**逐字一致**——那是「不许影响其它判据」的底线。
+  const CJK_KEYS = ['totalUni', 'perKbUni']
+  for (const k of Object.keys(a.hits || {})) {
+    if (CJK_KEYS.indexOf(k) !== -1) continue
+    if ((a.hits || {})[k] !== (b.hits || {})[k]) { hitDiff++; break }
+  }
+  // 新口径自洽性：totalUni(新) + 汉字转义数 === totalUni(旧)
+  const cjkCount = (code.match(/\\u([0-9a-fA-F]{4})/g) || []).filter(x => {
+    const cp = parseInt(x.slice(2), 16)
+    return (cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3400 && cp <= 0x4dbf)
+  }).length
+  if (a.hits && b.hits && b.hits.totalUni + cjkCount !== a.hits.totalUni) { cjkBad++; break }
 }
 ok(checked === 400 && lvDiff === 0, `400 样本 level 与旧实现完全一致（不一致 ${lvDiff}）`)
-ok(hitDiff === 0, '400 样本旧 hits 字段值完全一致（新增三字段不影响老字段）')
+ok(hitDiff === 0, '400 样本旧 hits 字段值完全一致（除 totalUni/perKbUni 这两个已改口径的字段）')
+ok(cjkBad === 0, '400 样本：totalUni(新) + 汉字转义数 === totalUni(旧)（新口径自洽）')
 ok(lvDist['high'] > 100, `回归样本覆盖 high 分支（${JSON.stringify(lvDist)}）`)
 ok(/if \(nSpin >= 1 \|\| nSelfSched >= 1\) \{\s*\n\s*return \{ level: 'high', hits \}/.test(checkerSrc), 'high 判级原文逐字未变（仍含 nSelfSched）')
 
