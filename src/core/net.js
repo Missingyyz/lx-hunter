@@ -57,6 +57,138 @@ async function dohLookup(hostname, timeoutMs) {
 }
 
 /**
+ * 解析主机名的全部 A/AAAA 记录（供「解析后 IP 私网判定」用）。
+ *
+ * 为什么需要它：URL 里的域名**看起来**正常不代表它解析到公网——
+ * 通配 DNS 服务（localtest.me / nip.io …）能把任意名字解析到 127.0.0.1，
+ * 自建域名也能把 A 记录指向 10.x/192.168.x。只看域名形状会漏掉这一类。
+ *
+ * 解析失败（NXDOMAIN / 服务器抖动）**不算私网**，返回 ok=false 由上层决定：
+ * 上层选择「不拦截」——因为真实追更域名解析失败时下载本来也会失败，
+ * 拦下来只会把「网络抖动」变成「音源被静默拒绝」，误伤代价更大。
+ *
+ * 结果缓存 60 秒：追更一轮会连着查同一个域名好几次，
+ * 而 DNS 记录在 60 秒内不会变（这不影响 rebinding 风险的评估，见 R9 说明）。
+ *
+ * @param {string} hostname 主机名（不带端口、不带方括号）
+ * @returns {Promise<{ok:boolean, ips:string[], err:string}>}
+ */
+const hostIpCache = new Map()
+const HOST_IP_CACHE_TTL_MS = 60 * 1000
+async function resolveHostIps(hostname) {
+  const h = String(hostname || '').trim().toLowerCase()
+  if (!h) return { ok: false, ips: [], err: '主机名为空' }
+  const hit = hostIpCache.get(h)
+  if (hit && Date.now() - hit.at < HOST_IP_CACHE_TTL_MS) return hit
+  let out
+  // IP 字面量：无需解析，直接当作解析结果
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.indexOf(':') !== -1) {
+    out = { ok: true, ips: [h], err: '' }
+  } else {
+    try {
+      const dns = require('node:dns')
+      const list = await dns.promises.lookup(h, { all: true, verbatim: true })
+      out = { ok: true, ips: (list || []).map(x => x.address), err: '' }
+    } catch (e) {
+      out = { ok: false, ips: [], err: String((e && e.code) || (e && e.message) || e) }
+    }
+  }
+  hostIpCache.set(h, Object.assign({ at: Date.now() }, out))
+  return out
+}
+
+/**
+ * 读响应头，兼容两种响应形态：
+ *  - fetch 风格：headers 是 Headers 对象，有 .get()
+ *  - 自写代理风格（proxyFetchRaw）：headers 是普通对象（键已转小写）
+ * 之前只按 fetch 风格写会在走代理时抛 TypeError。
+ */
+function readHeader(res, name) {
+  try {
+    const h = res && res.headers
+    if (!h) return ''
+    if (typeof h.get === 'function') return String(h.get(name) || '')
+    const want = String(name || '').toLowerCase()
+    const k = Object.keys(h).find(x => String(x).toLowerCase() === want)
+    return k ? String(h[k] || '') : ''
+  } catch (e) {
+    return ''
+  }
+}
+
+/**
+ * 带「逐跳校验」的 GET：每一跳都先问一遍 guard，guard 不通过就不发这一跳。
+ *
+ * 为什么必须有这个：默认 fetch 会**自动跟随**重定向，
+ * 于是「第②层校验域名归属」只在第一跳生效——
+ * 攻击者只要让第一跳（合法域）返回 302 到自己的域，
+ * 后面几跳就完全绕过了归属校验，直接把恶意脚本拉进库里。
+ * 实测（2026-11-19 容器内）：www.kdocs.cn 会 302 到 account.kdocs.cn，
+ * 说明「合法域 → 陌生域」的跳转在真实世界里天天发生。
+ *
+ * 每一跳的 Location 都要重新跑**全部**校验（协议 / 域名形状 / 私网 / 域名归属 /
+ * 解析后 IP），不是只跑归属那一条——否则 302 到 127.0.0.1 就绕过了。
+ *
+ * @param {string} url 起始 URL
+ * @param {object} opts
+ *   - guard(url, depth) → {ok:boolean, why:string}：这一跳是否放行
+ *   - timeoutMs
+ *   - maxHops 最多跟几跳（默认 5）
+ *   - headers
+ * @returns {Promise<{res:Object, url:string, hops:string[]}>}
+ */
+async function fetchWithRedirectGuard(url, opts) {
+  const o = opts || {}
+  const guard = o.guard
+  const timeoutMs = Number(o.timeoutMs) > 0 ? Number(o.timeoutMs) : 15000
+  const maxHops = Number(o.maxHops) > 0 ? Number(o.maxHops) : 5
+  const hops = []
+  let cur = String(url)
+  for (let depth = 0; depth <= maxHops; depth++) {
+    if (guard) {
+      // guard 可能是 async（DNS 解析要 await），必须等它出结果再决定放不放行这一跳
+      const g = await guard(cur, depth)
+      if (!g || g.ok === false) {
+        const err = new Error(g && g.why ? g.why : '重定向目标未通过校验')
+        err.code = 'REDIRECT_BLOCKED'
+        err.url = cur
+        err.depth = depth
+        throw err
+      }
+    }
+    const ac = new AbortController()
+    const timer = setTimeout(() => { try { ac.abort() } catch (e) {} }, timeoutMs)
+    let res
+    try {
+      res = await nodeFetchManual(cur, {
+        method: 'GET',
+        redirect: 'manual',
+        signal: ac.signal,
+        headers: Object.assign({ 'User-Agent': UA }, o.headers || {})
+      })
+    } finally {
+      clearTimeout(timer)
+    }
+    const status = Number(res && res.status) || 0
+    const isRedirect = status >= 300 && status < 400
+    if (!isRedirect) return { res, url: cur, hops }
+    const loc = readHeader(res, 'location')
+    if (!loc) return { res, url: cur, hops }   // 3xx 但没给 Location：没有下一跳可校验
+    let next
+    try { next = new URL(loc, cur).toString() } catch (e) {
+      const err = new Error('重定向地址不是合法 URL：' + String(loc).slice(0, 80))
+      err.code = 'REDIRECT_BLOCKED'
+      throw err
+    }
+    hops.push(cur + ' → ' + next)
+    cur = next
+  }
+  const err = new Error('重定向跳数过多（超过 ' + maxHops + ' 跳）')
+  err.code = 'REDIRECT_TOO_MANY'
+  throw err
+}
+
+/**
  * 优先使用 Electron 的 net.fetch（Chromium 网络栈），没有则回退 Node fetch。
  *
  * 为什么这件事很关键：音源脚本里的网络请求全走这里。Node 的 undici fetch
@@ -104,6 +236,21 @@ function hostFetch() {
 }
 
 /**
+ * 逐跳校验专用的 fetch：**固定用 Node 的 global fetch**（undici）。
+ *
+ * 为什么不用 hostFetch()（生产是纯 Node 走 global fetch，但桌面版是 Electron 的 net.fetch）：
+ * Electron 33 的 net.fetch 在 `redirect:'manual'` 下**不会返回 3xx 响应**，而是直接把请求打死
+ * （electron/lib/common/api/net-client-request.ts 的 'redirect' 事件分支：
+ *  policy='manual' 且没人调 followRedirect() → _die(new Error('Redirect was cancelled'))）。
+ * 我们要的就是「拿到 3xx + 读它的 Location 自己逐跳校验」，Electron 这条路拿不到 Location，
+ * 逐跳校验就退化成「凡有重定向一律失败」。
+ * 桌面版若依赖系统代理，走 crawlFetch 的镜像/代理候选链兜底（那条路不依赖读 Location）。
+ */
+function nodeFetchManual(url, init) {
+  return globalThis.fetch(url, init)
+}
+
+/**
  * Node 的 fetch 失败只给一句 "fetch failed"，真正的原因（DNS / 证书 / 连接重置…）
  * 藏在 cause 链里。展开后用户才知道是该配代理、还是目标站挂了。
  */
@@ -118,6 +265,87 @@ function describeNetError(err) {
     depth++
   }
   return parts.join(' ← ') || String(err)
+}
+
+/**
+ * 走 hostFetch()（生产纯 Node → global fetch；桌面 Electron → net.fetch），**跟随**重定向。
+ * 只用于「镜像通道」：镜像是配置里已信任的取数通道，它本来就能直接返回任意内容，
+ * 再去管它内部的跳转没有额外安全收益；这里只保证最终拿到的是 2xx。
+ */
+async function fetchFollow(url, timeoutMs) {
+  const ac = new AbortController()
+  const timer = setTimeout(() => { try { ac.abort() } catch (e) {} }, timeoutMs || 15000)
+  try {
+    return await hostFetch()(url, {
+      method: 'GET',
+      signal: ac.signal,
+      headers: { 'User-Agent': UA }
+    })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * 走指定通道的「**不跟随**重定向」取数，返回 3xx 原样交给调用方。
+ * @param {boolean} viaProxy true=经配置的 HTTP 代理
+ */
+async function fetchNoFollow(url, timeoutMs, viaProxy) {
+  if (viaProxy) {
+    const got = await managedProxyFetch(url, { headers: { 'User-Agent': UA } }, timeoutMs, { noFollow: true })
+    return got ? got.res : null
+  }
+  const ac = new AbortController()
+  const timer = setTimeout(() => { try { ac.abort() } catch (e) {} }, timeoutMs || 15000)
+  try {
+    return await nodeFetchManual(url, {
+      method: 'GET',
+      redirect: 'manual',
+      signal: ac.signal,
+      headers: { 'User-Agent': UA }
+    })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * 一条「逻辑通道」（direct / proxy）的逐跳校验取数。
+ *
+ * 每一跳都先问 guard，guard 不过就**不发这一跳**（err.code = 'REDIRECT_BLOCKED'）。
+ * 这是安全关键路径：默认 fetch 自动跟随重定向，攻击者只要让第一跳（合法域）
+ * 302 到自己的域，后面的归属校验就全被绕过了。
+ *
+ * @param {boolean} firstChecked 第 0 跳（起始 URL）是否已被调用方校验过
+ *   —— crawlFetch 会先对逻辑 URL 统一校验一次（镜像通道也要靠它把关），
+ *      逻辑通道再查一次就是重复调用（DNS 解析日志也会重复），所以这里跳过。
+ */
+async function guardedLogicalFetch(url, timeoutMs, viaProxy, guard, maxHops, firstChecked) {
+  let cur = String(url)
+  for (let depth = 0; depth <= maxHops; depth++) {
+    if (guard && !(depth === 0 && firstChecked)) {
+      const g = await guard(cur, depth)
+      if (!g || g.ok === false) {
+        const err = new Error(g && g.why ? g.why : '重定向目标未通过校验')
+        err.code = 'REDIRECT_BLOCKED'
+        err.url = cur
+        err.depth = depth
+        throw err
+      }
+    }
+    const res = await fetchNoFollow(cur, timeoutMs, viaProxy)
+    if (!res) return null
+    const st = Number(res.status) || 0
+    if (st < 300 || st >= 400) return res
+    const loc = readHeader(res, 'location')
+    if (!loc) return res
+    let next
+    try { next = new URL(loc, cur).toString() } catch (e) { return res }
+    cur = next
+  }
+  const err = new Error('重定向跳数过多（超过 ' + maxHops + ' 跳）')
+  err.code = 'REDIRECT_TOO_MANY'
+  throw err
 }
 
 /**
@@ -301,10 +529,10 @@ function proxyAcquire() {
  * 统一的代理请求入口：所有链路都经过它，才能共享熔断状态与失败计数。
  * @returns {null|{res:Object, degraded:boolean}} null=没走代理（被熔断/跳过或连接失败），调用方应回退直连
  */
-async function managedProxyFetch(url, opt, timeoutMs) {
+async function managedProxyFetch(url, opt, timeoutMs, extra) {
   if (NETCFG.proxyPolicy === 'off' || !proxyConfigured() || !proxyAcquire()) return null
   try {
-    const res = await proxyFetchRaw(url, opt, proxyAttemptBudget(timeoutMs), NETCFG.crawlProxy)
+    const res = await proxyFetchRaw(url, opt, proxyAttemptBudget(timeoutMs), NETCFG.crawlProxy, 0, !!(extra && extra.noFollow))
     markProxyOk()
     // 代理本身通了但回 5xx：算「通道可用但这次没取到」，交给调用方回退
     return { res, degraded: res.status >= 500 }
@@ -532,7 +760,7 @@ function parseHttpResponse(buf) {
  * 实测要点：别用 https.request + createConnection（会被默认 agent 绕过隧道，
  * 表现为代理形同虚设 / ECONNRESET / 一直超时），手写请求最稳。
  */
-function proxyFetchRaw(url, options, timeoutMs, proxyUrl, redirects) {
+function proxyFetchRaw(url, options, timeoutMs, proxyUrl, redirects, noFollow) {
   const proxy = parseProxyUrl(proxyUrl)
   if (!proxy) return Promise.reject(new Error('爬取代理格式无效（应为 http://host:port）'))
   return new Promise((resolve, reject) => {
@@ -543,6 +771,7 @@ function proxyFetchRaw(url, options, timeoutMs, proxyUrl, redirects) {
     const isHttps = u.protocol === 'https:'
     const ms = timeoutMs || 15000
     const hops = Number(redirects || 0)
+    const follow = !noFollow   // noFollow=true 时把 3xx 原样交给调用方（逐跳校验用）
     let settled = false
     const done = (fn, v) => { if (!settled) { settled = true; clearTimeout(timer); fn(v) } }
     const timer = setTimeout(() => done(reject, new Error('请求超时 ' + ms + 'ms（经代理）')), ms)
@@ -564,7 +793,7 @@ function proxyFetchRaw(url, options, timeoutMs, proxyUrl, redirects) {
       sock.on('end', () => {
         try {
           const r = parseHttpResponse(Buffer.concat(chunks))
-          if (r.status >= 300 && r.status < 400 && r.headers.location && hops < 5) {
+          if (r.status >= 300 && r.status < 400 && r.headers.location && hops < 5 && follow) {
             const next = new URL(r.headers.location, url).toString()
             proxyFetchRaw(next, options, timeoutMs, proxyUrl, hops + 1).then(v => done(resolve, v)).catch(e => done(reject, e))
             return
@@ -670,20 +899,53 @@ function buildCandidates(rawUrl, mirrorId) {
 }
 
 /** 依次尝试候选，返回 {res, url, mirror, attempts}
- *  preferredId：本次运行中上一个成功过的镜像（auto 模式下优先尝试，避免每条都把失败的直连/镜像重试一遍） */
+ *  preferredId：本次运行中上一个成功过的镜像（auto 模式下优先尝试，避免每条都把失败的直连/镜像重试一遍）
+ *
+ *  options.guard：**可选的逐跳校验回调**（2026-11-19 R9 追更链加固）
+ *   - guard(url, depth) → {ok:boolean, why:string}
+ *   - 给了 guard 时，**逻辑通道**（direct / proxy，URL 就是逻辑 URL 本身）
+ *     的每一次重定向都会先问 guard，guard 不过就不发那一跳（err.code='REDIRECT_BLOCKED'）。
+ *     这是安全关键路径：默认 fetch 自动跟随重定向，攻击者只要让第一跳（合法域）
+ *     302 到自己的域，后面的归属校验就全被绕过了。
+ *   - **镜像通道**（URL 被改写成镜像前缀）不逐跳校验：镜像是配置里已信任的取数通道，
+ *     它本来就能直接返回任意内容，再管它内部跳转没有额外安全收益；只接受最终 2xx。
+ *   - 但**逻辑 URL 本身**在进候选链之前就先过 guard 一次——
+ *     否则一个不合规的 tip.url 换个镜像前缀就能取到。
+ */
 async function crawlFetch(rawUrl, options, timeoutMs, mirrorId, preferredId) {
   let cands = buildCandidates(rawUrl, mirrorId)
   if (preferredId && (!mirrorId || mirrorId === 'auto')) {
     const i = cands.findIndex(c => c.id === preferredId)
     if (i > 0) cands = [cands[i]].concat(cands.slice(0, i), cands.slice(i + 1))
   }
+  const guard = options && typeof options.guard === 'function' ? options.guard : null
+  const maxHops = Number(options && options.maxHops) > 0 ? Number(options.maxHops) : 5
+  if (guard) {
+    // 逻辑 URL 先校验一次：不合规就不该有任何通道去取（含镜像通道）
+    const g0 = await guard(rawUrl, 0)
+    if (!g0 || g0.ok === false) {
+      const err = new Error(g0 && g0.why ? g0.why : '更新地址未通过校验')
+      err.code = 'REDIRECT_BLOCKED'
+      throw err
+    }
+  }
   const attempts = []
   for (const c of cands) {
     const t0 = Date.now()
+    const logical = (c.id === 'direct' || c.id === 'proxy')
     try {
       const opt2 = Object.assign({ headers: { 'User-Agent': UA } }, options || {})
+      delete opt2.guard
+      delete opt2.maxHops
       let res
-      if (c.id === 'proxy') {
+      if (guard && logical) {
+        // 逻辑通道：逐跳校验（自己跟重定向，每一跳都先问 guard）
+        res = await guardedLogicalFetch(c.url, timeoutMs, c.id === 'proxy', guard, maxHops, true)
+        if (!res) {
+          attempts.push({ mirror: c.id, url: c.url, error: '请求失败（无响应）', ms: Date.now() - t0 })
+          continue
+        }
+      } else if (c.id === 'proxy') {
         // 统一走健康状态机：被熔断跳过 / 连接失败 / 代理回 5xx 都直接试下一条通道
         const got = await managedProxyFetch(c.url, opt2, timeoutMs)
         if (!got || got.degraded) {
@@ -700,6 +962,16 @@ async function crawlFetch(rawUrl, options, timeoutMs, mirrorId, preferredId) {
         return { res, url: c.url, mirror: c.id, attempts }
       }
     } catch (e) {
+      if (e && (e.code === 'REDIRECT_BLOCKED' || e.code === 'REDIRECT_TOO_MANY')) {
+        // 逻辑通道被闸门拦下 = 攻击特征：**整条链就此终止**，不再试镜像。
+        // 镜像是同一条逻辑 URL 的另一种取法；逻辑 URL 会跳到陌生域，
+        // 镜像取到的也是同一份陌生内容，放行等于绕过闸门。
+        // 跳数超限同理：重定向环是攻击/故障特征，不能静默当成「没结果」，
+        // 得让调用方看见「这一跳链条不可信」。
+        attempts.push({ mirror: c.id, url: c.url, error: String(e.message || e), ms: Date.now() - t0 })
+        if (logical) throw e
+        continue
+      }
       attempts.push({ mirror: c.id, url: c.url, error: String(e && e.message || e), ms: Date.now() - t0 })
     }
   }
@@ -844,5 +1116,7 @@ module.exports = {
   applyConfig, testNetwork, testMirrorSpeeds, proxyFetchRaw, customPreset,
   discoverMirrors, poolPresets, hostToId, SEED_MIRROR_HOSTS, fetchAuto, isLanHost, testProxy,
   getProxyHealth, resetProxyHealth, proxyStateLabel, PROXY_POLICIES, managedProxyFetch,
-  proxyAttemptBudget, proxyConfigured
+  proxyAttemptBudget, proxyConfigured,
+  // R9（v1.13.15）：追更链的逐跳校验能力（重定向不绕过域名/私网校验）
+  resolveHostIps, readHeader, fetchWithRedirectGuard
 }

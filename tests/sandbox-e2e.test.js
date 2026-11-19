@@ -55,7 +55,7 @@ lx.send('inited', {
 `
 
 async function runCase(url, metaHomepage) {
-  const sb = new Sandbox({ id: 't1', fetchTimeout: 8000, dispatchTimeout: 12000, onLog: () => {} })
+  const sb = new Sandbox({ id: 't1', fetchTimeout: 8000, dispatchTimeout: 12000, allowPrivateHosts: true, onLog: () => {} })
   const code = SCRIPT.replace('__SERVER__', JSON.stringify(url))
   const initRes = await sb.init(code, { homepage: metaHomepage })
   return { sb, initRes }
@@ -87,7 +87,7 @@ async function runCase(url, metaHomepage) {
   {
     const dead = 'http://127.0.0.1:1'   // 没人监听
     const SCRIPT2 = SCRIPT.replace('__SERVER__', JSON.stringify(dead))
-    const sb = new Sandbox({ id: 't2', fetchTimeout: 8000, dispatchTimeout: 12000, onLog: () => {} })
+    const sb = new Sandbox({ id: 't2', fetchTimeout: 8000, dispatchTimeout: 12000, allowPrivateHosts: true, onLog: () => {} })
     const initRes = await sb.init(SCRIPT2, { homepage: dead + '/' })
     ck('不可达目标: 脚本仍能 init', initRes.inited === true)
     let msg = ''
@@ -105,7 +105,7 @@ async function runCase(url, metaHomepage) {
       }));
       lx.send('inited', { sources: { test: { name: '相对地址源', type: 'music', actions: ['musicUrl'], qualitys: ['128k'] } } });
     `
-    const sb = new Sandbox({ id: 't3', fetchTimeout: 6000, dispatchTimeout: 8000, onLog: () => {} })
+    const sb = new Sandbox({ id: 't3', fetchTimeout: 6000, dispatchTimeout: 8000, allowPrivateHosts: true, onLog: () => {} })
     await sb.init(SCRIPT3, { homepage: '' })
     let msg = ''
     try { await sb.dispatch('request', { source: 'test', musicInfo: { name: 'x' }, type: '128k' }, 6000) } catch (e) { msg = String(e.message || e) }
@@ -125,7 +125,7 @@ async function runCase(url, metaHomepage) {
       }));
       lx.send('inited', { sources: { test: { name: 'hang', type: 'music', actions: ['musicUrl'], qualitys: ['128k'] } } });
     `
-    const sb = new Sandbox({ id: 't4', fetchTimeout: 1500, dispatchTimeout: 6000, onLog: () => {} })
+    const sb = new Sandbox({ id: 't4', fetchTimeout: 1500, dispatchTimeout: 6000, allowPrivateHosts: true, onLog: () => {} })
     await sb.init(SCRIPT4, {})
     const t0 = Date.now()
     let msg = ''

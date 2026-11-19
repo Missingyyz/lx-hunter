@@ -8,6 +8,8 @@ const nodeCrypto = require('crypto')
 const zlib = require('zlib')
 const { SETUP } = require('./lxbootstrap')
 const { hostFetch, describeNetError } = require('./net')
+const { makeSandboxFacade, sealOwnConstructor } = require('./sandbox-facade')
+const { checkOutbound, makeOutboundAudit } = require('./outbound-policy')
 
 // ---------- 全局兜底：未处理的 Promise 拒绝（本次 bug 的根因）----------
 // 沙箱运行不可信第三方音源脚本，脚本内部 `fetch(u).then(r=>r.json()).then(cb)` 不接 catch 是常态。
@@ -107,6 +109,8 @@ class Sandbox {
     this.initGraceMs = Number(opts.initGraceMs) || 4000        // 异步 init 的等待宽限
     this.initGraceMaxMs = Number(opts.initGraceMaxMs) || 15000  // 有请求在飞时的硬上限
     this.onLog = opts.onLog || function () {}
+    // 更新提示回调（子进程后端用它上转 tip；进程内后端一般不传）
+    this.onTip = typeof opts.onTip === 'function' ? opts.onTip : null
     this.updateTips = []
     this.events = []
     this.cookies = {}
@@ -128,6 +132,15 @@ class Sandbox {
     this.rejectedByQuota = 0
     // 异步错误去重计数（_noteAsyncError 用），避免海量重复拒绝打爆日志/自身再抛
     this._asyncErrSeen = new Map()
+    // ---- 出站审计（v1.13.14，不阻断）----
+    // 记录本沙箱实际请求过哪些域名，供上层判断「有没有新域名」并提示用户。
+    // known 由调用方传入历史 apiHosts；不给则一律视为新域名。
+    this.outboundAudit = makeOutboundAudit(opts.knownHosts)
+    // ⚠ 仅供测试：放行私网/回环。生产代码**绝不**传这个开关。
+    // 存在的理由：多个沙箱测试用本地 HTTP 服务器（127.0.0.1）当靶子，
+    // 不放开的话测的就变成「阻断生效了」，而不是它们各自要验的交回面/写入面。
+    // 用正向命名（allow）而不是 dropBlock，是为了 grep 时一眼看出谁在放宽策略。
+    this.allowPrivateHosts = opts.allowPrivateHosts === true
 
     const self = this
     const log = (...a) => { try { self.onLog(a.map(String).join(' ')) } catch (e) {} }
@@ -147,9 +160,20 @@ class Sandbox {
     // 脚本/引导脚本会挂宿主定时器回调；沙箱销毁或停止后回调再触发，
     // 若引用了已被清理的全局会抛 ReferenceError 并冒泡成主进程未捕获异常（弹错误框）。
     // 因此所有进入沙箱的定时器回调都包一层 try/catch，且销毁后直接静默。
+    //
+    // ★ 交回面（v1.13.14）：this 绝不能是宿主对象。
+    //
+    // 之前这里是 `fn.apply(this, args)`，而 this 由宿主定时器/microtask 传进来——
+    // 实测 `setTimeout(function(){ this.constructor.constructor('return process')() })`
+    // 直接拿到真 process（this 在宿主侧是 [object Object]）。setInterval /
+    // setImmediate / queueMicrotask / process.nextTick 同理。
+    //
+    // 改法：显式用 undefined 作 this。严格模式下回调里 this 是 undefined；
+    // 非严格模式下引擎会按**回调所在 realm** 把它替换成全局对象——也就是沙箱自己的
+    // globalThis，不是宿主的。两种情况下都摸不到宿主内核。
     const guard = fn => function (...args) {
       if (self.destroyed || self.stopped) return
-      try { return fn.apply(this, args) } catch (e) { self._noteAsyncError(e) }
+      try { return fn.call(undefined, ...args) } catch (e) { self._noteAsyncError(e) }
     }
     /**
      * 给「从沙箱流出到宿主」的 Promise 挂静默兜底（v1.9.1）。
@@ -172,6 +196,7 @@ class Sandbox {
     const mkTimer = hostFn => (fn, ms, ...a) => {
       // 不允许字符串代码定时器（会在宿主作用域 eval，逃逸沙箱）
       if (typeof fn !== 'function') return hostFn(() => {}, ms)
+      // 回调的 this 由 guard 强制为 undefined（见 guard 上方注释），这里只负责装箱。
       return hostFn(guard(fn), ms, ...a)
     }
     const hostSetTimeout = setTimeout, hostSetInterval = setInterval
@@ -193,6 +218,14 @@ class Sandbox {
           if (name === 'updateAlert' && data) {
             const u = String(data.updateUrl || data.url || '')
             if (/^https?:\/\//i.test(u) && !self.updateTips.some(t => t.url === u)) self.updateTips.push({ url: u, msg: String(data.title || data.content || data.log || '').slice(0, 200), at: Date.now() })
+          }
+          // 通知外部有新提示（子进程后端靠它把 tip 上转给父进程；
+          // 进程内后端不传 onTip，什么都不做 —— 两条后端共用同一份收集逻辑）
+          if ((name === 'updateTip' || name === 'updateAlert') && typeof self.onTip === 'function') {
+            try {
+              const last = self.updateTips[self.updateTips.length - 1]
+              if (last) self.onTip(last)
+            } catch (e) {}
           }
           if (name === 'dispatchResult' || name === 'dispatchError') {
             const p = self.pending.get(data && data.id)
@@ -217,6 +250,26 @@ class Sandbox {
           return swallow(Promise.reject(new Error('沙箱 fetch 地址无效（相对地址且脚本未提供 homepage）: ' + raw.slice(0, 80))))
         }
         if (self.destroyed || self.stopped) return swallow(Promise.reject(new Error('已取消')))
+        // ---- 私网/回环硬阻断（v1.13.14）----
+        // 生产库 apiHosts 里真出现过 127.0.0.1。容器内音源脚本若能访问私网/回环，
+        // 就等于给「从沙箱打内网其它服务」开了一条路，而正常取链从不需要访问私网。
+        // 这里只拦封闭列表（IP 段不会变，零维护）；**不做**域名白名单——
+        // 阻断型白名单会让换域名的音源静默失效，失败模式太差，理由见 outbound-policy.js。
+        const outbound = checkOutbound(finalUrl)
+        if (outbound.blocked && !self.allowPrivateHosts) {
+          self.onLog('沙箱出站已阻断（' + outbound.why + '）: ' + outbound.host)
+          return swallow(Promise.reject(new Error(
+            '沙箱禁止访问私网/回环地址（' + outbound.why + '）: ' + outbound.host)))
+        }
+        // ---- 出站审计（v1.13.14，不阻断）----
+        // 照常放行，只记账：上层据此把「这个脚本去了哪、有没有新域名」提示给用户。
+        // 注意审计要放在阻断之后、配额之前：被拦的请求不该污染审计记录。
+        if (self.outboundAudit) {
+          try {
+            const rec = self.outboundAudit.note(finalUrl)
+            if (rec.isNew) self.onLog('沙箱访问了新域名: ' + rec.domain)
+          } catch (e) {}
+        }
         // ---- 资源配额闸门（v1.9.1，事故根因修复）----
         // 实测事故：一批已废弃音源被并发抓取时，脚本对同一个失效域名反复重试，
         // 在飞请求数无上限地涨，宿主 socket/内存被打满 → 被 OOM Killer 以 SIGKILL(137) 干掉。
@@ -246,9 +299,28 @@ class Sandbox {
           try { initObj.signal = AbortSignal.timeout(Number(opts.fetchTimeout) > 0 ? Number(opts.fetchTimeout) : 15000) } catch (e) {}
         }
         const settle = () => { if (self.inflightFetches > 0) self.inflightFetches-- }
+        // ★ 交回面（v1.13.14）：宿主交给沙箱的**每一个对象**都必须先过 facade.wrap。
+        //
+        // 之前这里是 `.then(r => { settle(); return r })` —— r 是裸宿主 Response，
+        // 沙箱里拿到就能 `r.constructor.constructor('return process')()` 拿到真 process。
+        // 实测能一路走到 `process.getBuiltinModule('fs').writeFileSync` 和
+        // `child_process.execSync`，即完整 RCE，而检测仍正常返回 success。
+        //
+        // 为什么在宿主侧包（而不是在沙箱里包 Promise）：
+        //   在沙箱里 `.then(v => san(v))` 包不住**回调入参**——脚本自己写的
+        //   `fetch(u).then(r => …)` 里那个 r 依然由宿主直接给。只有宿主在交付点包装，
+        //   才能保证「任何进入沙箱的对象都已消毒」。这是本轮的核心修法。
+        //
+        // wrap 是可递归的（get 陷阱对返回值再 wrap），所以 r.headers、r.json() 的
+        // Promise 链下游、都自动覆盖，不需要逐字段处理。
+        const facade = self.facade
+        const sanitize = (v) => {
+          if (!facade) return v
+          try { return facade.wrap(v) } catch (e) { return v }
+        }
         return swallow(Promise.resolve()
           .then(() => doFetch(finalUrl, initObj))
-          .then(r => { settle(); return r })
+          .then(r => { settle(); return sanitize(r) })
           .catch(err => {
             settle()
             // 直接抛裸 "fetch failed" / "The operation was aborted due to timeout" 对排障没帮助：
@@ -258,7 +330,12 @@ class Sandbox {
             const msg = (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) || /aborter|aborted|due to timeout|timed out/i.test(raw)
               ? '请求超时 ' + ms + 'ms'
               : raw
-            throw new Error('沙箱 fetch 失败: ' + msg.slice(0, 160) + ' [' + finalUrl.slice(0, 60) + ']')
+            // 错误对象同样是宿主对象（Error.prototype.constructor === Error → Function），
+            // 不消毒的话 `fetch(u).then(null, e => e.constructor.constructor(...))` 直接逃逸。
+            // 这里新建一个沙箱侧 Error 并把 message 拷过去：脚本只关心 message/name，
+            // 而新建的这个是在宿主 realm 造的对象——所以它本身也要过 sanitize。
+            const wrapped = new Error('沙箱 fetch 失败: ' + msg.slice(0, 160) + ' [' + finalUrl.slice(0, 60) + ']')
+            throw sanitize(wrapped)
           }))
       },
       Buffer,
@@ -286,7 +363,39 @@ class Sandbox {
     }
     // vm 默认 context 不含这些，显式挂上
     sandboxGlobals.globalThis = sandboxGlobals
-    this.context = vm.createContext(sandboxGlobals)
+    // ========================================================================
+    // 逃逸防护（v1.13.12）——改这一段之前先读 sandbox-facade.js 的头注释
+    // ========================================================================
+    // 第一层：禁掉 context 内的字符串代码生成（eval / Function('...') / wasm）。
+    //
+    // ⚠ 这层**单独用是挡不住逃逸的**，实测：宿主函数（Buffer、__host_emit …）的
+    //   constructor 指向**宿主 realm 的 Function**，那个 Function 不受本 context 的
+    //   codeGeneration 约束，照样能 `Function('return process')()`。
+    //   所以必须和第二层包装一起上；任删一层，漏洞就会回来
+    //   （tests/sandbox-escape.test.js 的「分层对照」把这一点锁死了）。
+    //
+    // 第三处细节：全局容器 sandboxGlobals 是**宿主对象字面量**，它的原型链通向宿主
+    // Object.prototype，于是 `globalThis.constructor.constructor('return process')()`
+    // 仍在宿主 realm 编译、绕过 codeGeneration（实测确实拿到真 process）。
+    // 实测 `Object.setPrototypeOf(容器, null)` 能一并封死 globalThis/window/global/self
+    // 这四条别名路径，且沙箱内 JSON/数组/Date/正则/Error/Promise/instanceof 全部正常。
+    Object.setPrototypeOf(sandboxGlobals, null)
+    this.context = vm.createContext(sandboxGlobals, {
+      codeGeneration: { strings: false, wasm: false }
+    })
+    // 第二层：把每个注入值包成「沙箱 realm 内的 Proxy」，切断 constructor 取值链。
+    // 包装器必须在 context 创建**之后**在 context 内造，否则它自己是宿主函数，又成了新逃逸口。
+    // 注意：包装的是**注入属性**，不是全局对象本身 —— 全局对象已在上面切断原型链。
+    const facade = makeSandboxFacade(this.context)
+    // 交回面（v1.13.14）：fetch 等宿主 IO 在把对象交给沙箱前要用它消毒，
+    // 而 fetch 闭包定义在 sandboxGlobals 里、早于这里创建 facade，所以挂到实例上供其读取。
+    this.facade = facade
+    for (const key of Object.keys(sandboxGlobals)) {
+      if (key === 'globalThis') continue
+      sandboxGlobals[key] = facade.wrap(sandboxGlobals[key])
+    }
+    // globalThis 指回沙箱自身的全局对象（包装它会让脚本访问 globalThis 时行为异常）
+    sandboxGlobals.globalThis = sandboxGlobals
     vm.runInContext(SETUP, this.context, { timeout: 5000 })
   }
 

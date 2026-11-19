@@ -19,7 +19,7 @@ function base(s) { return 'http://127.0.0.1:' + s.address().port }
   const srv = http.createServer((q, r) => { r.writeHead(200); r.end('ok') })
   await listen(srv)
   {
-    const sb = new Sandbox({ id: 'q', maxTotalFetches: 1, onLog: () => {} })
+    const sb = new Sandbox({ id: 'q', maxTotalFetches: 1, allowPrivateHosts: true, onLog: () => {} })
     let m1 = ''
     try { await fetchOf(sb)(base(srv)) } catch (e) { m1 = String(e.message || e) }
     ck('首次请求通过（未触发总量上限）', !m1, m1)
@@ -33,7 +33,7 @@ function base(s) { return 'http://127.0.0.1:' + s.address().port }
   const slow = http.createServer((q, r) => { setTimeout(() => { r.writeHead(200); r.end('ok') }, 200) })
   await listen(slow)
   {
-    const sb = new Sandbox({ id: 'qi', maxInflight: 1, onLog: () => {} })
+    const sb = new Sandbox({ id: 'qi', maxInflight: 1, allowPrivateHosts: true, onLog: () => {} })
     const a = fetchOf(sb)(base(slow))     // 进入即 inflight=1，200ms 后才 settle
     const b = fetchOf(sb)(base(slow))     // inflight(1) >= maxInflight(1) → 立即拒绝
     let mb = ''
@@ -47,7 +47,7 @@ function base(s) { return 'http://127.0.0.1:' + s.address().port }
   // ---------- 3. 未处理拒绝兜底：进程不退出 ----------
   const before = process.__lxUnhandledCount || 0
   {
-    const sb = new Sandbox({ id: 'gu', onLog: () => {} })
+    const sb = new Sandbox({ id: 'gu', allowPrivateHosts: true, onLog: () => {} })
     // 复现事故：fetch 一个必死地址，且只 .then 不 catch
     const pf = fetchOf(sb)('http://127.0.0.1:1/dead')
     pf.then(r => r.text()).then(t => t)   // 故意不接 catch
