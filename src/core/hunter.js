@@ -1500,10 +1500,10 @@ class Hunter {
     //    「我这条成了别人的 keeper，但我自己后来也被废了」。于是库里会长出
     //    指向废弃条目的 dupOf 链、互指成环、甚至整组同内容副本全灭（活跃 0 = 内容丢失）。
     //    这里在保存之前一次性抹平，三条不变量按顺序恢复：
-    //      a) 指针归一：dupOf 只能指向「终局存活者」，成环/悬空/超深一律复活该条
+    //      a) 指针归一：dupOf 只能指向「终局存活者」（同内容重复还须同 contentHash）
     //      b) 组内兜底：每个 contentHash 组活跃副本数必须 ≥ 1（全灭则择优复活一条）
     //      c) 矛盾态修正：已废弃条目不得对外宣称 usable
-    //    顺序不可调换：b 要在 c 之前——b 复活的那条必须保留它自己的 usable，
+    //    顺序不可调换：b 要在 c 之前——b 复活的那条必须按 deep 证据重算 usable，
     //    c 才能把「组里已有活跃副本」的其余副本正确置为不可用。
     const fix = this._dedupeInvariants(all)
     res.revived = fix.revived
@@ -1514,7 +1514,7 @@ class Hunter {
       this.log(`去重完成：废弃同内容 ${res.dupContent} 条、同名旧版本 ${res.oldVersion} 条、同仓库同名 ${res.dupFile} 条` +
         (pendingDuel ? `（同名待测对决 ${pendingDuel} 对留待真实检测裁决）` : '') +
         (weakSkipped ? `（弱文件名 ${weakSkipped} 条不按名判重，留待指纹确认）` : '') +
-        (fix.changed ? `；一致性收尾：指针归一 ${fix.repointed} 条、复活 ${fix.revived} 条、usable 矛盾态修正 ${fix.usableFixed} 条` : ''), '去重')
+        (fix.changed ? `；一致性收尾：指针改写 ${fix.repointed} 条、复活 ${fix.revived} 条（其中无深检证据 ${fix.unusableRevived} 条）、usable 矛盾态修正 ${fix.usableFixed} 条` : ''), '去重')
     }
     return res
   }
@@ -1530,17 +1530,25 @@ class Hunter {
    *
    * 判据口径（用户 2026-11-19 裁定）：成环或超深时**复活**而不是留着不动。
    * 代价不对称——复活是可逆的（下轮检测会重新判），丢内容不可逆。
-   * 复活只清 deprecated/dupOf/dupReason，不动 usable/deep/status，
-   * 让下一次检测自然裁决，不人为预设它可用。
+   *
+   * 复活只清 deprecated/dupOf/dupReason + 按 deep 证据重算 usable：
+   * 废弃期间 usable 已被置 false，若只摘废弃标记，深检有可用平台的真音源会以
+   * 「不可用」状态复活（sorters.js:41 归进不可用档），属于误伤好源。所以有深检证据
+   * 就按证据重算 usable；没有深检证据的不预设可用，交给下一次检测裁决。
+   * deep/status 一律不动。
    *
    * @param {Array} all store.getSources() 的结果（就地修改条目）
-   * @returns {{revived:number, repointed:number, usableFixed:number, changed:boolean}}
+   * @returns {{revived:number, repointed:number, usableFixed:number, unusableRevived:number, changed:boolean}}
    */
   _dedupeInvariants(all) {
-    const out = { revived: 0, repointed: 0, brokenPointers: 0, usableFixed: 0, changed: false }
+    const out = { revived: 0, repointed: 0, brokenPointers: 0, usableFixed: 0, unusableRevived: 0, changed: false }
     if (!Array.isArray(all) || !all.length) return out
     const byId = {}
     for (const e of all) if (e && e.id) byId[e.id] = e
+    // 指针改写按「条目」计数：a/b/d 三段都可能改同一条的 dupOf，
+    // 用累加的 ++ 会重复计入（日志报 529、实际变化 477）。这里用 Set 去重。
+    const repointSet = new Set()
+    const setDupOf = (e, v) => { repointSet.add(e.id); e.dupOf = v }
 
     // a) 指针归一：沿 dupOf 走到第一个未废弃者；成环/悬空/超深 → 交给 b 的组内兜底裁决
     //
@@ -1575,7 +1583,7 @@ class Hunter {
     const brokenIds = []
     for (const p of plan) {
       if (p.target) {
-        if (p.e.dupOf !== p.target.id) { p.e.dupOf = p.target.id; out.repointed++ }
+        if (p.e.dupOf !== p.target.id) setDupOf(p.e, p.target.id)
         continue
       }
       // 指不到终局存活者：记下来，由 b/d 按组形态决定去哪
@@ -1609,14 +1617,20 @@ class Hunter {
       }
       if (!pick) continue
       pick.deprecated = false
-      pick.dupOf = null
+      if (pick.dupOf !== null) setDupOf(pick, null)
       pick.dupReason = null
+      // ★ P0：废弃期间 usable 已被 `dep()` 置 false，只摘废弃标记会把这个 false 原样带出来，
+      //   于是「深检明明有可用平台」的真音源复活后仍显示成不可用（sorters.js:41 归进不可用档），
+      //   违背「绝不误伤好源」。这里按 deep 证据重算：有深检且可用平台 > 0 才算可用，
+      //   没有深检证据的不会被预设可用（交给下一次检测裁决）。
+      pick.usable = !!(pick.deep && pick.deep.checkedAt && usableCount({ deep: pick.deep }) > 0)
+      if (!pick.usable) out.unusableRevived++
       out.revived++
-      this.log(`dedupe: revive hash=${String(hash).slice(0, 12)} id=${pick.id} reason=group-all-deprecated copies=${g.length}`, '去重', 'warn')
+      this.log(`dedupe: revive hash=${String(hash).slice(0, 12)} id=${pick.id} reason=group-all-deprecated copies=${g.length} usable=${pick.usable}`, '去重', 'warn')
       // 组内其余副本：把指针补到刚复活的代表上，保证「dupOf 必须指向活跃条目」
       for (const e of g) {
         if (e === pick || !e.deprecated) continue
-        if (e.dupOf !== pick.id) { e.dupOf = pick.id; out.repointed++ }
+        if (e.dupOf !== pick.id) setDupOf(e, pick.id)
       }
     }
 
@@ -1634,6 +1648,13 @@ class Hunter {
     //    （A→B、B→A）在 a 里会被判成 cycle 而搁置，b 又因为组里已有活副本不介入，
     //    结果环原样留下（生产库实测残留 15 条）。这里用「每个 contentHash 组选定一个
     //    活跃代表」的事实做最终归一，成环必然被打散。
+    //
+    //    ★ P1：「合规」不能只看目标活不活，还要看理由对不对得上。
+    //    「同名旧版本」跨 contentHash 指向是**必须**的（旧版指向新版，内容必然不同）；
+    //    但「同内容重复」跨 contentHash 指向是**错**的——同 contentHash 才叫同内容。
+    //    实测生产库有 6 条「同内容重复」指到了别组的活跃条目（其中 4 条是 probe /
+    //    health-daily / source-audit / lx-source 这类伪重复），会被误当成真重复副本。
+    const sameContent = (reason) => /同内容/.test(String(reason || ''))
     const liveRepByHash = {}
     for (const e of all) {
       if (!e || !e.contentHash || e.deprecated) continue
@@ -1642,20 +1663,23 @@ class Hunter {
     for (const e of all) {
       if (!e || !e.deprecated) continue
       const t = e.dupOf != null ? byId[e.dupOf] : null
-      if (t && !t.deprecated && t.id !== e.id) continue   // 已指向活跃条目，合规
+      const okTarget = !!(t && !t.deprecated && t.id !== e.id &&
+        (!sameContent(e.dupReason) || t.contentHash === e.contentHash))
+      if (okTarget) continue   // 已指向合规目标（活着 + 理由与目标类型匹配）
       const rep = e.contentHash ? liveRepByHash[e.contentHash] : null
       if (rep && rep.id !== e.id) {
-        if (e.dupOf !== rep.id) { e.dupOf = rep.id; out.repointed++ }
+        if (e.dupOf !== rep.id) setDupOf(e, rep.id)
         if (!e.dupReason) e.dupReason = '同内容重复'
       } else {
         // 组内没有别的活跃代表（单条组 / 组内就它自己）：清指针，不能指向自己或死人
-        if (e.dupOf != null) { e.dupOf = null; out.repointed++ }
+        if (e.dupOf != null) setDupOf(e, null)
         // 原因如实化：保留方已不在，还写「已有更新版本」是假话
         if (/已有更新版本/.test(String(e.dupReason || ''))) e.dupReason = '同名旧版本（保留方已失效）'
         else if (!e.dupReason) e.dupReason = '同内容重复'
       }
     }
 
+    out.repointed = repointSet.size
     out.changed = !!(out.revived || out.repointed || out.usableFixed)
     return out
   }

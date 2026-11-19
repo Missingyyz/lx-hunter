@@ -6,11 +6,14 @@
  * 永久悬空；最坏情况是一组同 contentHash 副本全部废弃 = 这份内容从活跃库彻底消失
  * （8197 生产库实测 100 组 / 480 条）。
  *
- * 本测试锁定四条不变量（用户 2026-11-19 裁定）：
+ * 本测试锁定六条不变量（用户 2026-11-19 裁定，② 在 P1 后加了「同内容须同 hash」）：
  *   ① 每个 contentHash 组活跃副本数 ≥ 1
- *   ② 不存在 dupOf 指向「已废弃」或「不存在」的目标
+ *   ② 不存在 dupOf 指向「已废弃」或「不存在」的目标；
+ *      「同内容重复」还须指向同 contentHash 的条目（「同名旧版本」跨组指向是合法的）
  *   ③ 不存在 usable===true && deprecated===true
  *   ④ 不存在 dupOf 成环（含自指）
+ *   ⑤ 每个 contentHash 组活跃副本数 ≤ 1（去重必须收敛，不留多份）
+ *   ⑥ 复活动作纯净：只清重复标记 + 按 deep 证据重算 usable，deep/status/contentHash/size 不动
  *
  * 另含一个「100 组全灭」的 fixture，直接验证收尾修复真的能把内容救回来。
  */
@@ -22,6 +25,7 @@ const assert = require('assert')
 const ROOT = path.join(__dirname, '..')
 const { Store } = require(path.join(ROOT, 'src', 'core', 'store'))
 const { Hunter } = require(path.join(ROOT, 'src', 'core', 'hunter'))
+const { usableCount } = require(path.join(ROOT, 'src', 'core', 'checker'))
 
 let pass = 0
 let fail = 0
@@ -86,12 +90,17 @@ function checkInvariants (store) {
     if (g.filter(e => !e.deprecated).length < 1) v.g1.push('hash=' + h.slice(0, 12) + ' copies=' + g.length)
   }
 
-  // ② dupOf 目标必须存在且未废弃
+  // ② dupOf 目标必须存在且未废弃；「同内容重复」还须指向同 contentHash 的条目
   for (const e of all) {
     if (!e.deprecated || e.dupOf == null) continue
     const t = byId[e.dupOf]
     if (!t) { v.g2.push('dangling: ' + e.id + ' -> ' + e.dupOf); continue }
-    if (t.deprecated) v.g2.push('to-deprecated: ' + e.id + ' -> ' + e.dupOf)
+    if (t.deprecated) { v.g2.push('to-deprecated: ' + e.id + ' -> ' + e.dupOf); continue }
+    // P1：「同内容」跨 contentHash 指向是错的（同 contentHash 才叫同内容）。
+    // 「同名旧版本」跨组指向是必须的（旧版指向新版，内容必然不同），不在此列。
+    if (/同内容/.test(String(e.dupReason || '')) && t.contentHash !== e.contentHash) {
+      v.g2.push('cross-hash-samecontent: ' + e.id + '(' + String(e.contentHash).slice(0, 8) + ') -> ' + e.dupOf + '(' + String(t.contentHash).slice(0, 8) + ')')
+    }
   }
 
   // ③ usable && deprecated 不得同时成立
@@ -404,9 +413,113 @@ console.log('\n=== ⑪ ★ 复活动作本身的纯净性：只清重复标记�
   ok('复活纯净性 · status 未变', live.status === snap.status, 'status=' + live.status + ' vs ' + snap.status)
   ok('复活纯净性 · contentHash 未变', live.contentHash === snap.contentHash)
   ok('复活纯净性 · size 未变', live.size === snap.size)
-  // usable 允许被 c 段（矛盾态修正）从 true 改 false，但绝不允许被预设成 true
-  const revivedFromFalse = snap.usable === false
-  ok('复活纯净性 · usable 不会被预设为 true', !(revivedFromFalse && live.usable === true), 'was=' + snap.usable + ' now=' + live.usable)
+  // usable 的规则（P0 后）：按 deep 证据重算——有深检且可用平台 > 0 才为 true，
+  // 没有深检证据的不得被预设成 true（交给下一次检测裁决）。
+  const hasEvidence = !!(live.deep && live.deep.checkedAt && usableCount(live) > 0)
+  ok('复活纯净性 · usable 按 deep 证据重算（有证据=可用，无证据不得为 true）',
+    live.usable === hasEvidence, 'usable=' + live.usable + ' hasEvidence=' + hasEvidence)
+})()
+
+// ============================================================
+console.log('\n=== ⑫ ★ P0 回归：复活后必须按 deep 证据重算 usable（不能把废弃期的 false 带出来） ===')
+;(() => {
+  const st = newStore()
+  const h = new Hunter(st)
+  // 三条同内容副本，全部废弃；usable 全被 dep() 置 false。
+  // dead 那条深检 0 可用，good 那条深检 3 个可用。
+  const dead = mk(st, { id: 'q/dead.js', repo: 'q', path: 'dead.js', contentHash: 'HQ', deep: DEEP_ZERO() })
+  const good = mk(st, { id: 'q/good.js', repo: 'q', path: 'good.js', contentHash: 'HQ', deep: DEEP_OK() })
+  const unck = mk(st, { id: 'q/unck.js', repo: 'q', path: 'unck.js', contentHash: 'HQ', deep: null })
+  for (const e of [dead, good, unck]) { e.deprecated = true; e.dupOf = 'q/dead.js'; e.dupReason = '同内容重复'; e.usable = false }
+  const r = h._dedupeInvariants(Object.values(st.db.sources))
+  assertAll(st, 'P0 复活重算 usable')
+  ok('P0 · 救回的正是有深检证据的那条', !good.deprecated, 'good.deprecated=' + good.deprecated)
+  ok('P0 · 救回条 usable 被重算为 true（深检 3 个可用平台）', good.usable === true, 'usable=' + good.usable)
+  ok('P0 · 其余副本仍废弃且 usable=false', dead.deprecated === true && dead.usable === false && unck.deprecated === true && unck.usable === false)
+  ok('P0 · revived=1 / unusableRevived=0', r.revived === 1 && r.unusableRevived === 0, JSON.stringify(r))
+})()
+
+// ============================================================
+console.log('\n=== ⑬ ★ P0 反向：救回的唯一副本没有深检证据 → usable 不得被预设为 true ===')
+;(() => {
+  const st = newStore()
+  const h = new Hunter(st)
+  const a = mk(st, { id: 'z/a.js', repo: 'z', path: 'a.js', contentHash: 'HZ', deep: null })
+  const b = mk(st, { id: 'z/b.js', repo: 'z', path: 'b.js', contentHash: 'HZ', deep: DEEP_ZERO() })
+  for (const e of [a, b]) { e.deprecated = true; e.dupOf = e === a ? 'z/b.js' : 'z/a.js'; e.dupReason = '同内容重复'; e.usable = false }
+  const r = h._dedupeInvariants(Object.values(st.db.sources))
+  assertAll(st, 'P0 无证据')
+  const live = Object.values(st.db.sources).find(e => !e.deprecated)
+  ok('P0无证据 · 组内救回 1 条', !!live, 'revived=' + r.revived)
+  ok('P0无证据 · 无深检证据时 usable 保持 false（不预设可用）', live.usable === false, 'usable=' + live.usable)
+  ok('P0无证据 · unusableRevived 计数 = 1', r.unusableRevived === 1, JSON.stringify(r))
+})()
+
+// ============================================================
+console.log('\n=== ⑭ ★ P1 回归：「同内容重复」不得跨 contentHash 指向 ===')
+;(() => {
+  const st = newStore()
+  const h = new Hunter(st)
+  // X 组的副本，却指向 Y 组的活跃条目——这是错的「同内容重复」
+  const x = mk(st, { id: 'w/x.js', repo: 'w', path: 'x.js', contentHash: 'HX', deep: DEEP_ZERO() })
+  x.deprecated = true; x.dupOf = 'w/y.js'; x.dupReason = '同内容重复'; x.usable = false
+  mk(st, { id: 'w/y.js', repo: 'w', path: 'y.js', contentHash: 'HY', deep: DEEP_OK(), usable: true })
+  // 同组的另一个活跃副本：正确目标
+  const xRep = mk(st, { id: 'w/x2.js', repo: 'w', path: 'x2.js', contentHash: 'HX', deep: DEEP_OK(), usable: true })
+  h._dedupeInvariants(Object.values(st.db.sources))
+  assertAll(st, 'P1 跨组同内容')
+  ok('P1 · 跨组「同内容重复」被改指到本组代表', x.dupOf === xRep.id, 'dupOf=' + x.dupOf + ' expect=' + xRep.id)
+  ok('P1 · 仍保持 deprecated（不因改指而复活）', x.deprecated === true)
+  ok('P1 · ②不变量无 cross-hash-samecontent 违例',
+    checkInvariants(st).g2.filter(s => /cross-hash/.test(s)).length === 0, checkInvariants(st).g2.join(' | '))
+})()
+
+// ============================================================
+console.log('\n=== ⑮ ★ P1 反向：「同名旧版本」跨 contentHash 指向是合法的，不得被打散 ===')
+;(() => {
+  const st = newStore()
+  const h = new Hunter(st)
+  const oldV = mk(st, { id: 'v/old.js', repo: 'v', path: 'old.js', name: '同名N', scriptName: '同名N', contentHash: 'HOLD', scriptVersion: '1.0.0' })
+  oldV.deprecated = true; oldV.dupOf = 'v/new.js'; oldV.dupReason = '同名旧版本（已有更新版本）'; oldV.usable = false
+  mk(st, { id: 'v/new.js', repo: 'v', path: 'new.js', name: '同名N', scriptName: '同名N', contentHash: 'HNEW', scriptVersion: '2.0.0', deep: DEEP_OK(), usable: true })
+  h._dedupeInvariants(Object.values(st.db.sources))
+  assertAll(st, 'P1 同名旧版本跨组')
+  ok('P1反向 · 同名旧版本仍指向新版（未被误改）', oldV.dupOf === 'v/new.js', 'dupOf=' + oldV.dupOf)
+  ok('P1反向 · 仍保持 deprecated', oldV.deprecated === true)
+})()
+
+// ============================================================
+console.log('\n=== ⑯ ★ repointed 必须是「实际变化的条目数」，不重复计数 ===')
+;(() => {
+  const st = newStore()
+  const h = new Hunter(st)
+  // 造一条会被 a 段和 d 段都碰到的条目，验证只计一次
+  const r1 = mk(st, { id: 'c1/a.js', repo: 'c1', path: 'a.js', contentHash: 'HC1' })
+  const r2 = mk(st, { id: 'c1/b.js', repo: 'c1', path: 'b.js', contentHash: 'HC1' })
+  const r3 = mk(st, { id: 'c1/c.js', repo: 'c1', path: 'c.js', contentHash: 'HC1' })
+  for (const e of [r1, r2, r3]) { e.deprecated = true; e.dupOf = 'nope/x.js'; e.dupReason = '同内容重复'; e.usable = false }
+  const before = {}
+  for (const e of Object.values(st.db.sources)) before[e.id] = e.dupOf
+  const r = h._dedupeInvariants(Object.values(st.db.sources))
+  const actualChanged = Object.values(st.db.sources).filter(e => before[e.id] !== e.dupOf).length
+  ok('repointed 计数 = 实际 dupOf 变化条目数', r.repointed === actualChanged, 'repointed=' + r.repointed + ' actual=' + actualChanged)
+})()
+
+// ============================================================
+console.log('\n=== ⑰ ★ 复活日志必须带 usable 字段（便于事后审计） ===')
+;(() => {
+  const st = newStore()
+  const h = new Hunter(st)
+  const logs = []
+  h.log = (m) => logs.push(m)
+  const a = mk(st, { id: 'g1/a.js', repo: 'g1', path: 'a.js', contentHash: 'HG1', deep: DEEP_OK() })
+  const b = mk(st, { id: 'g1/b.js', repo: 'g1', path: 'b.js', contentHash: 'HG1', deep: DEEP_ZERO() })
+  for (const e of [a, b]) { e.deprecated = true; e.dupOf = e === a ? 'g1/b.js' : 'g1/a.js'; e.dupReason = '同内容重复'; e.usable = false }
+  h._dedupeInvariants(Object.values(st.db.sources))
+  const rv = logs.filter(l => /dedupe: revive/.test(l))
+  ok('复活日志条数 = 1', rv.length === 1, JSON.stringify(logs))
+  ok('复活日志含 hash=/id=/reason=/usable=', /hash=\S+ id=\S+ reason=\S+ copies=\d+ usable=(true|false)/.test(rv[0] || ''), rv[0])
+  ok('复活日志的 usable 与被救回条目一致', /usable=true/.test(rv[0] || ''), rv[0])
 })()
 
 fs.rmSync(dir, { recursive: true, force: true })
