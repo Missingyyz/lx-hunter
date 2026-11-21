@@ -160,7 +160,7 @@ const head = html.slice(0, html.indexOf('</head>'))
 ok(/<script src="auth-bg\.js\?v=(\d+)"><\/script>/.test(head) && Number(/auth-bg\.js\?v=(\d+)/.exec(head)[1]) >= 2,
   'auth-bg.js 缓存戳已 bump，并在 head 同步引入（首屏不闪默认背景）')
 ok(/styles\.css\?v=(\d+)/.test(head) && Number(/styles\.css\?v=(\d+)/.exec(head)[1]) >= 12, 'CSS 缓存戳已 bump')
-ok(pkg.scripts.test.includes('auth-bg-ui.test.js'), '新测试已注册进 npm test')
+ok(pkg.scripts.test.includes('run-tests.js') || pkg.scripts.test.includes('auth-bg-ui.test.js'), '本测试已纳入 npm test（runner 自动发现 或 显式列出）')
 ok(fs.existsSync(path.join(renderer, 'auth-bg.js')), '静态资源 auth-bg.js 存在（web.js 按目录直出 .js）')
 
 console.log('--- ⑧ 背景库模型：脏数据、去重、上限 ---')

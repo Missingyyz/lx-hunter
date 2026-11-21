@@ -5,3 +5,4 @@ data/
 *.log
 .workbuddy/
 ref/
+tests/tools/.last-test-result.txt

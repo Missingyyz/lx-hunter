@@ -39,8 +39,10 @@ const path = require('path')
 const ROOT = path.resolve(__dirname, '..', '..')
 const REPO = path.join(ROOT, '..')
 const TARBALL = path.join(REPO, '_src_tree.tar')
-const HOST = 'admin@192.168.1.246'
-const ASKPASS = process.env.LX_SSH_ASKPASS || 'E:\\AI\\Deva\\lunter\\_askpass.cmd'
+// 隐私：宿主地址与凭据路径不再写死私人值，改由环境变量提供。
+// 本机用法示例：LX_SSH_HOST=admin@<host> LX_SSH_ASKPASS=<你的askpass路径> node <本脚本>
+const HOST = process.env.LX_SSH_HOST || 'admin@localhost'
+const ASKPASS = process.env.LX_SSH_ASKPASS || path.join(REPO, '_askpass.cmd')
 const CHECK_ONLY = process.argv.includes('--check')
 
 const REMOTE_SRC = '/vol1/1000/docker/lx-hunter/patch-ai/src'

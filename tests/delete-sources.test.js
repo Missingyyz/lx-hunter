@@ -128,7 +128,7 @@ ok(/不会删除已灌入到服务平台上的脚本/.test(html), '设置页说�
 ok(/app\.js\?v=(\d+)/.test(html) && Number(/app\.js\?v=(\d+)/.exec(html)[1]) >= 48, 'app.js 缓存戳已 bump')
 ok(/web-bridge\.js\?v=(\d+)/.test(html) && Number(/web-bridge\.js\?v=(\d+)/.exec(html)[1]) >= 47,
   'web-bridge.js 缓存戳已 bump')
-ok(pkg.scripts.test.includes('delete-sources.test.js'), '本测试已注册进 npm test')
+ok(pkg.scripts.test.includes('run-tests.js') || pkg.scripts.test.includes('delete-sources.test.js'), '本测试已纳入 npm test（runner 自动发现 或 显式列出）')
 
 fs.rmSync(dir, { recursive: true, force: true })
 console.log(`\ndelete-sources.test.js: PASS ${pass} / FAIL 0`)

@@ -81,7 +81,7 @@ ok(/document\.body\.classList\.toggle\('conn-offline',\s*state\.connOk\s*===\s*f
 ok(Number(/app\.js\?v=(\d+)/.exec(html)[1]) >= 51, 'app.js 缓存戳已 bump')
 ok(Number(/styles\.css\?v=(\d+)/.exec(html)[1]) >= 14, 'styles.css 缓存戳已 bump')
 ok(/ledgerDropped/.test(web) && /ledgerDropped/.test(main), '双端删除日志都报告账本清理数')
-ok(pkg.scripts.test.includes('offline-snapshot.test.js'), '本测试已注册进 npm test')
+ok(pkg.scripts.test.includes('run-tests.js') || pkg.scripts.test.includes('offline-snapshot.test.js'), '本测试已纳入 npm test（runner 自动发现 或 显式列出）')
 
 console.log('--- ③ 真实 Store：删占位连账本一起摘，同步不复活 ---')
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lxh-snap-'))

@@ -11,9 +11,12 @@
  * 用法:
  *   node tests/tools/version-sync-check.js              # 打印对照表 + 差异统计
  *   node tests/tools/version-sync-check.js --strict     # 有差异时 exit 1（CI 用）
- *   node tests/tools/version-sync-check.js --host 192.168.1.246
+ *   LX_SSH_HOST=admin@<host> node tests/tools/version-sync-check.js --strict
+ *   或：node tests/tools/version-sync-check.js --host admin@<host>
  *
- * 依赖：能 ssh 到宿主并 docker exec 进容器（凭据走 SSH_ASKPASS）。
+ * 依赖：能 ssh 到宿主并 docker exec 进容器。
+ *   宿主地址：--host 参数 或 LX_SSH_HOST 环境变量（默认 admin@localhost，需显式配置）
+ *   SSH 口令：LX_SSH_ASKPASS 指向的 askpass 脚本，默认值取仓库根目录 _askpass.cmd
  */
 const { spawn } = require('child_process')
 const fs = require('fs')
@@ -23,7 +26,8 @@ const crypto = require('crypto')
 const args = process.argv.slice(2)
 const STRICT = args.includes('--strict')
 const HOST_ARG = args.indexOf('--host')
-const HOST = HOST_ARG >= 0 ? args[HOST_ARG + 1] : 'admin@192.168.1.246'
+// 隐私：默认地址用通用占位，私人宿主由 --host 或 LX_SSH_HOST 环境变量显式提供
+const HOST = HOST_ARG >= 0 ? args[HOST_ARG + 1] : (process.env.LX_SSH_HOST || 'admin@localhost')
 const CONTAINER = (() => {
   const i = args.indexOf('--container')
   return i >= 0 ? args[i + 1] : 'lx-hunter-ai-test'
@@ -31,7 +35,7 @@ const CONTAINER = (() => {
 
 // 仓库根：脚本在 lx-hunter/tests/tools/ 下，往上两级
 const REPO = path.resolve(__dirname, '..', '..')
-const ASKPASS = process.env.LX_SSH_ASKPASS || 'E:\\AI\\Deva\\lunter\\_askpass.cmd'
+const ASKPASS = process.env.LX_SSH_ASKPASS || path.join(REPO, '_askpass.cmd')
 
 // 仓库相对路径 → 容器内路径
 const MAP = [
