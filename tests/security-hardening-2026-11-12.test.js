@@ -111,6 +111,42 @@ ok(/id="cfgTrustedObfDomains"/.test(accHtml), '设置页有自定义白名单输
 ok(/autoTrustCleanObf: \$\('cfgAutoTrustObf'\)\.checked/.test(
   fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8')), '读写链路接通')
 
+console.log('--- ⑮b P-1431：自动信任路径运行时回归 ---')
+;(() => {
+  const { Hunter } = require('../src/core/hunter')
+  const store = {
+    config: {
+      excludeHighRiskObfuscated: true,
+      autoTrustCleanObf: true,
+      trustedObfHashes: [],
+      trustedObfDomains: []
+    },
+    saveDb: () => {}
+  }
+  const hunter = Object.create(Hunter.prototype)
+  hunter.store = store
+  hunter.emit = () => {}
+  hunter.log = () => {}
+  const entry = {
+    id: 'runtime-obf-auto-trust',
+    status: 'quarantined',
+    quarantined: true,
+    contentHash: 'runtime-obf-hash',
+    deep: {
+      checkedAt: Date.now(),
+      platforms: { kw: { url: 'https://api.kuwo.cn/song' } }
+    }
+  }
+  const code = ('const _0xabc123 = 1;\n').repeat(40) +
+    'const host = "https://music.163.com/song";'
+  assert.doesNotThrow(
+    () => hunter.applyObfGate([entry], () => code, '检测'),
+    '自动信任路径不应因缺少 obfDomainVerdict 导入而抛 ReferenceError'
+  )
+  ok(entry.obfTrusted === true && entry.obfAutoTrust === true, '运行时自动信任干净外联的高危混淆条目')
+  ok(store.config.trustedObfHashes.includes('runtime-obf-hash'), '运行时自动信任写入内容哈希')
+})()
+
 console.log('--- ⑰ P-1432：检测口径「未测 vs 不可用」+ dedupe 完整性守卫 ---')
 const checkerSrc3 = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'checker.js'), 'utf8')
 ok(/const attemptsBefore = metrics\.attempts/.test(checkerSrc3), 'testPlatform 记录 dispatch 前 attempts 基线')
