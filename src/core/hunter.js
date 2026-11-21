@@ -4,7 +4,7 @@ const { crawl, checkQuota, filterDeadRepos, DEFAULT_REPOS, setCrawlBlockPatterns
 const { crawlWebSite, isWebRepo, probeExternalSource, normalizeExternalUrl } = require('./websource')
 const { fetchCommunityRepos } = require('./community')
 const { collectFromHubs } = require('./hubfeed')
-const { checkBasic, deepCheck, extractMeta, sha256Str, usableCount, stoppable, isLocalNetworkIssue, patrolJudge, obfuscationRisk, obfuscationTip, obfDomains, applyProbeRecord, probeApiHosts, apiDownVerdict, passedPlatforms, regressionJudge, probeTopTier } = require('./checker')
+const { checkBasic, deepCheck, extractMeta, sha256Str, usableCount, stoppable, isLocalNetworkIssue, patrolJudge, obfuscationRisk, obfuscationTip, obfDomains, obfDomainVerdict, applyProbeRecord, probeApiHosts, apiDownVerdict, passedPlatforms, regressionJudge, probeTopTier } = require('./checker')
 const { crawlFetch, readText, sleep } = require('./net')
 const { getActiveService, getService, getBatchImportAccounts, getIsolations, NO_ACCOUNT_ERR, resolveEnableAfterImport } = require('./services')
 const { Store } = require('./store')
