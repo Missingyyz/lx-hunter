@@ -28,18 +28,20 @@ const VETO_TYPES = {
   DISABLED: 'disabled',                    // 整源被禁用（服务端 enabled=false）
   PLATFORM_DISABLED: 'platform-disabled',  // 单平台 / 部分平台被禁用
   REMOVED: 'removed',                      // 服务端已删除（手动删除或巡检移除）
-  ISOLATED: 'isolated'                     // 自检护栏隔离（CPU 热点等）
+  ISOLATED: 'isolated',                    // 自检护栏隔离（CPU 热点等）
+  UNLOADED: 'unloaded'                     // 服务端试运行加载失败、未注册任何平台（未知源）
 }
 
 const TYPE_LABEL = {
   disabled: '服务端已禁用该音源',
   'platform-disabled': '服务端已禁用它的部分平台',
   removed: '服务端已删除该音源',
-  isolated: '被服务端自检护栏隔离'
+  isolated: '被服务端自检护栏隔离',
+  unloaded: '服务端加载不出任何平台（未知源）'
 }
 
-/** 多平台取并集时的优先级：删除 > 隔离 > 整源禁用 > 单平台禁用（越"重"越优先） */
-const VETO_PRIORITY = { removed: 4, isolated: 3, disabled: 2, 'platform-disabled': 1 }
+/** 多平台取并集时的优先级：删除 > 隔离 > 零平台 > 整源禁用 > 单平台禁用（越"重"越优先） */
+const VETO_PRIORITY = { removed: 4, isolated: 3, unloaded: 2.5, disabled: 2, 'platform-disabled': 1 }
 
 /**
  * 从「服务端列表 + 本地账本 + 上一层冻结表」算出新的冻结表。
@@ -114,6 +116,14 @@ function computeVeto(p) {
     } else if (isolated.has(String(lxId))) {
       type = VETO_TYPES.ISOLATED
       detail = '服务端自检护栏隔离了它（多为 CPU 占用异常）'
+    } else if (srv.status === 'failed' && Array.isArray(srv.supportedSources) && srv.supportedSources.length === 0) {
+      // 零平台「未知源」：服务端试运行加载失败、一个平台都没注册出来（17950 实测：
+      // status=failed 来自 loadUserApi 失败，supportedSources=[] 来自 info.sources 为空）。
+      // 只有「明确报了空数组」才冻结：老服务端不报该字段(undefined)时不猜，避免整库误伤；
+      // status 非 failed（如刚灌入未自检）也不冻，避免锁死「灌入→验证→启用」闭环。
+      // 脚本更新后 contentHash 变化会自动解冻（见上方 sha 比对）。
+      type = VETO_TYPES.UNLOADED
+      detail = '服务端试运行加载失败、未注册任何平台（未知源）；脚本更新后自动解冻'
     } else if (srv.enabled === false) {
       // 「灌入后停用」（disableReason=after-import，2026-11-13 与 lxserver 联动）不冻结：
       // 这是灌入落盘时的默认停用，等 lxserver 停用源复检验证后自动启用 ——

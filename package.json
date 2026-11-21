@@ -1,6 +1,6 @@
 {
   "name": "lx-hunter-pc",
-  "version": "1.13.9",
+  "version": "1.14.0-beta.1",
   "description": "音源猎手 PC 版 — GitHub 洛雪音源爬取、沙箱可用性检测、批量灌入自建 LX MUSIC 服务",
   "main": "src/main/index.js",
   "author": "lx-hunter-pc",
@@ -12,7 +12,7 @@
     "dist": "electron-builder",
     "test": "node tests/tools/run-tests.js",
     "test:dist": "node tests/dist-selfcheck.js",
-    "test:sandbox": "node tests/sandbox-hardening.test.js && node tests/sandbox-return-write.test.js && node tests/sandbox-process.test.js && node tests/sandbox-permission.test.js && node tests/sandbox-wiring.test.js && node tests/outbound-policy.test.js && node tests/sandbox-protocol.test.js && node tests/sandbox-timeout-kill.test.js && node tests/sandbox-c-to-b.test.js && node tests/sandbox-e2e.test.js && node tests/sandbox-guard.test.js && node tests/sandbox-throw-leak.test.js && node tests/sandbox-throw-residue.test.js",
+    "test:sandbox": "node tests/tools/run-tests.js --group=sandbox",
     "test:serial": "node tests/tools/run-tests.js --serial",
     "test:group": "node tests/tools/run-tests.js --group"
   },

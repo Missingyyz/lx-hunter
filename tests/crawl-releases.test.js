@@ -400,7 +400,7 @@ ck('缓存戳不低于 v54（v1.10.7 基线）', (() => { const m = /app\.js\?v=
   ck('隔离条目不落入「未检测」筛选', appSrc.includes("e.status !== 'quarantined'"))
   ck('设置页文案改为隔离表述', htmlSrc.includes('自动隔离') && htmlSrc.includes('「混淆隔离」页'))
   ck('缓存戳提升到 app.js v100 / sorters.js v30（R10 改名整改）',
-    htmlSrc.includes('app.js?v=102') && htmlSrc.includes('sorters.js?v=30') &&
+    htmlSrc.includes('app.js?v=103') && htmlSrc.includes('sorters.js?v=30') &&
     htmlSrc.includes('web-bridge.js?v=61') && htmlSrc.includes('styles.css?v=21'))
 
   // —— v1.10.8 改名检测（prune 301 识别）+ 仓库行快捷拉黑 ——

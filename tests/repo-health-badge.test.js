@@ -74,7 +74,7 @@ console.log('\n=== ④ 不接入自动判定 ===')
 console.log('\n=== ⑤ 缓存戳 ===')
 {
   const html = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'index.html'), 'utf8')
-  ok(/app\.js\?v=102/.test(html), 'index.html 已 bump 到 app.js?v=102')
+  ok(/app\.js\?v=103/.test(html), 'index.html 已 bump 到 app.js?v=103')
 }
 
 console.log('\nrepo-health-badge: PASS ' + pass + ' / FAIL 0')

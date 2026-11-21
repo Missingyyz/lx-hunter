@@ -399,6 +399,31 @@ ck('已灌入页状态列可排序（失效/停用在前）',
 ck('一键选中失效/停用音源（便于批量删除）',
   has(html, /id="btnInsSelFailed"/) && has(appSrc, /btnInsSelFailed/) && has(appSrc, /巡检失效/))
 ck('行内显示巡检结论（巡检失效徽章）', has(appSrc, /function insRowState/) && has(appSrc, /badge dead/))
+ck('已灌入页隔离徽章兼容服务端 isolated 对象/true/字符串（并展示隔离原因）',
+  has(appSrc, /iso === true \|\| iso === 'true' \|\| \(iso && typeof iso === 'object' && !Array\.isArray\(iso\)\)/) &&
+  has(appSrc, /const why = String\(info\.reasonText \|\| info\.reason/) &&
+  has(appSrc, /隔离原因：' \+ esc\(why\)/) && has(appSrc, /服务端已隔离\$\{info\.level/))
+ck('已灌入页服务端 failed 按可用性拆分：零平台醒目 / 版本过旧中性 / 其他 failed 醒目',
+  // 零平台「未知源」：醒目 fail 徽章 + 冻结提示
+  has(appSrc, /\} else if \(st\.zeroPlatform\) \{/) &&
+  has(appSrc, /未知源·无平台加载·请更新/) &&
+  // insRowState 里零平台/版本过旧都参与判定
+  has(appSrc, /if \(patrolBad \|\| svcBad \|\| isolated \|\| zeroPlatform\)/) &&
+  // 版本过旧且平台齐全：中性「建议更新」，不算失效
+  has(appSrc, /\} else if \(st\.updateHint\) \{/) &&
+  has(appSrc, /建议更新/) &&
+  // 其他 failed 仍醒目
+  has(appSrc, /\} else if \(st\.svcBad\) \{/) &&
+  has(appSrc, /服务端自检失败/))
+ck('冻结表 UNLOADED：零平台未知源参与灌入冻结',
+  has(read('src/core/serverVeto.js'), /UNLOADED: 'unloaded'/) &&
+  has(read('src/core/serverVeto.js'), /VETO_TYPES\.UNLOADED/) &&
+  has(read('src/core/serverVeto.js'), /srv\.status === 'failed' && Array\.isArray\(srv\.supportedSources\) && srv\.supportedSources\.length === 0/) &&
+  has(read('src/core/serverVeto.js'), /未知源·冻结/))
+ck('巡检/服务端冲突降级 + 计数归因分开（含零平台）',
+  has(appSrc, /巡检通过·服务端异常/) &&
+  has(appSrc, /服务端异常 \$\{svcBadN\}/) &&
+  has(appSrc, /r\.st\.svcBad \|\| r\.st\.isolated \|\| r\.st\.zeroPlatform/))
 
 // ---- v1.9.0：定时爬取后自动灌入 + 设置页定时/灌入语义澄清 ----
 console.log('\n== v1.9.0 定时爬取后自动灌入 + 设置页语义 ==')

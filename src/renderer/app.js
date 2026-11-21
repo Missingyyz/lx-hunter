@@ -463,9 +463,23 @@ function insRowState(s, byLxId) {
   const globalOff = !!(s && s.enabled === false)
   const platformOff = !globalOff && ds.length > 0
   const patrolBad = !!(patrol && patrol.at && !patrol.ok)
-  const svcBad = !!(s && s.status && s.status !== 'success')
-  const base = { patrol, patrolBad, svcBad, ds, globalOff, platformOff }
-  if (patrolBad || svcBad) return Object.assign(base, { rank: 0, kind: 'bad' })
+  const svcStatus = s && s.status
+  const sup = s && s.supportedSources
+  // 服务端 failed 要按「平台有没有加载出来」拆开（17950 服务端代码实证）：
+  //  - 零平台（failed + 明确的空数组）= 脚本试运行失败、一个平台都没注册 = 完全不可用 → 失效；
+  //  - 版本过旧（failed + updateAlert + 平台齐全）= 还能出歌，只是提示升级 → 不算失效（updateHint）；
+  //  - 其余 failed（非隔离/非过旧/非空平台）仍按失效处理，维持原有口径。
+  const zeroPlatform = !!(svcStatus === 'failed' && Array.isArray(sup) && sup.length === 0)
+  const hasUpdate = !!(s && s.updateAlert)
+  // 服务端自检护栏隔离（live list 的 isolated 字段：对象/true/'true' 都算）——
+  // 服务端已把它从沙箱卸载，属于服务端否定，和 status=failed 同级按「失效」对待。
+  const iso = s && s.isolated
+  const isolated = !!(iso === true || iso === 'true' || (iso && typeof iso === 'object' && !Array.isArray(iso)))
+  // 版本过旧但平台齐全 → 可用，只提示更新，不计入失效
+  const updateHint = !!(hasUpdate && !zeroPlatform && !isolated && Array.isArray(sup) && sup.length > 0)
+  const svcBad = !!(svcStatus && svcStatus !== 'success' && !updateHint)
+  const base = { patrol, patrolBad, svcBad, isolated, zeroPlatform, updateHint, ds, globalOff, platformOff }
+  if (patrolBad || svcBad || isolated || zeroPlatform) return Object.assign(base, { rank: 0, kind: 'bad' })
   if (globalOff || platformOff) return Object.assign(base, { rank: 1, kind: 'off' })
   return Object.assign(base, { rank: 2, kind: 'ok' })
 }
@@ -2572,7 +2586,7 @@ function statusCellBase(e) {
   // partial（只关了部分平台）只提示、不冻结 —— 源还能用，不能连更新都不许推
   const vBadge = e.veto
     ? `<span class="badge ${e.veto.partial ? 'warn' : 'fail'}" title="${esc((e.veto.detail || '') + (e.veto.partial ? '；其余平台仍可用，照常参与更新与灌入' : '；该音源内容更新前不会自动灌入任何平台，更新后自动解冻'))}">` +
-      (e.veto.partial ? '部分平台禁用' : e.veto.type === 'removed' ? '服务端已删·冻结' : e.veto.type === 'isolated' ? '服务端隔离·冻结' : '服务端已禁·冻结') +
+      (e.veto.partial ? '部分平台禁用' : e.veto.type === 'removed' ? '服务端已删·冻结' : e.veto.type === 'isolated' ? '服务端隔离·冻结' : e.veto.type === 'unloaded' ? '未知源·冻结' : '服务端已禁·冻结') +
       '</span>'
     : ''
   const im = importedBadge(e)
@@ -2652,7 +2666,7 @@ function statusCell(e) {
   const svcHandled = !!(e && e.veto && !e.veto.partial)   // 服务端整源处置（隔离/禁用/删），与 vBadge 同源
   const patrolOk = !!(e && e.lastPatrol && e.lastPatrol.at && e.lastPatrol.ok === true)
   if (!svcHandled || !patrolOk) return base
-  const srv = e.veto.type === 'isolated' ? '服务端隔离' : e.veto.type === 'removed' ? '服务端已删' : '服务端禁用'
+  const srv = e.veto.type === 'isolated' ? '服务端隔离' : e.veto.type === 'removed' ? '服务端已删' : e.veto.type === 'unloaded' ? '服务端加载不出平台（未知源）' : '服务端禁用'
   const conflict = `<span class="badge gray" title="两套信号不一致：${esc(srv)}（服务端处置信号），但本机最近一次巡检判定通过。两者仅供参考、互不对齐，也不影响本机巡检结论；请手动复核。">两套信号不一致·待复核</span>`
   return base + ' ' + conflict
 }
@@ -3736,22 +3750,48 @@ function installedRow(s, st, active) {
   const p = st.patrol
   if (p && p.at) {
     const when = new Date(p.at).toLocaleString('zh-CN', { hour12: false })
-    patrolBadge = p.ok
-      ? `<span class="badge ok" title="巡检通过（${esc(when)}）">巡检正常</span>`
-      : `<span class="badge dead" title="巡检判定失效（${esc(when)}）：${esc(p.note || '')}\n系统已自动停用（非你手动）；确认不需要了就勾选删除。可点「健康巡检」重测一次。">巡检失效</span>`
+    // 本机巡检通过、但服务端实时列表已 failed/隔离时，不再单显示「巡检正常」——
+    // 两套信号矛盾，单给绿色会让用户误以为可用（已灌入页以服务端现状为准）。
+    if (p.ok && !st.svcBad && !st.isolated && !st.zeroPlatform) {
+      patrolBadge = `<span class="badge ok" title="巡检通过（${esc(when)}）">巡检正常</span>`
+    } else if (!p.ok) {
+      patrolBadge = `<span class="badge dead" title="巡检判定失效（${esc(when)}）：${esc(p.note || '')}\n系统已自动停用（非你手动）；确认不需要了就勾选删除。可点「健康巡检」重测一次。">巡检失效</span>`
+    } else {
+      patrolBadge = `<span class="badge gray" title="本机巡检通过（${esc(when)}），但服务端实时状态异常，以服务端为准、请复核">巡检通过·服务端异常</span>`
+    }
   }
   // F1 形态提醒（纯展示层，读实时 list 字段，不解析 error 文本）：
   //  字段直译，不做状态推断；普遍/默认态（after-import、success）不提示、写日志即可。
   //  隔离优先用 list 的独立信号 isolated（等价于后端 getIsolations 的隔离信息），不看 error 文案。
+  //  注意 isolated 的值：lxserver 实时 list 给的是对象（含 reason/reasonText/level），
+  //  老版本/其它来源可能是 true 或 'true'。三种都要认，且对象要把隔离原因显示出来。
   let svcBadge = ''
-  if (s.isolated === true || s.isolated === 'true') {
-    svcBadge = '<span class="badge warn" title="服务端自检护栏已隔离此音源（隔离信号来自服务端实时列表）。仅供参考、需手动复核处理，不影响本机巡检判定。">服务端已隔离·请复核</span>'
+  const iso = s.isolated
+  if (iso === true || iso === 'true' || (iso && typeof iso === 'object' && !Array.isArray(iso))) {
+    const info = (iso && typeof iso === 'object') ? iso : {}
+    const why = String(info.reasonText || info.reason || info.level || '')
+    svcBadge = `<span class="badge warn" title="服务端自检护栏已隔离此音源（隔离信号来自服务端实时列表）。${why ? '\n隔离原因：' + esc(why) : ''}仅供参考、需手动复核处理，不影响本机巡检判定。">服务端已隔离${info.level ? '·' + esc(String(info.level)) : ''}·请复核</span>`
+  } else if (st.zeroPlatform) {
+    // 零平台「未知源」：服务端试运行加载失败、一个平台都没注册出来（supportedSources=[]）。
+    // 这是对 SVIP「未知/无法加载」截图的如实标记，比「版本过旧」重 —— 此源当前完全出不了歌，
+    // 且服务端处置已冻结灌入；提醒用户更新脚本或删除。
+    const upd = s.updateAlert && s.updateAlert.log ? String(s.updateAlert.log).replace(/\s+/g, ' ').trim() : ''
+    svcBadge = `<span class="badge fail" title="服务端试运行加载失败，未注册任何平台（未知源/无法加载），当前一个平台都出不了歌。${upd ? '\n脚本提示：' + esc(upd) : ''}服务端处置已冻结此源的灌入，脚本更新后自动解冻。请更新脚本或删除。">未知源·无平台加载·请更新</span>`
+  } else if (st.updateHint) {
+    // 版本过旧但平台齐全（如花瓣源 failed + 5 平台）：当前仍可用，只是提示升级。
+    // 中性徽章、不算失效 —— 避免和真正不可用的零平台/隔离混为一谈。
+    const upd = String((s.updateAlert && s.updateAlert.log) || '').replace(/\s+/g, ' ').trim()
+    svcBadge = `<span class="badge gray" title="脚本上报有新版本，当前平台仍可用、不影响取歌；建议到音源库页追更。${upd ? '\n' + esc(upd) : ''}">建议更新</span>`
+  } else if (st.svcBad) {
+    // 其余服务端 failed（非隔离/非过旧/非漏洞形态）：给醒目提示。
+    const upd = s.updateAlert && s.updateAlert.log ? String(s.updateAlert.log).replace(/\s+/g, ' ').trim() : ''
+    svcBadge = `<span class="badge warn" title="服务端自检未通过、此源当前不可用（状态来自服务端实时列表）。${upd ? '\n' + esc(upd) : ''}仅供参考、需手动更新或复核处理，不影响本机巡检判定。">${upd ? '服务端提示需更新' : '服务端自检失败'}·请复核</span>`
   } else if (s.enabled === false && s.disableReason !== 'after-import') {
     svcBadge = `<span class="badge gray" title="服务端整源开关为禁用（原因：${esc(String(s.disableReason || '未标注'))}），非灌入默认态。仅供参考、需手动处理，不影响本机巡检判定。">服务端已禁用·请手动处理</span>`
   }
-  // 其余状态（status=failed 但非隔离/非整源禁用）、after-import（灌入默认禁用态）、
-  // 部分平台禁用（disabledSources 非空）：均不新增整源提示——默认/普遍态不打扰，
-  // 分别沿用已有平台列徽章与「已停用」badge；纯展示层不解析 error 文本、不推断原因。
+  // 其余状态（after-import 灌入默认禁用态、部分平台禁用 disabledSources 非空）：
+  // 均不新增整源提示——默认/普遍态不打扰，沿用已有平台列徽章与「已停用」badge；
+  // status=failed / 隔离 / 非默认禁用已分别在上面给出醒目提示。纯展示层不解析 error 文本。
   // 私有源也要能勾（本页删的是「服务端上该账号可见的音源」，公共清理才只碰公开源）；
   // 但删除时按各自的 owner 路由身份，否则对私有源不生效
   tr.innerHTML = `
@@ -3794,10 +3834,14 @@ function renderInstalledRows() {
       : ''
   }
   const badN = rows.filter(r => r.st.rank === 0).length
+  const patrolBadN = rows.filter(r => r.st.patrolBad).length
+  const svcBadN = rows.filter(r => r.st.svcBad || r.st.isolated || r.st.zeroPlatform).length
   const offN = rows.filter(r => r.st.rank === 1).length
   $('insInfo').textContent = `共 ${list.length} 个自定义音源`
-    + (badN ? ` · 巡检失效 ${badN} 个` : '')
+    + (patrolBadN ? ` · 巡检失效 ${patrolBadN} 个` : '')
+    + (svcBadN ? ` · 服务端异常 ${svcBadN} 个` : '')
     + (offN ? ` · 停用 ${offN} 个（含巡检/系统自动）` : '')
+    + (badN && !patrolBadN && !svcBadN ? ` · 异常 ${badN} 个` : '')
   // 勾选池收敛：服务端已经删掉的 id 要跟着消失（否则会重复删、报一堆失败）
   const liveIds = new Set(list.map(s => s.id))
   for (const id of Array.from(state.insSel)) if (!liveIds.has(id)) state.insSel.delete(id)
@@ -3845,15 +3889,18 @@ function renderInsSelInfo() {
     let extra = ''
     if (n) {
       const byLxId = ledgerByLxId()
-      let bad = 0, off = 0
+      let patrolBad = 0, svcBad = 0, off = 0
       for (const s of (state.installed || [])) {
         if (!state.insSel.has(s.id)) continue
         const st = insRowState(s, byLxId)
-        if (st.rank === 0) bad++
-        else if (st.rank === 1) off++
+        if (st.rank === 0) {
+          if (st.patrolBad) patrolBad++
+          else if (st.svcBad || st.isolated || st.zeroPlatform) svcBad++
+        } else if (st.rank === 1) off++
       }
       const parts = []
-      if (bad) parts.push(`巡检失效 ${bad}`)
+      if (patrolBad) parts.push(`巡检失效 ${patrolBad}`)
+      if (svcBad) parts.push(`服务端异常 ${svcBad}`)
       if (off) parts.push(`停用 ${off}（含系统自动）`)
       if (parts.length) extra = `（${parts.join('、')}）`
     }
@@ -3908,9 +3955,11 @@ $('btnInsSelFailed').addEventListener('click', () => {
   document.querySelectorAll('#insBody input[data-ins]').forEach(cb => { cb.checked = state.insSel.has(cb.dataset.ins) })
   renderInsSelInfo()
   if (!hit.length) return toast('当前账号没有失效 / 停用的音源', 'info')
-  const bad = hit.filter(s => insRowState(s, byLxId).rank === 0).length
-  const off = hit.length - bad
-  toast(`已勾选 ${hit.length} 个` + (bad || off ? `（${[bad ? `巡检失效 ${bad}` : '', off ? `停用 ${off}（含系统自动）` : ''].filter(Boolean).join('、')}）` : '')
+  const stBad = hit.map(s => insRowState(s, byLxId))
+  const patrolBad = stBad.filter(st => st.patrolBad).length
+  const svcBad = stBad.filter(st => st.svcBad || st.isolated || st.zeroPlatform).length
+  const off = hit.length - patrolBad - svcBad
+  toast(`已勾选 ${hit.length} 个` + (patrolBad || svcBad || off ? `（${[patrolBad ? `巡检失效 ${patrolBad}` : '', svcBad ? `服务端异常 ${svcBad}` : '', off ? `停用 ${off}（含系统自动）` : ''].filter(Boolean).join('、')}）` : '')
     + '，确认后点「删除选中」', 'ok')
 })
 

@@ -4,6 +4,7 @@ const fs = require('fs')
 const path = require('path')
 const { usableCount, obfuscationRisk, classifyQuarantineTrust } = require('./checker')
 const { DEFAULT_REPOS, normalizeRepo } = require('./crawler')
+const { cmpVersion } = require('./version')
 
 const DEFAULT_CONFIG = {
   serverUrl: '',
@@ -330,6 +331,9 @@ class Store {
     // 但新口径已不 high 且实测能用的条目，重算迁移只洗白了 obfLevel 却没动隔离状态，
     // 永远卡死（applyObfGate 低风险分支 kept.push 不清隔离标记）。独立一次性迁移复查放行。
     if (this._migrateObfQuarantineRecheck()) this._write(this.dbFile, this.db)
+    // 2026-11-22：一次性「同名旧版本误废」迁移（豆包 v12.0 被 v1.4 占位、doujs 9.1.5-r1 被
+    // 9.1.1-r1 废弃）——旧版裁决把高版本/预发布新版当成旧版废掉。只在证据悬殊组翻案。
+    if (this._migrateWrongDedup()) this._write(this.dbFile, this.db)
     if (!this.db.patrol) this.db.patrol = { lastRun: 0 }
     // v1.10.2 手动删除记录：被删掉的 id 不再由自动采集加回（见 removeSources）
     if (!Array.isArray(this.db.deletedIds)) this.db.deletedIds = []
@@ -419,6 +423,70 @@ class Store {
     }
     this.db.obfQuarantineRecheckMigrated = true
     if (freed) console.log(`[启动] 历史误隔离复查：按当前口径解除 ${freed} 条误判隔离（未写信任名单，内容更新会按现行规则重判）`)
+    return true
+  }
+
+  /**
+   * 2026-11-22 一次性「同名旧版本误废」迁移。
+   * 历史裁决把高版本/预发布新版（豆包 v12.0、doujs 9.1.5-r1）当「同名旧版本」废掉，
+   * 保留方（低版或未深检版）占据 dupOf 位。旧逻辑下这些错误永久不纠正。
+   *
+   * 做法：按 keeper（dupOf 目标）分组，把「组内所有成员」放在一起重新择优——
+   *   赢家 = 版本更新（cmpVersion）优先；平手时实测可用平台更多者。
+   *   仅当新赢家 ≠ 原 keeper 且明显更优（版本更新，或实测可用平台多 ≥2）才翻案；
+   *   其余被废条目统一改指到新赢家，避免链式误指。
+   * 只改 deprecated/dupOf/dupReason/usable，不碰 code/status/quarantine/private。
+   */
+  _migrateWrongDedup() {
+    if (this.db.wrongDedupMigrated === true) return false
+    const src = this.db.sources || {}
+    let flipped = 0
+    const vOf = e => String((e && (e.scriptVersion || e.scriptName || e.name)) || '')
+    const usableN = e => (e && e.deep && e.deep.checkedAt) ? usableCount(e) : 0
+    const groups = {}   // keeperId -> [members]
+    for (const e of Object.values(src)) {
+      if (!e || typeof e !== 'object' || e.fromServer || e.private || !e.contentHash) continue
+      // 只处理「被同名旧版本裁决废掉、且指向仍在的 keeper」的条目（deprecated=true 正是迁移对象）
+      if (!e.deprecated || !/^同名旧版本/.test(String(e.dupReason || '')) || !e.dupOf) continue
+      const keeper = src[e.dupOf]
+      if (!keeper || keeper === e || keeper.fromServer || keeper.private) continue
+      ;(groups[e.dupOf] || (groups[e.dupOf] = [])).push(e)
+    }
+    for (const keeperId of Object.keys(groups)) {
+      const keeper = src[keeperId]
+      const members = groups[keeperId]
+      // 候选 = keeper + 所有指向它的被废条目（只纳有 deep 实测的，避免未测脏数据翻案）
+      const cands = [keeper, ...members].filter(e => e && usableN(e) > 0)
+      if (cands.length < 2) continue
+      // 择优：与 betterKeeper 同口径——可用平台数优先（字典序第一维），平手才比版本。
+      // 避免「版本数字大但平台少」的 v27.2(2平台) 挤掉「平台多」的 v12.0(3平台)。
+      cands.sort((a, b) => {
+        const u = usableN(b) - usableN(a)
+        if (u !== 0) return u
+        return -cmpVersion(vOf(a), vOf(b))
+      })
+      const win = cands[0]
+      if (win === keeper) continue
+      // 赢家必须「实测平台更多(≥2)」或「平台数相同但版本更新」，否则含糊不动
+      const vUp = cmpVersion(vOf(win), vOf(keeper)) > 0
+      const qUp = usableN(win) - usableN(keeper) >= 2
+      if (!vUp && !qUp) continue
+      // 翻案：赢家复活（原本就是被废成员），原 keeper 废弃并改指赢家
+      win.deprecated = false; win.dupOf = null; win.dupReason = null; win.usable = true
+      if (keeper !== win) {
+        keeper.deprecated = true; keeper.dupOf = win.id
+        keeper.dupReason = (usableN(keeper) === 0) ? '同名旧版本（此版本已失效）' : '同名旧版本'
+        keeper.usable = false
+      }
+      // 其余仍废弃的同组成员统一改指新赢家，消除链式误指
+      for (const m of members) {
+        if (m === win || m.deprecated === false) continue
+        m.dupOf = win.id
+      }
+      flipped++
+    }
+    this.db.wrongDedupMigrated = true
+    if (flipped) console.log(`[启动] 同名旧版本误废迁移：纠正 ${flipped} 组（复活高版本/实测更优者，含糊组未动）`)
     return true
   }
 

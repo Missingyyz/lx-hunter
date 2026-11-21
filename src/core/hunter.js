@@ -802,6 +802,18 @@ function findBlockedMetaKey (meta, name) {
   return null
 }
 
+// 2026-11-22：同项目改名识别（豆包定制 / doujs 等同一脚本在 lx-music-source 与
+// backend-api 间迁移）。判断「同 owner + 同名脚本资产」，收窄到不足以误判两条不同源。
+function repoOwner (repo) {
+  const m = /^([^/]+)\//.exec(String(repo || '').trim())
+  return m ? m[1].toLowerCase() : ''
+}
+function sameAssetName (a, b) {
+  const fname = e => String((e && (e.path || e.assetKey || e.name)) || '').split('/').pop().split(':').pop().replace(/\.js$/i, '').toLowerCase()
+  const fa = fname(a), fb = fname(b)
+  return !!fa && fa === fb
+}
+
 class Hunter {
   constructor(store, emit) {
     this.store = store
@@ -812,6 +824,31 @@ class Hunter {
     // 说明：字段（sourceAiClass/updateTipsAiClass）仍是"要不要判"的唯一依据，
     // 本集合只挡"在途窗口内重复入队"，不改变幂等语义。
     this._bypassInFlight = new Set()
+    // 长任务循环内的进度写盘节流（性能优化 v1.13.10）：17MB sources.json 全量同步写盘很贵，
+    // 循环内不再每 10/20 条就写，改为距上次写 ≥60s 才写一次；任务收尾仍同步 saveDb 保证落盘。
+    this._lastThrottledSave = 0
+  }
+
+  /** 长任务进度写盘：节流版，收尾请仍用 store.saveDb() 保证最终落盘。 */
+  _saveDbThrottled() {
+    const now = Date.now()
+    if (now - this._lastThrottledSave < 60000) return
+    this._lastThrottledSave = now
+    this.store.saveDb()
+  }
+
+  /**
+   * 巡检进度写盘：db + imported 一起节流（性能优化 v1.13.10）。
+   * 巡检每条都双写这两个 17MB 级文件是头号写盘瓶颈；服务端动作（禁用/删除/恢复）
+   * 已由 _patrolEnqueueServerWrite await 生效，本地账本写盘延后只会延后「disabledByPatrol」
+   * 标记的持久化时机（保守方向），不影响服务端实际状态。收尾仍强制写，删除成功后立即写。
+   */
+  _savePatrolProgressThrottled() {
+    const now = Date.now()
+    if (now - this._lastThrottledSave < 60000) return
+    this._lastThrottledSave = now
+    this.store.saveImported()
+    this.store.saveDb()
   }
 
   // ---------------- AI 复检旁路钩子（v1.14.0，纯旁路） ----------------
@@ -2016,12 +2053,18 @@ class Hunter {
     //    （检测只跑非 deprecated 条目，所以旧版是否真能用要看它既有 deep；
     //      没有实测就先恢复成候选，下轮检测再定。）
     for (const e of all) {
-      // ⚠️ 严格等值门禁：只有 OLD_VERSION_NEW 才进翻案通道（OLD_VERSION 不进来，见 DUP_REASON 注释）
-      if (!e.deprecated || e.fromServer || e.private || e.dupReason !== DUP_REASON.OLD_VERSION_NEW) continue
+      // 2026-11-22 放宽：原严格等值门禁只认 OLD_VERSION_NEW，但生产上大量误废裁决
+      // （豆包 v12.0→v1.4、doujs 9.1.5-r1→9.1.1-r1）理由是 plain OLD_VERSION「同名旧版本」，
+      // 永远翻不回来。现在 plain OLD_VERSION 也进通道，但只在「证据悬殊」时翻案（见下）。
+      if (!e.deprecated || e.fromServer || e.private || !e.contentHash) continue
+      if (!/^同名旧版本/.test(String(e.dupReason || ''))) continue
       const keeper = e.dupOf ? all.find(x => x.id === e.dupOf) : null
       if (!keeper || keeper.deprecated || keeper.private || !keeper.contentHash || keeper.contentHash === e.contentHash) continue
-      // 只有保留方实测确认失效（深检 0 平台）才翻案；没深检过或还可用则维持原裁决
-      if (!(keeper.deep && keeper.deep.checkedAt && usableCount(keeper) === 0)) continue
+      // 证据悬殊才翻案：被废方有实测可用平台，且 keeper 实测 0 平台或未深检、可用平台明显更少。
+      // 双方都有实测且差距 < 2 → 含糊，不动（误伤代价远大于漏判）。
+      const ue = usableCount(e), uk = usableCount(keeper)
+      if (!e.deep || !e.deep.checkedAt || ue < 1) continue
+      if (keeper.deep && keeper.deep.checkedAt && ue - uk < 2) continue
       // ⚠️ R9 硬规则：翻案不能把「真音源」翻案成「追更链条目」。
       //   翻案通道的前提是「保留方（新版）实测失效 → 恢复旧版」。
       //   若被翻案回来的是真音源、而要把废弃的是追更链条目，方向反了——不能做。
@@ -2034,7 +2077,10 @@ class Hunter {
       e.deprecated = false; e.dupOf = null; e.dupReason = null
       e.usable = !!(e.deep && e.deep.checkedAt && usableCount(e) > 0)
       keeper.deprecated = true; keeper.dupOf = e.id
-      keeper.dupReason = DUP_REASON.VERSION_DEAD; keeper.usable = false
+      // 理由如实反映：keeper 实测 0 平台才是「已失效」，否则是「同名旧版本」让位给更优者
+      keeper.dupReason = (keeper.deep && keeper.deep.checkedAt && uk === 0)
+        ? DUP_REASON.VERSION_DEAD : DUP_REASON.OLD_VERSION
+      keeper.usable = false
       res.oldVersion++   // 计入同名裁决翻案数
       this.emit('source-updated', e)
       this.emit('source-updated', keeper)
@@ -2328,7 +2374,9 @@ class Hunter {
    *    跨仓库同名不算迭代——那可能是两个不同脚本撞名。
    */
   _isSameRepoNewerVersion(keep, drop) {
-    if (!keep || !drop || !keep.repo || keep.repo !== drop.repo) return false
+    if (!keep || !drop || !keep.repo || !drop.repo) return false
+    const same = keep.repo === drop.repo || (repoOwner(keep.repo) && repoOwner(keep.repo) === repoOwner(drop.repo) && sameAssetName(keep, drop))
+    if (!same) return false
     const vk = versionNum(keep.scriptVersion || keep.scriptName || keep.name)
     if (!vk) return false
     return cmpVersion(keep.scriptVersion || keep.scriptName || keep.name,
@@ -2363,7 +2411,25 @@ class Hunter {
     const dd = x && x.deep && x.deep.checkedAt ? x.deep : null
     if (!dd) return true
     const vals = Object.values(dd.platforms || {})
-    return vals.length === 0 || vals.some(pl => !pl || pl.status === 'untested' || pl.status === 'pending')
+    if (vals.length === 0) return true
+    // 2026-11-22：quick 模式下「首个可用即停，其余按设计未测」是正常的完整证据，
+    // 不应再当作「深检未完成」而把质量对决无限期挂起（豆包 v12.0 被 v1.4 占位的根因）。
+    // 只有真·未完成才拦：upstream 限流/熔断留下的 untested，或 pending 状态。
+    const depth = (dd.metrics && dd.metrics.depth) || (x && x.deep && x.deep.metrics && x.deep.metrics.depth) || ''
+    for (const pl of vals) {
+      if (!pl) return true
+      if (pl.status === 'pending') return true
+      if (pl.status === 'untested') {
+        const msg = String(pl.message || pl.msg || pl.error || '')
+        if (/限流|RATE_LIMIT|RATE.?LIMIT|熔断|已知失败|upstream/i.test(msg)) return true
+        // quick 模式按设计停止留下的未测（含明确「快速模式」字样的消息）→ 视为完整
+        if (/快速模式|已确认可用即停止|quick/i.test(msg)) continue
+        // 其余无消息的 untested：仅在 quick 模式下视为完整（绝大多数 quick 产物无消息）
+        if (depth === 'quick') continue
+        return true
+      }
+    }
+    return false
   }
 
   betterKeeper(a, b) {
@@ -3220,6 +3286,10 @@ class Hunter {
     const deepByHash = {}
     for (const s of this.store.getSources()) {
       if (s.deprecated || !s.deep || !s.deep.hash || !s.contentHash || s.contentHash !== s.deep.hash) continue
+      // 隔离区「试跑一次」产出的 deep（probeOnly）只给人看、不参与任何自动化决策。
+      // 若让它进种子，同内容的正常条目会命中它当「已深检」而跳过/被判重复 —— 等于
+      // 用户没确认信任就拿到了试跑结论，构成绕过确认的信任暗道。复用统一判据，不另写口径。
+      if (isProbeOnlyDeep(s)) continue
       if (!deepByHash[s.contentHash]) deepByHash[s.contentHash] = { entry: s, deep: s.deep }
     }
     const nameByNorm = {}
@@ -3371,11 +3441,14 @@ class Hunter {
         } catch (err) {
           const msg = String((err && err.message) || err)
           if (msg !== '已取消') { e.status = 'dead'; e.error = msg.slice(0, 120) }
+        } finally {
+          // 无论正常结束、异常、还是 try 内任何 continue/return（尤其 :3374 同名对决证据不完整
+          // 时那条 continue），都必须清掉 checking —— 否则条目永久卡「检测中…」（用户实测
+          // v9.1.2 一直转圈）。store 启动清扫只能治重启，运行期残留靠这里根治。
+          if (e.checking) { delete e.checking; this.emit('source-updated', e) }
         }
-        delete e.checking
-        this.emit('source-updated', e)
         this.progress({ done: i + 1, total: list.length, usable })
-        if ((i + 1) % 10 === 0) { this.store.saveDb() }
+        this._saveDbThrottled()
       }
     }
     await Promise.all(Array.from({ length: conc }, () => worker()))
@@ -3465,7 +3538,8 @@ class Hunter {
           this.emit('source-updated', e)
         } catch (_) {}
         done++
-        if (done % 20 === 0) { this.step(`补探接口域名 ${done}/${picked.length}`); this.store.saveDb() }
+        if (done % 20 === 0) this.step(`补探接口域名 ${done}/${picked.length}`)
+        this._saveDbThrottled()
       }
     }
     this.log(`补探接口域名存活：本轮 ${picked.length} 条（库内待补 ${need.length} 条，并发 ${conc}，预算 ${Math.round(budget / 1000)}s）…`, '检测')
@@ -3560,7 +3634,7 @@ class Hunter {
         delete e.checking
         this.emit('source-updated', e)
         this.progress({ done: i + 1, total: list.length })
-        if ((i + 1) % 20 === 0) this.store.saveDb()
+        this._saveDbThrottled()
       }
     }
     // 同内容分组：后到的直接废弃（保留更好的一条：可用 > 新 > id 小）
@@ -5678,7 +5752,9 @@ class Hunter {
               if (r && r.success) {
                 delete this.store.imported[srcId]
                 if (this.store.db.sources[srcId]) delete this.store.db.sources[srcId]
+                // 删除成功必须立即落盘：紧接着就把本地记录删了，崩溃丢盘会让源「复活」。
                 this.store.saveImported(); this.store.saveDb()
+                this._lastThrottledSave = Date.now()   // 同步节流水位，避免下一条立刻又写一次
                 deleted++
                 this.log(`巡检连续 ${streak} 次失效，已按配置自动删除音源：${name} — ${note}`, '巡检', 'warn')
               } else if (r && r.message) {
@@ -5714,7 +5790,9 @@ class Hunter {
         this.emit('patrol-item', { id: e.id, name, verdict, note })
         this.emit('source-updated', e)
         this.progress({ done: i + 1, total: items.length, ok, disabled })
-        this.store.saveDb(); this.store.saveImported()
+        // 每条都双写 db+imported 是 17MB 全量写盘瓶颈；节流到最多每 60s 一次，
+        // 收尾（下方）强制写保证最终一致。服务端动作已 await 生效，不受本地写盘延后影响。
+        this._savePatrolProgressThrottled()
       }
     }
     await Promise.all(Array.from({ length: conc }, () => worker()))
@@ -5858,16 +5936,26 @@ class Hunter {
     const alreadyLx = new Set(Object.values(this.store.imported).map(r => r.lxId).filter(Boolean))
     // F1（可观测，不联动）：同步时把服务端条目状态写进账本增量字段 serverStatus/serverEnabled。
     // 只记录、不改 lastPatrol（那是本地实测口径）、不触发任何自动处置 —— 守「不误伤」红线。
-    // 老账本没有这两个字段时照常读；这里逐条补齐。按 lxId 精确匹配（含多账号 importedTo）。
+    // 性能优化 v1.13.10：预建 lxId → rec[] 索引（含多账号 importedTo），把原来「每条服务端
+    // 源都遍历整个 imported」的 O(n×m) 降为 O(n+m)。键用 String，与下方匹配口径一致。
+    const recsByLxId = new Map()
+    for (const [eid, rec] of Object.entries(this.store.imported)) {
+      if (!rec) continue
+      const ids = []
+      if (rec.lxId != null) ids.push(String(rec.lxId))
+      if (Array.isArray(rec.importedTo)) for (const x of rec.importedTo) if (x && x.lxId != null) ids.push(String(x.lxId))
+      for (const k of new Set(ids)) {
+        const arr = recsByLxId.get(k)
+        if (arr) arr.push(rec); else recsByLxId.set(k, [rec])
+      }
+    }
     const syncServerState = (s) => {
       let touched = false
-      for (const [eid, rec] of Object.entries(this.store.imported)) {
-        if (!rec) continue
-        const hit = String(rec.lxId) === String(s.id) ||
-          (Array.isArray(rec.importedTo) && rec.importedTo.some(x => x && String(x.lxId) === String(s.id)))
-        if (!hit) continue
-        const status = s.status || ''
-        const enabled = s.enabled !== false
+      const recs = recsByLxId.get(String(s.id))
+      if (!recs) return false
+      const status = s.status || ''
+      const enabled = s.enabled !== false
+      for (const rec of recs) {
         if (rec.serverStatus !== status || rec.serverEnabled !== enabled) {
           rec.serverStatus = status
           rec.serverEnabled = enabled
@@ -5881,6 +5969,15 @@ class Hunter {
     const idNote = identityMismatch(cfg, serverList)
     if (idNote) this.log(idNote, '同步', 'warn')
 
+    // 性能优化 v1.13.10：预建「基准名 → 本地候选源」索引，把 5928 处每条服务端源
+    // 全扫 getSources() 的 O(n×m) 降为 O(n+m)。只在循环外算一次快照。
+    // 口径与原来完全一致：非占位、未废弃、normName(lxName||scriptName||name) 匹配。
+    const localByName = new Map()
+    for (const e of this.store.getSources()) {
+      if (e.fromServer || e.deprecated) continue
+      const nm = normName(e.lxName || e.scriptName || e.name)
+      if (!localByName.has(nm)) localByName.set(nm, e)   // 同名取第一条，与 .find 语义一致（含空名）
+    }
     let matched = 0, added = 0, pruned = 0
     for (const s of serverList) {
       if (!s || !s.id) continue
@@ -5891,7 +5988,7 @@ class Hunter {
         matched++; continue
       }
       // 优先匹配本地候选（非占位、未废弃、同名）
-      const local = this.store.getSources().find(e => !e.fromServer && !e.deprecated && normName(e.lxName || e.scriptName || e.name) === nm)
+      const local = localByName.get(nm)
       if (local) {
         this.store.imported[local.id] = {
           lxId: s.id, name: s.name, contentHash: local.contentHash || '',

@@ -10,12 +10,16 @@ const path = require('path')
 const checker = require('../src/core/checker')
 
 let basicCalls = 0
+let deepCalls = 0
 checker.checkBasic = async (e) => { basicCalls++; e.status = 'ok'; e.suspected = true; e.error = ''; return { code: 'SCRIPT_' + e.id } }
-checker.deepCheck = async (e) => ({
-  loadable: true, cancelled: false, loadError: null,
-  platforms: { wy: { status: 'usable', message: 'ok' } },
-  usable: 1, hash: e.contentHash, checkedAt: Date.now()
-})
+checker.deepCheck = async (e) => {
+  deepCalls++
+  return {
+    loadable: true, cancelled: false, loadError: null,
+    platforms: { wy: { status: 'usable', message: 'ok' } },
+    usable: 1, hash: e.contentHash, checkedAt: Date.now()
+  }
+}
 delete require.cache[require.resolve('../src/core/hunter')]
 const { Hunter } = require('../src/core/hunter')
 const { Store, DEFAULT_CONFIG } = require('../src/core/store')
@@ -71,6 +75,30 @@ const ck = (n, c, x) => { if (!c) bad++; console.log(`${c ? 'PASS' : 'FAIL'}  ${
   await new Promise(x => setTimeout(x, 5))
   await hunter.runCheck(ids)
   ck('已有探针记录不被跳过分支覆盖', store.db.sources.s1.probe.checkedAt === before)
+
+  // ---------- 场景 5：probeOnly 深检不得进 deepByHash 种子（信任暗道回归） ----------
+  // 隔离区「试跑一次」写入的 e.deep.probeOnly=true，若被库内「同内容的正常条目」当种子复用，
+  // 后者会命中孪生分支被即时废弃（不深检），等于用户没确认信任就拿到试跑结论。
+  // 修复前：normal 命中 probe 的试跑种子 → 走孪生废弃、deepCheck 不调用；
+  // 修复后：probe 被排除出种子 → normal 真正深检一次。
+  const probe = { id: 'probe', name: '试跑源', url: 'https://example.com/probe.js',
+    status: 'ok', suspected: true, usable: true, size: 1 }
+  const normal = { id: 'normal', name: '正常源', url: 'https://example.com/normal.js',
+    status: 'ok', suspected: true, usable: false, size: 1 }
+  store.db.sources.probe = probe
+  store.db.sources.normal = normal
+  probe.contentHash = 'hash-shared'
+  probe.deep = { checkedAt: Date.now(), hash: 'hash-shared', probeOnly: true,
+    loadable: true, platforms: { wy: { status: 'usable', message: 'ok' } } }
+  probe.deprecated = false
+  normal.contentHash = 'hash-shared'
+  normal.code = '/*! @name 正常源 */'
+  normal.deep = null
+  normal.deprecated = false
+  deepCalls = 0
+  await hunter.runCheck([normal.id], { force: true })   // force 只绕「跳过已检测」，种子/孪生判断仍生效
+  ck('probeOnly 试跑深检不进 deepByHash 种子（同内容正常源仍真正深检，未被试跑结论顶替）',
+    deepCalls === 1, 'deepCheck 调用 ' + deepCalls + ' 次（修复前为 0：被判孪生而废弃）')
 
   if (bad) { console.error(`\n${bad} 个断言失败`); process.exit(1) }
   console.log('\n全部通过')
