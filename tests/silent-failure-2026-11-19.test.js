@@ -183,9 +183,9 @@ console.log('\n=== ③ S5b autoActiveHours 支持跨午夜（保住 end=24 旧�
 console.log('\n=== ④ S1 apply 门控：byUser 不能替代 enabled / allowIrreversible ===')
 ;(() => {
   // 与 web.js / main/index.js 的 apply 判定逐句同构
-  const decide = (cfg, kind, byUser) => {
+  const decide = (cfg, kind, byUser, evalVerdict) => {
     const a = new AIReview({ db: { aiSuggestions: {}, aiAudit: {} }, config: { aiReview: cfg } })
-    const g = a.gate(kind)
+    const g = evalVerdict === undefined ? a.gate(kind) : a.gate(kind, { evalVerdict })
     const needIrrev = !!(RISK[kind] && RISK[kind].needsIrreversible)
     if (!g.auto) {
       if (needIrrev && !a.cfg.allowIrreversible) return { applied: false, needSetting: 'allowIrreversible' }
@@ -205,7 +205,19 @@ console.log('\n=== ④ S1 apply 门控：byUser 不能替代 enabled / allowIrre
   const r6 = decide({ enabled: true, mode: 'assist', allowIrreversible: false }, 'R6', true)
   ok('【核心】R6 + allowIrreversible:false + byUser:true → 仍拒绝', r6.applied === false, JSON.stringify(r6))
 
-  ok('三把锁齐（auto + allowIrreversible）→ R7 放行', decide({ enabled: true, mode: 'auto', allowIrreversible: true }, 'R7', false).applied === true)
+  // v1.15.0：三把锁语义改造——mode 不再参与 gate，改由 autoActions 功能授权位 +
+  // 不可逆双锁(allowIrreversible AND autoActions.irreversible) 决定；二者齐备 gate 才放行。
+  const r7Armed = { enabled: true, allowIrreversible: true, autoActions: { R7: true, irreversible: true } }
+  // v1.16（R10 改动⑤）：不可逆高危（needsIrreversible：R7/R10）改为** evalVerdict 缺省即拒**。
+  // 原断言「三把锁齐就放行」在这个口径下不再成立——还需评测凭证 '达标'。这是有意收紧：
+  // 不传凭证≠默认通过。两条都断言，确保"收紧是显式的、不是悄悄放行"。
+  ok('三把锁齐但缺评测凭证 → R7 不再自动放行（v1.16 缺省即拒）', decide(r7Armed, 'R7', false).applied === false,
+    JSON.stringify(decide(r7Armed, 'R7', false)))
+  ok('三把锁齐 + 评测达标 → R7 放行（收紧后仍可达）',
+    decide(r7Armed, 'R7', false, '达标').applied === true)
+  // 反向守红线：缺任一锁都不能自动放行（保持原测试"锁不齐就不放"的强度）
+  ok('R7 缺功能授权位 → 不自动放行', decide({ enabled: true, allowIrreversible: true, autoActions: { irreversible: true } }, 'R7', false).applied === false)
+  ok('R7 缺不可逆位 → 不自动放行', decide({ enabled: true, allowIrreversible: true, autoActions: { R7: true } }, 'R7', false).applied === false)
   ok('R4 中危 + 总开关开 + byUser → 放行', decide({ enabled: true, mode: 'assist', allowIrreversible: false }, 'R4', true).applied === true)
   ok('R4 无 byUser → 要用户确认', decide({ enabled: true, mode: 'assist', allowIrreversible: false }, 'R4', false).needUserConfirm === true)
   ok('R5 中危不受 allowIrreversible 影响', decide({ enabled: true, mode: 'assist', allowIrreversible: false }, 'R5', true).applied === true)
@@ -309,17 +321,20 @@ console.log('\n=== ⑧ 死代码清理（容器早已移除，防止补回一个
 })()
 
 // ============================================================
-console.log('\n=== ⑨ S8 设计-实现落差已如实标注（不删不接） ===')
+console.log('\n=== ⑨ S8 证据守卫已接线（evaluateGate/quoteLocatable 进 gate 判定链） ===')
 ;(() => {
   const src = read('core/aiReview.js')
-  ok('evaluateGate 仍有定义（保留设计意图）', /evaluateGate\(signals\) \{/.test(src))
-  ok('quoteLocatable 仍有定义', /quoteLocatable\(evidence, inputText\) \{/.test(src))
-  ok('evaluateGate 的 JSDoc 写明「生产链路从未调用」', /evaluateGate[\s\S]{0,1400}生产链路从未调用/.test(src))
-  ok('evaluateGate 的 JSDoc 写明「证据全绿才自动」这条红线当前没守住', /证据全绿才自动[\s\S]{0,80}没有守住|红线当前没有守住/.test(src))
-  ok('quoteLocatable 的 JSDoc 写明同样落差', /quoteLocatable 的 JSDoc|同 evaluateGate：\*\*生产链路从未调用/.test(src) || /生产链路从未调用（仅测试引用）[\s\S]{0,400}quoteLocatable/.test(src))
-  ok('quoteLocatable 的 JSDoc 含「生产链路从未调用」', (() => {
-    const i = src.indexOf('校验 AI 引用是否可逐字定位于输入片段')
-    return i > 0 && /生产链路从未调用/.test(src.slice(i, i + 700))
+  ok('evaluateGate 仍有定义（AND 门槛实现）', /evaluateGate\(signals\) \{/.test(src))
+  ok('quoteLocatable 仍有定义（引用逐字定位实现）', /quoteLocatable\(evidence, inputText\) \{/.test(src))
+  // 正面查真实调用，不再锁注释文字
+  ok('gate() 内调用 evaluateGate(ctx.signals) 做证据 AND', /this\.evaluateGate\(ctx\.signals\)/.test(src))
+  ok('gate() 内调用 quoteLocatable 做引用守卫', /this\.quoteLocatable\([^)]*ctx\.inputText/.test(src))
+  ok('run() 未传 signals 时用 collectSignals 自动采集', /this\.collectSignals\(one, kind\)/.test(src))
+  ok('证据守卫已写进 gate 的 JSDoc（标明已接线、隐患已修复）', (() => {
+    const i = src.indexOf('gate(kind, ctx) {')
+    const before = src.slice(Math.max(0, i - 3000), i)
+    return i > 0 && /已接线/.test(before) && /已修复/.test(before) &&
+      /evaluateGate\(ctx\.signals\)/.test(src) && /quoteLocatable\([^)]*ctx\.inputText/.test(src)
   })())
 })()
 
@@ -381,19 +396,18 @@ console.log('\n=== ⑩ R3：模型判 suspicious=true 必须被采纳（C 复核
 })()
 
 // ============================================================
-console.log('\n=== ⑪ S8 风险注释已写进 gate() 旁（防止将来接执行时踩坑） ===')
+console.log('\n=== ⑪ S8 证据守卫已接进 gate()（缺证据/引用不可定位降级人工） ===')
 ;(() => {
   const src = read('core/aiReview.js')
-  const i = src.indexOf('gate(kind) {')
-  ok('gate() 存在', i > 0)
-  const before = src.slice(Math.max(0, i - 3000), i)
-  ok('gate() 旁的注释写明「只拿 kind，拿不到 evidence」', /拿不到\s*evidence|拿不到任何\s*evidence/.test(before))
-  ok('gate() 旁写明「证据 AND 才放行」这条红线未落地', /证据\s*AND[\s\S]{0,120}未落地|红线[\s\S]{0,60}未落地/.test(before))
-  ok('gate() 旁写明当前只标 status 不碰业务对象', /只把建议 s\.status 标成 'applied'[\s\S]{0,120}不碰任何业务对象/.test(before) || /只(标|改)\s*status[\s\S]{0,120}不碰/.test(before))
-  ok('gate() 旁写明危害是污染采纳率统计', /采纳率/.test(before))
-  ok('gate() 旁写明这是「定时炸弹」', /定时炸弹/.test(before))
-  ok('gate() 旁要求接真实执行前先补 evaluateGate + quoteLocatable',
-    /evaluateGate/.test(before) && /quoteLocatable/.test(before) && /真实(执行|动作)/.test(before))
+  // v1.15.0：gate 接入证据守卫后签名改为 gate(kind, ctx)，原 gate(kind) 已不存在。
+  const i = src.indexOf('gate(kind, ctx) {')
+  ok('gate() 存在（签名 gate(kind, ctx)，携带 ctx）', i > 0)
+  const block = src.slice(i, i + 2600)  // gate 函数体
+  ok('gate() 用 ctx.signals 跑证据 AND', /this\.evaluateGate\(ctx\.signals\)/.test(block))
+  ok('证据不全 → 降级人工分支存在', /reason:\s*'证据缺失，降级人工'/.test(block))
+  ok('gate() 用 ctx.aiEvidence + ctx.inputText 跑引用守卫', /ctx\.aiEvidence\s*\|\|\s*\[\]/.test(block) && /this\.quoteLocatable\(/.test(block))
+  ok('引用不可定位 → 降级人工分支存在', /reason:\s*'AI 引用不可定位，降级人工'/.test(block))
+  ok('apply 只标 status、真实执行只在评测沙箱（不碰业务对象）', /s\.status\s*=\s*'applied'/.test(src) && /评测沙箱/.test(src))
 })()
 
 // ============================================================

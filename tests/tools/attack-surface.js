@@ -75,7 +75,7 @@ async function probeInSandbox(body, opts) {
 function probeEscaped(action, target) {
   const r = spawnSync(process.execPath, [
     '--permission', '--allow-fs-read=/app/src', PROBE, action, target
-  ], { encoding: 'utf8', timeout: 20000 })
+  ], { encoding: 'utf8', timeout: 20000, windowsHide: true })
   const line = String(r.stdout || '').split('\n').find(l => l.startsWith('ESCAPE_PROBE '))
   let parsed = null
   try { parsed = line ? JSON.parse(line.slice('ESCAPE_PROBE '.length)) : null } catch (e) {}
@@ -269,7 +269,7 @@ lx.on('request', function () {
       '--permission', '--allow-fs-read=/app/src',
       '-e',
       'process.stdout.write(JSON.stringify({t:"tip",tip:{url:"http://evil.invalid/forged",msg:"forged"}})+"\\n")'
-    ], { encoding: 'utf8', timeout: 10000 })
+    ], { encoding: 'utf8', timeout: 10000, windowsHide: true })
 
     // 8c 关键验证：父进程会不会接受这种伪造行？
     //    直接把伪造行塞进真实 SandboxProcess 的子进程 stdout 是不可能的（那是 worker 自己的流），

@@ -1064,12 +1064,33 @@ function patrolJudge(d, ctx) {
         (d.hint ? '；建议：' + String(d.hint).slice(0, 80) : '')
     }
   }
+  // v1.18 批次D：版权/会员/测试曲不可用类失败，用更高阈值。
+  //
+  // 为什么（功能体检 2026-11-21）：testPlatform 的 5 首测试歌是固定的（"晴天"），如果这首歌
+  // 在某音源后端临时无版权/需要会员，5 平台全部返回"返回空链接"——这和"音源脚本真死了"在
+  // message 层面同形（都是 failed+空链），但前者下一轮换一首歌就好了，后者是真的不能用了。
+  // 原逻辑：所有非网络失败一律 streak+=1、阈值 2 → 两次版权曲就禁用一条好源。
+  //
+  // 修法：全部失败原因都是"返回空链接"或明确版权/会员文案时，把阈值从 2 提到 4。
+  // - "未匹配到歌曲"（脚本搜索逻辑问题）不命中 → 仍是 2（该禁用就得禁用）
+  // - "返回异常: xxx"（脚本内部错误）不命中 → 仍是 2
+  // - 网络原因已在上方 isLocalNetworkIssue 挡住，不到这里
+  const isCopyrightLike = fails.length > 0 &&
+    fails.every(p => {
+      const msg = String(p.message || '')
+      return /返回空链接|无版权|版权限制|版权受限|需要会员|试听/i.test(msg) && !isLocalNetworkIssue(msg)
+    })
+  const effectiveNeed = isCopyrightLike ? Math.max(4, Math.max(1, Number(c.threshold) || 2)) : Math.max(1, Number(c.threshold) || 2)
   if (d.deadDomain === true) return { verdict: 'dead', fatal: true, streak: (Number(c.prevStreak) || 0) + 1, note: '接口域名已失效（公共 DNS 确认不存在）' }
   const streak = (Number(c.prevStreak) || 0) + 1
-  const need = Math.max(1, Number(c.threshold) || 2)
+  const need = effectiveNeed
   const brief = d.hint ? String(d.hint).slice(0, 90) : (firstMsg ? '如 ' + firstMsg.slice(0, 60) : '五平台真实取链全部失败')
-  if (streak >= need) return { verdict: 'dead', streak, note: '连续 ' + streak + ' 次巡检全平台失败：' + brief }
-  return { verdict: 'suspect', streak, note: '五平台取链全部失败（连续第 ' + streak + ' 次），连续 ' + need + ' 次确认后才自动禁用' }
+  const copyrightNote = isCopyrightLike ? '（失败原因像版权/会员限制，已放宽确认次数）' : ''
+  // need 一并回传：调用方的「自动删除」必须等这条源先过禁用线（见 hunter wantDelete）。
+  // 版权类把判死阈值从 2 放宽到 4，而 patrolDeleteAfter 默认仍是 3 —— 若不回传实际阈值，
+  // streak=4 判死时 4>=3 会**跳过禁用直接删除**，违反「禁用先于删除」这条不可逆红线。
+  if (streak >= need) return { verdict: 'dead', streak, need, note: '连续 ' + streak + ' 次巡检全平台失败：' + brief + copyrightNote }
+  return { verdict: 'suspect', streak, need, note: '五平台取链全部失败（连续第 ' + streak + ' 次），连续 ' + need + ' 次确认后才自动禁用' + copyrightNote }
 }
 
 /**

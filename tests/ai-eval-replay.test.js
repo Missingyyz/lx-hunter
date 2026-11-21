@@ -137,7 +137,8 @@ console.log('--- ③ selectScope：各范围筛选 / limit 截断 / 排除 depre
   ok(failed.join(',') === 's-failed,s-dead,s-quarantined', 'failed 范围命中 error / dead / quarantined')
   const fresh = selectScope(sources, 'new', 20, T0)
   ok(fresh.join(',') === 's-new,s-fresh', 'new 范围命中未检新源')
-  ok(selectScope(sources, 'quarantined', 20, T0).join(',') === 's-quarantined', 'quarantined 范围只取隔离源')
+  ok(selectScope(sources, 'quarantined', 20, T0).join(',') === 's-failed,s-dead,s-quarantined',
+    'v1.15 旧值 quarantined 重定向到 failed（含隔离源，与做减法后口径一致）')
   ok(selectScope(sources, 'all', 20, T0).length === 6, 'all 范围取全部有效条目')
   ok(selectScope(sources, 'all', 2, T0).join(',') === 's-failed,s-dead', 'limit=2 正确截断')
   for (const scope of ['new', 'failed', 'quarantined', 'all']) {

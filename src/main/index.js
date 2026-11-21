@@ -201,6 +201,16 @@ app.whenReady().then(() => {
       // v1.13.0：与 Web 版同一条判据 —— crawlNextAt 由 runCrawl 收尾算好（配额/代理/退避）
       const due = Number(store.db.crawlNextAt) || ((store.db.lastCrawl || 0) + hours * 3600 * 1000)
       if (Date.now() < due) return
+      // v1.17（配额优化 #5）：上一轮「开跑后即被杀」（无正常收尾）→ 推迟 10 分钟再判，
+      // 避免重启后立刻重跑一整轮白花约 62 次配额。手动采集不受此限。
+      try {
+        const chk = hunter.crawlAttemptInterrupted()
+        if (chk.interrupted) {
+          const waitMin = Math.ceil((10 * 60 * 1000 - chk.ageMs) / 60000)
+          pushLog({ msg: `定时爬取：上一轮 ${Math.max(0, Math.round(chk.ageMs / 60000))} 分钟前刚启动即中断（进程重启），推迟 ${Math.max(1, waitMin)} 分钟再判，避免重复整轮烧配额`, module: '爬取', level: 'info', at: Date.now() })
+          return
+        }
+      } catch (e) {}
       const span = formatIntervalHours(hours)
       if (cfg.crawlAutoImport) {
         pushLog({ msg: `定时爬取到期（间隔 ${span}），开始「增量爬取 → 检测 → 自动灌入」…`, module: '爬取', level: 'info', at: Date.now() })
@@ -333,7 +343,8 @@ ipcMain.handle('ai-review:apply', guard((e, body) => {
   s.status = 'applied'; s.appliedAt = Date.now(); s.appliedBy = body.byUser ? 'user' : 'ai'
   s.feedback = { action: 'adopt', at: Date.now(), by: body.byUser ? 'user' : 'ai' }
   a.store.saveDb()
-  return { applied: true, suggestion: s }
+  // v1.15.0：诚实告知——apply 只标记采纳，不执行任何业务动作（真实执行仅在评测沙箱）。
+  return { applied: true, executed: false, message: '已标记采纳，未执行任何业务动作；实际处理需你手动操作', suggestion: s }
 }))
 
 // 反馈闭环（与 web.js 镜像）：忽略只标采纳意愿，不碰执行白名单/门控/业务状态。
@@ -391,8 +402,8 @@ setInterval(async () => {
     const cfg = store.config.aiReview || {}
     const { aiSchedulePlan, selectScope } = require('../core/aiSchedule')
     const plan = aiSchedulePlan(cfg, store.db.aiAutoReview || {}, Date.now())
-    // ① R1 失败聚类日志：只受 enabled 管，不再被自动挡开关/时段挡住
-    if (cfg.enabled) {
+    // ① R1 失败聚类日志：受 enabled + autoActions.clusterLog 授权位管（默认开，保留既有零误伤自动化）
+    if (cfg.enabled && (!cfg.autoActions || cfg.autoActions.clusterLog !== false)) {
       const rawHours = cfg.clusterIntervalHours || 168
       const intervalMs = Math.max(1, Number(rawHours) || 168) * 3600 * 1000
       const last = Number(store.db.aiLastClusterAt) || 0
@@ -405,7 +416,39 @@ setInterval(async () => {
         try { store.db.aiLastClusterAt = Date.now(); store.saveDb() } catch (e) {}
       }
     }
-    // ② 自动只读复检：受自动挡开关/到期/时段控制；选范围 → 逐条 R3 只读分析，只产建议、不执行。
+    // ② v1.16：AI 判非音源仓库的门控自动拉黑（R10）。不调 LLM（复用 repoAiHints 现成结论），
+    // 只受「自动挡到期/时段 + 总闸 + autoActions.R10 + 不可逆双锁 + 评测达标 + 三重旁证 AND」管；
+    // 默认 autoActions.R10=false + allowIrreversible=false ⇒ 永不执行，只留建议层人工确认。
+    //
+    // v1.16.1 水位修正：原先这里用 plan.due，但 plan.due 的水位（db.aiAutoReview.lastAttempt/
+    // lastRun）**只由下面的 ③ 段推进**，而 ③ 段被 autoLlmReviewEnabled（默认关）挡在门口 return。
+    // 于是「用户开了 autoActions.R10 但没开 autoLlmReviewEnabled」时 plan.due 恒 true →
+    // 每小时都重跑一次验真（≤20 仓 × 1~2 次 GitHub 请求 = 20~100 次/小时），持续烧配额。
+    // 现在 R10 用**自己的水位 db.aiR10LastAt**，按 autoIntervalHours 判定到期，与 ③ 段完全解耦。
+    const r10Hours = Math.min(720, Math.max(1, Number(cfg.autoIntervalHours) || 24))
+    const r10GapMs = r10Hours * 3600 * 1000
+    const r10Last = Number(store.db.aiR10LastAt) || 0
+    const r10Due = !r10Last || Date.now() - r10Last >= r10GapMs
+    if (cfg.enabled && cfg.autoEnabled && cfg.autoActions && cfg.autoActions.R10 === true && r10Due && plan.activeNow) {
+      let ranAt = Date.now()
+      try {
+        // 不传 _internal：本方法内含真实网络验真，需要自己占任务位并与爬取互斥（忙时被拒绝，下轮再试）
+        const out = await hunter.pruneAiRepos({})
+        if (out && out.blocked && out.blocked.length) {
+          pushLog({ msg: `AI 自动拉黑非音源仓库：${out.blocked.length} 个（三重旁证+门控全过）`, module: 'AI复检', level: 'warn', at: Date.now() })
+        }
+      } catch (e) {
+        const busy = /已有任务在运行/.test(String((e && e.message) || e))
+        // 忙时被任务位拒绝 ⇒ 本轮**没执行、没烧配额**，不推进水位，下小时再试
+        if (busy) ranAt = 0
+        // 门控/并发/执行异常：不中断后续只读复检，但要留痕（否则「为什么不自动」无从排查）
+        pushLog({ msg: 'AI 自动拉黑未执行：' + String((e && e.message) || e).slice(0, 120), module: 'AI复检', level: 'info', at: Date.now() })
+      } finally {
+        // 真正执行过（含失败）才推进水位：避免失败后每小时重试把自己的配额烧光
+        if (ranAt) { try { store.db.aiR10LastAt = ranAt; store.saveDb() } catch (_) {} }
+      }
+    }
+    // ③ 自动只读复检：受自动挡开关/到期/时段控制；选范围 → 逐条 R3 只读分析，只产建议、不执行。
     // 独立开关 autoLlmReviewEnabled 默认关：该路径每轮 20-60 次 LLM 仅产无人消费的 applied 标记，
     // 零进化价值；R1 本地聚类/自生长（①，已在上面）不受影响。评测达标后再开此开关。
     if (!cfg.autoLlmReviewEnabled) return
@@ -430,9 +473,9 @@ setInterval(async () => {
           const name = src.name || src.lxName || src.scriptName || ''
           const r = ai().run('R3', { entryId: id, trigger: 'auto', text, name })
           if (r && typeof r.then === 'function') awaitIgnore(r, markAsyncError)
-          // 自动铺轨：auto 档时对条目产 R4/R5 可执行建议并自动标记（仅标记，不碰业务）。
-          // R6/R7 高危不自动产；评测跑完再考虑接真实动作。
-          if ((cfg.mode || 'off') === 'auto') {
+          // 自动铺轨：R4/R5 授权位开启且 gate 放行时产建议（v1.15 不再写 applied）。
+          // R6/R7 高危不自动产；真实执行只在评测沙箱 executor 里。
+          if (cfg.autoActions && (cfg.autoActions.R4 === true || cfg.autoActions.R5 === true)) {
             const runExec = async () => {
               const kinds = []
               if (src.updateUrl) kinds.push('R4')
@@ -451,7 +494,7 @@ setInterval(async () => {
           done++
         } catch (e) { batchError = batchError || e }
       }
-      pushLog({ msg: 'AI 自动只读复检：本轮处理 ' + done + ' 条' + (marked ? '；自动铺轨标记 ' + marked + ' 条（仅标记，未执行业务）' : ''), module: 'AI复检', level: 'info', at: Date.now() })
+      pushLog({ msg: 'AI 自动只读复检：本轮处理 ' + done + ' 条' + (marked ? '；授权通过 ' + marked + ' 条（仅建议，未执行业务）' : ''), module: 'AI复检', level: 'info', at: Date.now() })
     } catch (e) { batchError = batchError || e } finally {
       // 水位喂全：lastAttempt 恒推进；成功写 lastRun 并清 lastError；失败保留/写 lastError 触发退避。
       try {
@@ -718,12 +761,21 @@ ipcMain.handle('db:clear', guard(() => {
 
 // 非音源仓库清理（v1.10.3）：与 Web 版 /api/repos/prune 同语义
 ipcMain.handle('repos:prune', guard((e, opts) => hunter.pruneNonSourceRepos(opts || {})))
+// v1.16：AI 判非音源仓库的门控自动拉黑（默认关，三重旁证 AND 全过才动手）
+ipcMain.handle('repos:pruneAi', guard((e, opts) => hunter.pruneAiRepos(opts || {})))
 // 仓库行快捷拉黑（v1.10.7）：与 Web 版 /api/repos/block 同语义
-ipcMain.handle('repos:block', guard((e, repo) => hunter.blockRepo(String(repo || ''))))
+// v1.16：兼容 repo 字符串 或 {repo, by, reason}（by 由建议层传 'user'）
+ipcMain.handle('repos:block', guard((e, arg) => {
+  const repo = typeof arg === 'string' ? arg : String((arg || {}).repo || '')
+  const o = (arg && typeof arg === 'object') ? { by: arg.by, reason: arg.reason } : {}
+  return hunter.blockRepo(repo, o)
+}))
 // 解除拉黑（v1.10.7）：与 Web 版 /api/repos/unblock 同语义
 ipcMain.handle('repos:unblock', guard((e, args) => hunter.unblockRepo(String((args || {}).repo || ''), (args || {}).reAdd)))
 // 混淆隔离：信任/取消信任（v1.10.7）
 ipcMain.handle('sources:trustObf', guard((e, args) => hunter.trustObfSource(String((args || {}).id || ''), !!(args || {}).trust)))
+// v1.15 P2：用户自定义标签
+ipcMain.handle('sources:setUserTag', guard((e, args) => hunter.store.setUserTag(String((args || {}).id || ''), (args || {}).tag)))
 // 混淆隔离：试跑一次（v1.13.12）——只实测、不信任。
 //
 // 配额与串行逻辑在 core/probeQueue.js（v1.13.13 抽出），原因：
@@ -741,6 +793,8 @@ ipcMain.handle('sources:probeQuarantined', guard((e, args) => {
   const a = args || {}
   return probeQueue.run(() => hunter.probeQuarantined(String(a.id || ''), { confirmBlock: !!a.confirmBlock }))
 }))
+// v1.15 配额可见：UI 进隔离区时查一次，常驻显示"还可试跑 N/5，M 分钟后重置"
+ipcMain.handle('sources:probeQuota', guard(() => probeQueue.status()))
 
 // 手动删除选中音源（v1.10.2）：与 Web 版 /api/db/delete 同签名、同语义
 ipcMain.handle('db:delete', guard((e, ids) => {  if (!Array.isArray(ids) || !ids.length) throw new Error('没有选中要删除的音源')

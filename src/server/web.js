@@ -517,7 +517,8 @@ route('POST', '/api/ai-review/apply', guard((req, res, ctx) => {
   s.appliedBy = body.byUser ? 'user' : 'ai'
   s.feedback = { action: 'adopt', at: Date.now(), by: body.byUser ? 'user' : 'ai' }
   a.store.saveDb()
-  return { applied: true, suggestion: s }
+  // v1.15.0：诚实告知——apply 只标记采纳，不执行任何业务动作（真实执行仅在评测沙箱）。
+  return { applied: true, executed: false, message: '已标记采纳，未执行任何业务动作；实际处理需你手动操作', suggestion: s }
 }))
 
 // 反馈闭环（只读 signal，不碰 APPLYABLE/gate/三锁）：用户"忽略"建议时持久化采纳意愿。
@@ -840,13 +841,26 @@ route('POST', '/api/crawl', guard(async (req, res, ctx) => await hunter.runCrawl
 route('POST', '/api/repos/prune', guard(async (req, res, ctx) => await hunter.pruneNonSourceRepos({
   limit: Number((ctx.body || {}).limit) || 40
 })))
+// v1.16：AI 判非音源仓库的门控自动拉黑（默认关，三重旁证 AND 全过才动手）
+route('POST', '/api/repos/prune-ai', guard(async (req, res, ctx) => await hunter.pruneAiRepos({
+  dryRun: !!(ctx.body || {}).dryRun
+})))
 // v1.10.7 仓库行快捷拉黑：移出清单 + 加入黑名单（搜索发现/社区精选不再回填）+ 清残留脚本
-route('POST', '/api/repos/block', guard(async (req, res, ctx) => await hunter.blockRepo(String((ctx.body || {}).repo || ''))))
+route('POST', '/api/repos/block', guard(async (req, res, ctx) => {
+  const b = ctx.body || {}
+  const repo = typeof b === 'string' ? b : String(b.repo || '')
+  return await hunter.blockRepo(repo, { by: b.by, reason: b.reason })
+}))
 route('POST', '/api/repos/unblock', guard(async (req, res, ctx) => await hunter.unblockRepo(String((ctx.body || {}).repo || ''), (ctx.body || {}).reAdd)))
 route('POST', '/api/check', guard(async (req, res, ctx) => await hunter.runCheck(ctx.body.ids, ctx.body.opts)))
 // v1.12.0 第三方探针对照（报告层只读）：按 sha256 对齐库内 contentHash，产出「我们 vs 对方」差异报告
 // 混淆隔离：信任/取消信任（v1.10.7）——body {id, trust}
 route('POST', '/api/sources/trust-obf', guard(async (req, res, ctx) => await hunter.trustObfSource(String((ctx.body || {}).id || ''), !!(ctx.body || {}).trust)))
+// v1.15 P2：用户自定义标签
+route('POST', '/api/sources/set-user-tag', guard(async (req, res, ctx) => {
+  const b = ctx.body || {}
+  return hunter.store.setUserTag(String(b.id || ''), b.tag)
+}))
 // 隔离区「试跑一次」（v1.13.13）：只实测、不信任，跑完条目仍在隔离区。
 // A1 修复：桌面端有这条通道，Web 端原先**没有**——但界面上的「试跑一次」按钮照样渲染，
 // 点了必然失败（web-bridge 没这个方法 → 前端报「试跑失败」）。补上路由让两端行为一致。
@@ -857,6 +871,8 @@ route('POST', '/api/sources/probe-quarantined', guard(async (req, res, ctx) => {
   const b = ctx.body || {}
   return await probeQueue.run(() => hunter.probeQuarantined(String(b.id || ''), { confirmBlock: !!b.confirmBlock }))
 }))
+// v1.15 配额可见：UI 进隔离区时查一次，常驻显示"还可试跑 N/5，M 分钟后重置"
+route('GET', '/api/sources/probe-quota', guard(() => probeQueue.status()))
 route('POST', '/api/hash', guard(async (req, res, ctx) => await hunter.runHash(ctx.body.ids)))
 // v1.8.0：body.platformIds 可显式指定灌入目标（不给则用设置里标记「参与批量灌入」的账号）
 route('POST', '/api/import', guard(async (req, res, ctx) => await hunter.runImport(ctx.body.ids, { platformIds: ctx.body.platformIds })))
@@ -1317,6 +1333,15 @@ server.listen(PORT, '0.0.0.0', () => {
       // 老数据没有该字段时回落「上次成功 + 间隔」，行为与升级前一致。
       const due = Number(store.db.crawlNextAt) || ((store.db.lastCrawl || 0) + hours * 3600 * 1000)
       if (Date.now() < due) return
+      // v1.17（配额优化 #5）：上一轮「开跑后即被杀」（无正常收尾）→ 推迟，避免重启后立刻重跑整轮
+      try {
+        const chk = hunter.crawlAttemptInterrupted()
+        if (chk.interrupted) {
+          const waitMin = Math.ceil((10 * 60 * 1000 - chk.ageMs) / 60000)
+          pushLog({ msg: `定时爬取：上一轮 ${Math.max(0, Math.round(chk.ageMs / 60000))} 分钟前刚启动即中断（进程重启），推迟 ${Math.max(1, waitMin)} 分钟再判，避免重复整轮烧配额`, module: '爬取', level: 'info', at: Date.now() })
+          return
+        }
+      } catch (e) {}
       const span = formatIntervalHours(hours)
       if (cfg.crawlAutoImport) {
         pushLog({ msg: `定时爬取到期（间隔 ${span}），开始「增量爬取 → 检测 → 自动灌入」…`, module: '爬取', level: 'info', at: Date.now() })
@@ -1337,8 +1362,8 @@ server.listen(PORT, '0.0.0.0', () => {
       const cfg = store.config.aiReview || {}
       const { aiSchedulePlan, selectScope } = require('../core/aiSchedule')
       const plan = aiSchedulePlan(cfg, store.db.aiAutoReview || {}, Date.now())
-      // ① R1 失败聚类日志：只受 enabled 管，不再被自动挡开关/时段挡住
-      if (cfg.enabled) {
+      // ① R1 失败聚类日志：受 enabled + autoActions.clusterLog 授权位管（默认开，保留既有零误伤自动化）
+      if (cfg.enabled && (!cfg.autoActions || cfg.autoActions.clusterLog !== false)) {
         const rawHours = cfg.clusterIntervalHours || 168
         const intervalMs = Math.max(1, Number(rawHours) || 168) * 3600 * 1000
         const last = Number(store.db.aiLastClusterAt) || 0
@@ -1351,7 +1376,29 @@ server.listen(PORT, '0.0.0.0', () => {
           try { store.db.aiLastClusterAt = Date.now(); store.saveDb() } catch (e) {}
         }
       }
-      // ② 自动只读复检：受自动挡开关/到期/时段控制；选范围 → 逐条 R3 只读分析，只产建议、不执行。
+      // ② v1.16：AI 判非音源仓库的门控自动拉黑（R10）。与 main/index.js 镜像。
+      // 独立水位 db.aiR10LastAt（不用 plan.due：plan.due 的水位只由下面 ③ 段推进，而 ③ 段被
+      // autoLlmReviewEnabled 默认关挡着 return，会导致开了 R10 却没开③时每小时重跑验真烧配额）。
+      const r10Hours = Math.min(720, Math.max(1, Number(cfg.autoIntervalHours) || 24))
+      const r10GapMs = r10Hours * 3600 * 1000
+      const r10Last = Number(store.db.aiR10LastAt) || 0
+      const r10Due = !r10Last || Date.now() - r10Last >= r10GapMs
+      if (cfg.enabled && cfg.autoEnabled && cfg.autoActions && cfg.autoActions.R10 === true && r10Due && plan.activeNow) {
+        let ranAt = Date.now()
+        try {
+          const out = await hunter.pruneAiRepos({})
+          if (out && out.blocked && out.blocked.length) {
+            pushLog({ msg: `AI 自动拉黑非音源仓库：${out.blocked.length} 个（三重旁证+门控全过）`, module: 'AI复检', level: 'warn', at: Date.now() })
+          }
+        } catch (e) {
+          const busy = /已有任务在运行/.test(String((e && e.message) || e))
+          if (busy) ranAt = 0
+          pushLog({ msg: 'AI 自动拉黑未执行：' + String((e && e.message) || e).slice(0, 120), module: 'AI复检', level: 'info', at: Date.now() })
+        } finally {
+          if (ranAt) { try { store.db.aiR10LastAt = ranAt; store.saveDb() } catch (_) {} }
+        }
+      }
+      // ③ 自动只读复检：受自动挡开关/到期/时段控制；选范围 → 逐条 R3 只读分析，只产建议、不执行。
       // 独立开关 autoLlmReviewEnabled 默认关：该路径每轮 20-60 次 LLM 仅产无人消费的 applied 标记，
       // 零进化价值；R1 本地聚类/自生长（①，已在上面）不受影响。评测达标后再开此开关。
       if (!cfg.autoLlmReviewEnabled) return
@@ -1376,9 +1423,9 @@ server.listen(PORT, '0.0.0.0', () => {
             const name = src.name || src.lxName || src.scriptName || ''
             const r = ai().run('R3', { entryId: id, trigger: 'auto', text, name })
             if (r && typeof r.then === 'function') awaitIgnore(r, markAsyncError)
-            // 自动铺轨：auto 档时对条目产 R4/R5 可执行建议并自动标记（仅标记，不碰业务）。
-            // R6/R7 高危不自动产；评测跑完再考虑接真实动作。
-            if ((cfg.mode || 'off') === 'auto') {
+            // 自动铺轨：R4/R5 授权位开启且 gate 放行时产建议（v1.15 不再写 applied）。
+            // R6/R7 高危不自动产；真实执行只在评测沙箱 executor 里。
+            if (cfg.autoActions && (cfg.autoActions.R4 === true || cfg.autoActions.R5 === true)) {
               const runExec = async () => {
                 const kinds = []
                 if (src.updateUrl) kinds.push('R4')
@@ -1397,7 +1444,7 @@ server.listen(PORT, '0.0.0.0', () => {
             done++
           } catch (e) { batchError = batchError || e }
         }
-        pushLog({ msg: 'AI 自动只读复检：本轮处理 ' + done + ' 条' + (marked ? '；自动铺轨标记 ' + marked + ' 条（仅标记，未执行业务）' : ''), module: 'AI复检', level: 'info', at: Date.now() })
+        pushLog({ msg: 'AI 自动只读复检：本轮处理 ' + done + ' 条' + (marked ? '；授权通过 ' + marked + ' 条（仅建议，未执行业务）' : ''), module: 'AI复检', level: 'info', at: Date.now() })
       } catch (e) { batchError = batchError || e } finally {
         // 水位喂全：lastAttempt 恒推进；成功写 lastRun 并清 lastError；失败保留/写 lastError 触发退避。
         try {

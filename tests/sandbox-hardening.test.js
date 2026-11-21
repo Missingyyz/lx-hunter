@@ -67,6 +67,7 @@ function runInChild (script, timeoutMs) {
     encoding: 'utf8',
     timeout: timeoutMs || 120000,
     maxBuffer: 8 * 1024 * 1024,
+    windowsHide: true,
     env: Object.assign({}, process.env, { NODE_OPTIONS: '' })
   })
   let data = null

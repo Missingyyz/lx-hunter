@@ -22,7 +22,11 @@
   /** 深检失效：无可播放平台、有实测失败、失败原因不像本机网络 */
   const isDeepDead = e => !!e.deep && !e.usable && e.deep.failKind === 'dead'
 
-  const nameOf = e => String(e.scriptName || e.name || '')
+  // v1.15 P2：名称排序走统一口径（baseNameOf，不含 tag），与显示/搜索共用一份规则。
+// 运行时取 LXSourceLabel（script 加载顺序在 sorters 之后，但 nameOf 只在 sort 时调用，届时已就绪）。
+const nameOf = e => (typeof LXSourceLabel !== 'undefined' && LXSourceLabel.baseNameOf
+  ? LXSourceLabel.baseNameOf(e)
+  : String(e.scriptName || e.name || ''))
 
   /** 名称比较：中文按 locale，数字段按数值（v1.2.0 排在 v1.10.0 前） */
   function nameCmp(a, b) {
@@ -180,6 +184,27 @@
     return ''
   }
 
+  /**
+   * 阶段A 徽章：追更策略对更新说明的规则判定结果（纯规则 follow/ignore/gray，非 AI）。
+   * followClass 写在 tip 上（e.updateTips[i].followClass），all 档也会写供展示。
+   * 与上面的 AI 字段徽章（updateTipsAiClass）完全独立：两者可同时显示，互不覆盖。
+   */
+  function followClassBadgeHtml (e) {
+    const tips = e && Array.isArray(e.updateTips) ? e.updateTips : []
+    if (!tips.length) return ''
+    // 取最近一条带 followClass 的 tip
+    let fc = null
+    for (let i = tips.length - 1; i >= 0; i--) {
+      const t = tips[i]
+      if (t && t.followClass) { fc = String(t.followClass); break }
+    }
+    if (!fc) return ''
+    if (fc === 'follow') return '<span class="qbrief fc-follow" title="更新说明写明实质修复/新功能（规则判定，仅供展示）">实质更新</span>'
+    if (fc === 'ignore') return '<span class="qbrief fc-ignore" title="更新说明是纯催更/广告，追更策略会过滤（规则判定，仅供展示）">纯催更</span>'
+    if (fc === 'gray') return '<span class="qbrief fc-gray" title="更新说明只有版本号或无实质证据（规则判定，仅供展示）">无实质说明</span>'
+    return ''
+  }
+
   /** 质量排序键 → 比较器；全等时按名称兜底，保证顺序稳定。 */
   function qualityCmp(a, b) {
     const ka = qualitySortKey(a), kb = qualitySortKey(b)
@@ -218,5 +243,5 @@
     return arr.sort((a, b) => dir * def.cmp(a, b, imported))
   }
 
-  return { SORT_KEYS, SORT_DEFS, statusRank, platScore, sortSources, qualitySortKey, qualityCmp, tierValue, bestTierValue, qualityBriefHtml, qualityRobustnessHtml, coldStartBadgeHtml, updateTipsBadgeHtml, isDeepDead, isCheckedNoSource }
+  return { SORT_KEYS, SORT_DEFS, statusRank, platScore, sortSources, qualitySortKey, qualityCmp, tierValue, bestTierValue, qualityBriefHtml, qualityRobustnessHtml, coldStartBadgeHtml, updateTipsBadgeHtml, followClassBadgeHtml, isDeepDead, isCheckedNoSource }
 })

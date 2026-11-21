@@ -90,16 +90,16 @@ console.log('=== ① 调用链事实：R7 的批量复检确实会把 deep 送�
 {
   const appSrc = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'app.js'), 'utf8')
 
-  // 批量 AI 复检的 kinds 里有 R7
-  ok(/const kinds = \['R3', 'R4', 'R5', 'R7'\]/.test(appSrc),
-    'app.js 的批量 AI 复检 kinds 列表含 R7（R7 会读条目 deep）')
-  // toEntry 把 deep 原样传下去，没有任何 probeOnly 过滤
+  // v1.15：R7 已从批量移出，改单条入口；toEntry 仍是 R7 单条与 R8 共用的入参构造
+  ok(/const kinds = \['R3', 'R4', 'R5'\]/.test(appSrc),
+    'app.js 批量 kinds 不含 R7（v1.15 移出，改单条入口）')
+  // toEntry 把 deep 原样传下去，没有任何 probeOnly 过滤（R7 单条入口也走它）
   ok(/deep: e\.deep \|\| null/.test(appSrc),
     'app.js 的 toEntry 把 deep 原样传给 AI（没有按 probeOnly 过滤）')
   // 确认**调用点**（toEntry → entries → aiRun）没有按 probeOnly 过滤。
   // 注意 app.js 里确实存在 probeOnly 字样（:1973-1974 隔离页展示标签），
   // 所以不能简单搜全文件有没有这个词——必须精确定位到 toEntry 这一段。
-  const toEntryIdx = appSrc.indexOf('const toEntry = (e) =>')
+  const toEntryIdx = appSrc.indexOf('function toEntry (e)')
   const toEntryBlock = toEntryIdx >= 0 ? appSrc.slice(toEntryIdx, toEntryIdx + 1400) : ''
   ok(toEntryBlock.length > 0, '定位到 toEntry 定义')
   ok(toEntryBlock.indexOf('probeOnly') === -1,

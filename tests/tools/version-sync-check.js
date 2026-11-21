@@ -80,6 +80,7 @@ const MAP = [
   ['src/renderer/auth-bg.js', '/app/src/renderer/auth-bg.js'],
   ['src/renderer/index.html', '/app/src/renderer/index.html'],
   ['src/renderer/sorters.js', '/app/src/renderer/sorters.js'],
+  ['src/renderer/sourceLabel.js', '/app/src/renderer/sourceLabel.js'],
   ['src/renderer/styles.css', '/app/src/renderer/styles.css'],
   ['src/renderer/web-bridge.js', '/app/src/renderer/web-bridge.js'],
   ['src/server/web.js', '/app/src/server/web.js']

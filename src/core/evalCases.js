@@ -128,6 +128,24 @@ function validateCase(c) {
   return null
 }
 
+/**
+ * 显式声明「我不是评测样本文件」的标记（v1.18）。
+ *
+ * 为什么需要它（2026-11-21 实测事故）：loadCases 会把目录里**全部** `*.json` 当样本读，
+ * 只要有一个文件没有 `cases` 数组就整体抛错 → `tryLoadCases` 返回 `cases=0`，
+ * 于是 main/index.js 与 server/web.js 两条链上的 AI 评测在**没有验尺**的状态下停摆。
+ * 这次是一颗测试 fixture（`{tips:[...]}`）被放进 tests/eval-cases/ 触发的。
+ *
+ * 边界（重要）：只跳过**文件自己声明**非样本的（须 `__NON_SAMPLE__: true` 严格等于布尔 true）。
+ * 「缺 cases 数组」「样本字段残缺」「JSON 语法坏」仍然一律抛错 —— v1.13.9 定的
+ * 「坏样本必须响、不能与『确实没样本』同形」这条不能削弱，否则又回到静默失效。
+ * 换句话说：跳过的前提是有人明确签字，而不是我们猜它不是样本。
+ */
+const NON_SAMPLE_MARKER = '__NON_SAMPLE__'
+function isNonSampleFile(data) {
+  return !!data && !Array.isArray(data) && typeof data === 'object' && data[NON_SAMPLE_MARKER] === true
+}
+
 /** 读取目录（或单个文件）里的样本 JSON，返回校验通过的样本数组；坏样本抛错。 */
 function loadCases(dirOrFile) {
   const p = String(dirOrFile || '')
@@ -143,8 +161,9 @@ function loadCases(dirOrFile) {
   for (const f of files) {
     let data
     try { data = JSON.parse(fs.readFileSync(f, 'utf8')) } catch (e) { throw new Error('样本 JSON 解析失败：' + f + '：' + e.message) }
+    if (isNonSampleFile(data)) continue   // 带 __NON_SAMPLE__: true 的文件不参与样本加载（见上方注释）
     const arr = Array.isArray(data) ? data : (data && Array.isArray(data.cases) ? data.cases : null)
-    if (!arr) throw new Error('样本 JSON 无 cases 数组：' + f)
+    if (!arr) throw new Error('样本 JSON 无 cases 数组：' + f + '（若该文件本就不是样本，请在顶层加 "__NON_SAMPLE__": true 显式声明）')
     for (const c of arr) {
       const err = validateCase(c)
       if (err) throw new Error('样本校验失败（' + f + '）：' + err + (c && c.id ? ' @ ' + c.id : ''))
@@ -518,4 +537,4 @@ function computeMetrics(logs, cases, opts) {
   }
 }
 
-module.exports = { KINDS, ZONES, DANGERS, EVAL_THRESHOLDS, MIN_SAMPLES, ADAPT_RATIO, validateCase, loadCases, tryLoadCases, groupByStratum, thresholdFor, sampleNeedFor, isDangerStratum, stratumRule, ratioPass, ratioText, computeMetrics }
+module.exports = { KINDS, ZONES, DANGERS, EVAL_THRESHOLDS, MIN_SAMPLES, ADAPT_RATIO, NON_SAMPLE_MARKER, isNonSampleFile, validateCase, loadCases, tryLoadCases, groupByStratum, thresholdFor, sampleNeedFor, isDangerStratum, stratumRule, ratioPass, ratioText, computeMetrics }

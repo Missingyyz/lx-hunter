@@ -43,8 +43,10 @@ const ONLY_I = process.argv.indexOf('--only')
 const ONLY = ONLY_I >= 0 ? process.argv[ONLY_I + 1] : null
 
 function runOne (probe) {
+  // windowsHide: 本矩阵每条探针都起独立子进程（几十条），Windows 上不隐藏就会逐个弹控制台窗
   const r = spawnSync(NODE, [RUNNER, Buffer.from(probe.expr, 'utf8').toString('base64'), probe.mode || 'sync'], {
     cwd: ROOT, encoding: 'utf8', timeout: 60000, maxBuffer: 4 * 1024 * 1024,
+    windowsHide: true,
     env: Object.assign({}, process.env, { NODE_OPTIONS: '' })
   })
   const out = String(r.stdout || '').trim()

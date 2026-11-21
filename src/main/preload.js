@@ -43,11 +43,16 @@ const api = {
   serverSync: () => ipcRenderer.invoke('server:sync'),
   dbClear: () => ipcRenderer.invoke('db:clear'),
   reposPrune: (opts) => ipcRenderer.invoke('repos:prune', opts),
-  reposBlock: (repo) => ipcRenderer.invoke('repos:block', repo),
+  reposBlock: (repo, o) => ipcRenderer.invoke('repos:block', (o && typeof o === 'object') ? Object.assign({ repo }, o) : repo),
+  reposPruneAi: (opts) => ipcRenderer.invoke('repos:pruneAi', opts || {}),
   reposUnblock: (repo, reAdd) => ipcRenderer.invoke('repos:unblock', { repo, reAdd }),
   sourcesTrustObf: (id, trust) => ipcRenderer.invoke('sources:trustObf', { id, trust }),
+  // v1.15 P2：用户自定义标签（单点写 userTag，不动名字/版本）
+  sourcesSetUserTag: (id, tag) => ipcRenderer.invoke('sources:setUserTag', { id, tag }),
   // 隔离区试跑（v1.13.12）：只实测、不信任。confirmBlock 用于 block 档二次确认。
   sourcesProbeQuarantined: (id, confirmBlock) => ipcRenderer.invoke('sources:probeQuarantined', { id, confirmBlock: !!confirmBlock }),
+  // v1.15 配额可见
+  sourcesProbeQuota: () => ipcRenderer.invoke('sources:probeQuota'),
   // AI 复检层（v1.14.0）
   aiConfigGet: () => ipcRenderer.invoke('ai-review:configGet'),
   aiConfigSet: (patch) => ipcRenderer.invoke('ai-review:configSet', patch),

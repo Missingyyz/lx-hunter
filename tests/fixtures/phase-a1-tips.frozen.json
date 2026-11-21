@@ -1,0 +1,331 @@
+{
+  "__NON_SAMPLE__": true,
+  "__NOTE": "阶段A gold 主集 37 条 updateTips 原文（冻结快照，**不是**实时容器数据，也**不是** R4-R7 评测样本）。由 tests/tools/freeze-phase-a1-tips.js 生成，tests/phase-b-veto-shadow.test.js Part A-1 读取本文件；请勿手改 expect 字段以外的内容。本文件应留在 tests/fixtures/：tests/eval-cases/ 下的 *.json 会被 src/core/evalCases.js 全量当评测样本扫入（要求 cases 数组）。",
+  "sourceOfTruth": "gold: tests/eval-cases/规则追更-样本预期.md §1（#1..#37）；标签: tests/tools/freeze-phase-a1-tips.js 的 LABELS（冻结时原样抄自 Part A-1 的 EXP 数组）",
+  "frozenFromSnapshot": "E:/AI/Deva/lunter/_snap_8197_sources.json",
+  "snapshotTipsTotal": 48,
+  "frozenCount": 37,
+  "distribution": {
+    "follow": 16,
+    "gray": 5,
+    "ignore": 16
+  },
+  "tips": [
+    {
+      "n": 1,
+      "name": "念心音源 v1.0.0",
+      "id": "guoyue2010/lxmusic-::V2603/优质-支持四平台FLAC/念心音源 v1.0.0.js",
+      "msg": "发现新版本 v1.0.1\n更新内容: 部分平台因请求过高，导致服务器被屏蔽！\n请更新后使用",
+      "expect": "follow"
+    },
+    {
+      "n": 2,
+      "name": "星海音乐源 v2.2.8",
+      "id": "guoyue2010/lxmusic-::V2603/良好-支持至少两平台FLAC/星海音乐源 v2.2.8.js",
+      "msg": "【星海音乐源更新通知】\n当前版本：v2.2.8\n最新版本：v3.2.20\n\n更新内容：\n新增启动域名连通性日志与更新服务失败提示\n📱 G1联通双月卡29元220G+100分钟【发全国】➠ hhttps://zrcdy.dpdns.org//h/1.html",
+      "expect": "follow"
+    },
+    {
+      "n": 3,
+      "name": "FreeListen-需自备网易云VIP密钥",
+      "id": "guoyue2010/lxmusic-::V2603/较差-支持单平台320k或多平台128k/FreeListen-需自备网易云VIP密钥.js",
+      "msg": "发现新版本 v1.1.2",
+      "expect": "gray"
+    },
+    {
+      "n": 4,
+      "name": "xinghai-music-source2.3.0",
+      "id": "guoyue2010/lxmusic-::V260418/第三批次/xinghai-music-source2.3.0.js",
+      "msg": "【星海音乐源更新通知】\n当前版本：v2.3.0\n最新版本：v3.2.20\n\n更新内容：\n新增启动域名连通性日志与更新服务失败提示\n📱 G1联通双月卡29元220G+100分钟【发全国】➠ hhttps://zrcdy.dpdns.org//h/1.html",
+      "expect": "follow"
+    },
+    {
+      "n": 5,
+      "name": "星海音源V2.3.5",
+      "id": "guoyue2010/lxmusic-::V260620/其他/星海音源V2.3.5.js",
+      "msg": "发现新版本 v3.2.20\n新增启动域名连通性日志与更新服务失败提示\n📱 G1联通双月卡29元220G+100分钟【发全国】➠ hhttps://zrcdy.dpdns.org//h/1.html",
+      "expect": "follow"
+    },
+    {
+      "n": 6,
+      "name": "【推荐】长青SVIP音源v1.2.0（全平台支持无损）",
+      "id": "guoyue2010/lxmusic-::V260620/推荐/【推荐】长青SVIP音源v1.2.0（全平台支持无损）.js",
+      "msg": "发现新版本 v1.3.0\n更新内容: 长青svip音源更新，请尽快更新！\n请更新后使用",
+      "expect": "ignore"
+    },
+    {
+      "n": 7,
+      "name": "xinghai-music-sourcev2.3.7",
+      "id": "guoyue2010/lxmusic-::V260714/推荐/xinghai-music-sourcev2.3.7.js",
+      "msg": "新增启动域名连通性日志与更新服务失败提示\n📱 G1联通双月卡29元220G+100分钟【发全国】➠ hhttps://zrcdy.dpdns.org//h/1.html",
+      "expect": "follow"
+    },
+    {
+      "n": 8,
+      "name": "星海2.3.8测试",
+      "id": "guoyue2010/lxmusic-::V260716/推荐/星海2.3.8测试.js",
+      "msg": "新增启动域名连通性日志与更新服务失败提示",
+      "expect": "follow"
+    },
+    {
+      "n": 9,
+      "name": "xinghai-music-sourcev2.3.11",
+      "id": "guoyue2010/lxmusic-::V260810/推荐/xinghai-music-sourcev2.3.11.js",
+      "msg": "发现新版本 v3.2.20",
+      "expect": "gray"
+    },
+    {
+      "n": 10,
+      "name": "独家音源V5",
+      "id": "guoyue2010/lxmusic-::V260817/推荐/独家音源V5.js",
+      "msg": "当前源脚本版本过低(v5)，请下载最新版本(v7)",
+      "expect": "ignore"
+    },
+    {
+      "n": 11,
+      "name": "HYWmusic_公益版_v1.0.3",
+      "id": "guoyue2010/lxmusic-::release:V261003:V261003.zip!V261003/HYWmusic_公益版_v1.0.3.js",
+      "msg": "恢复kg",
+      "expect": "follow"
+    },
+    {
+      "n": 12,
+      "name": "星海音乐源V3.2.15",
+      "id": "guoyue2010/lxmusic-::release:V261003:V261003.zip!V261003/星海音乐源V3.2.15.js",
+      "msg": "新增启动域名连通性日志与更新服务失败提示",
+      "expect": "follow"
+    },
+    {
+      "n": 13,
+      "name": "星海音乐源v2.3.14",
+      "id": "guoyue2010/lxmusic-::release:V260926:V260926.zip!V260926/星海音乐源v2.3.14.js",
+      "msg": "新增启动域名连通性日志与更新服务失败提示",
+      "expect": "follow"
+    },
+    {
+      "n": 14,
+      "name": "xinghai-music-sourcev2.3.13",
+      "id": "guoyue2010/lxmusic-::release:V260925:V260925.zip!V260925/xinghai-music-sourcev2.3.13.js",
+      "msg": "新增启动域名连通性日志与更新服务失败提示",
+      "expect": "follow"
+    },
+    {
+      "n": 15,
+      "name": "洛雪科技[独家音源] v4-会停用",
+      "id": "Macrohard0001/lx-ikun-music-sources::V260318/优质-支持四平台FLAC/洛雪科技[独家音源] v4-会停用.js",
+      "msg": "当前源脚本版本过低(v4)，请下载最新版本(v7)",
+      "expect": "ignore"
+    },
+    {
+      "n": 16,
+      "name": "xinghai-music-sourcev2.3.4",
+      "id": "Macrohard0001/lx-ikun-music-sources::files/v260611/Macrohard0001风格の分类/1 良好/xinghai-music-sourcev2.3.4.js",
+      "msg": "发现新版本 v3.2.20\n新增启动域名连通性日志与更新服务失败提示\n📱 G1联通双月卡29元220G+100分钟【发全国】➠ hhttps://zrcdy.dpdns.org//h/1.html",
+      "expect": "follow"
+    },
+    {
+      "n": 17,
+      "name": "星海音乐源 v2.2.6",
+      "id": "Macrohard0001/lx-ikun-music-sources::v260108/2.全平台Flac/星海音乐源 v2.2.6.js",
+      "msg": "【星海音乐源更新通知】\n当前版本：v2.2.6\n最新版本：v3.2.20\n\n更新内容：\n新增启动域名连通性日志与更新服务失败提示\n📱 G1联通双月卡29元220G+100分钟【发全国】➠ hhttps://zrcdy.dpdns.org//h/1.html",
+      "expect": "follow"
+    },
+    {
+      "n": 18,
+      "name": "长青SVIP音源 v1.0.0",
+      "id": "Macrohard0001/lx-ikun-music-sources::v260108/2.全平台Flac/长青SVIP音源 v1.0.0.js",
+      "msg": "发现新版本 v1.3.0\n更新内容: 长青svip音源更新，请尽快更新！\n请更新后使用",
+      "expect": "ignore"
+    },
+    {
+      "n": 19,
+      "name": "SVIP音源",
+      "id": "Macrohard0001/lx-ikun-music-sources::v260114/2.全平台Flac/SVIP音源.js",
+      "msg": "发现新版本 v1.3.0\n更新内容: 长青svip音源更新，请尽快更新！\n请更新后使用",
+      "expect": "ignore"
+    },
+    {
+      "n": 20,
+      "name": "花瓣源 v2.0.0.beta5",
+      "id": "Macrohard0001/lx-ikun-music-sources::v260114/2.全平台Flac/花瓣源 v2.0.0.beta5.js",
+      "msg": "发现新版本 v1.3.0\n更新内容: 长青svip音源更新，请尽快更新！\n请更新后使用",
+      "expect": "ignore"
+    },
+    {
+      "n": 21,
+      "name": "(new 6.3)ikun音源[公益] v26",
+      "id": "Macrohard0001/lx-ikun-music-sources::V260809/【转载】LX Music音源收集 v26.8.6.zip!LX音源收集 v26.8.6/Hobonn整理版(偏向于收集历史版本)/『直接可用的音源』/(new 6.3)ikun音源[公益] v26.js",
+      "msg": "版本更新\n版本: v27\n更新URL: https://c.wwwweb.top/script/lxmusic\n切记，莫对人言\n验证码获取：c.wwwweb.top\n群：329970458",
+      "expect": "ignore"
+    },
+    {
+      "n": 22,
+      "name": "(推荐)长青SVIP音源 v1.2.0",
+      "id": "Macrohard0001/lx-ikun-music-sources::files/v260611/(搬运@hobonn)LX Music音源收集 v26.6.9.zip!LX Music(含魔改版及音源) v26.6.9/LX音源大全(含无损音源及部分音源历史版本)/『直接可用的音源』/(推荐)长青SVIP音源 v1.2.0.js",
+      "msg": "发现新版本 v1.3.0\n更新内容: 长青svip音源更新，请尽快更新！\n请更新后使用",
+      "expect": "ignore"
+    },
+    {
+      "n": 23,
+      "name": "小熊猫音源 v1.1.1",
+      "id": "Macrohard0001/lx-ikun-music-sources::files/v260611/(搬运@hobonn)LX Music音源收集 v26.6.9.zip!LX Music(含魔改版及音源) v26.6.9/LX音源大全(含无损音源及部分音源历史版本)/音源合集(含音源历史版本)/FL、小熊猫、极客会、废材公社(垃圾)/小熊猫音源/小熊猫音源 v1.1.1.js",
+      "msg": "发现新版本 v1.1.2",
+      "expect": "gray"
+    },
+    {
+      "n": 24,
+      "name": "(二改公众号音源)微信公众号：极客会 内部源2",
+      "id": "Macrohard0001/lx-ikun-music-sources::files/v260611/(搬运@hobonn)LX Music音源收集 v26.6.9.zip!LX Music(含魔改版及音源) v26.6.9/LX音源大全(含无损音源及部分音源历史版本)/音源合集(含音源历史版本)/FL、小熊猫、极客会、废材公社(垃圾)/极客会/(二改公众号音源)微信公众号：极客会 内部源2.js",
+      "msg": "当前源脚本版本过低(v4)，请下载最新版本(v7)",
+      "expect": "ignore"
+    },
+    {
+      "n": 25,
+      "name": "ikun音源[公益] v24 (new 3.15)",
+      "id": "Macrohard0001/lx-ikun-music-sources::v260422/(搬运@hobonn)LX Music(含魔改版及音源) v26.4.17.zip!LX Music(含魔改版及音源) v26.4.17/LX音源大全(含无损音源及部分音源历史版本)/『直接可用的音源』/ikun音源[公益] v24 (new 3.15).js",
+      "msg": "版本更新\n版本: v27\n更新URL: https://c.wwwweb.top/script/lxmusic\n切记，莫对人言\n验证码获取：c.wwwweb.top\n群：329970458",
+      "expect": "ignore"
+    },
+    {
+      "n": 26,
+      "name": "lx-music-source V3.0",
+      "id": "skxingyu/lx_music-::音源接口-2026-8更新.zip!音源接口-2026-8更新/洛雪音乐-微信公众号独家音源（推荐）/lx-music-source V3.0.js",
+      "msg": "当前源脚本版本过低(v4)，请下载最新版本(v7)",
+      "expect": "ignore"
+    },
+    {
+      "n": 27,
+      "name": "6",
+      "id": "pdone/lx-music-source::lx/6.js",
+      "msg": "当前源脚本版本过低(v6)，请下载最新版本(v7)",
+      "expect": "ignore"
+    },
+    {
+      "n": 28,
+      "name": "lx-animemusic",
+      "id": "shellsec/lx-music-source::sources/animemusic/lx-animemusic.js",
+      "msg": "有新版本啦，点击更新即可～",
+      "expect": "ignore"
+    },
+    {
+      "n": 29,
+      "name": "星海音乐源",
+      "id": "shellsec/lx-music-source::sources/xinghai/星海音乐源.js",
+      "msg": "新增启动域名连通性日志与更新服务失败提示",
+      "expect": "follow"
+    },
+    {
+      "n": 30,
+      "name": "lx-source",
+      "id": "luanmuc/lx-music-source::release:v1.9:lx-source.js",
+      "msg": "豆包定制[聚合音源] v1.9 更新说明（点击\"更新\"将在线更新到 master 最新版）：\n· v1.9 健壮性大版本：断路器区分确定性/瞬时错误(无版权歌不再误熔断整源)、探测歌曲池3→8首+首选无结果自动换歌重试(防风控误判)、源URL域名白名单校验(拦截假链交下一源降级)\n· v1.8 适配更新弹窗：App 勾选\"允许显示更新弹窗\"后每次运行提示更新，可一键在线更新音源\n· v1.7 原版",
+      "expect": "follow"
+    },
+    {
+      "n": 31,
+      "name": "lx-source",
+      "id": "luanmuc/lx-music-source::release:v1.8:lx-source.js",
+      "msg": "豆包定制[聚合音源] v1.8 更新说明（点击\"更新\"将在线更新到 master 最新版）：\n· v1.8 适配更新弹窗：App 勾选\"允许显示更新弹窗\"后每次运行提示更新，可一键在线更新音源\n· v1.7 原版洛雪兼容版：musicUrl 返回 URL 字符串(原版洛雪+豆包定制版均兼容)、酷我 rid MUSIC_ 前缀修复、残像 outer 假链拦截\n· 日常自愈：每 10 分钟健康探测，失",
+      "expect": "follow"
+    },
+    {
+      "n": 32,
+      "name": "xinghai-music-sourcev2.3.12",
+      "id": "ext/deerwan-lxhub::xinghai-music-sourcev2.3.12.js",
+      "msg": "发现新版本 v3.2.19",
+      "expect": "gray"
+    },
+    {
+      "n": 33,
+      "name": "我的聚合音源",
+      "id": "ext/lxhub-lllh::我的聚合音源.js",
+      "msg": "有新版本啦，点击更新即可～",
+      "expect": "ignore"
+    },
+    {
+      "n": 34,
+      "name": "聚合Hi-Res音乐音源v1.0",
+      "id": "hub/192-168-1-246-zqna::聚合Hi-Res音乐音源v1.0.js",
+      "msg": "【星海音乐源更新通知】\n当前版本：v2.3.0\n最新版本：v3.2.19\n\n更新内容：\n更换域名修复部分地区 DNS 解析错误问题\n📱 G1联通双月卡29元220G+100分钟【发全国】➠ hhttps://zrcdy.dpdns.org//h/1.html",
+      "expect": "follow"
+    },
+    {
+      "n": 35,
+      "name": "星海音乐源",
+      "id": "hub/192-168-1-246-2625::星海音乐源.js",
+      "msg": "发现新版本 v3.2.19",
+      "expect": "gray"
+    },
+    {
+      "n": 36,
+      "name": "(推荐)长青SVIP音源 v1.1.1",
+      "id": "Macrohard0001/lx-ikun-music-sources::v260429/(搬运@hobonn)LX Music(含魔改版及音源) v26.4.17.zip!LX Music(含魔改版及音源) v26.4.17/LX音源大全(含无损音源及部分音源历史版本)/『直接可用的音源』/(推荐)长青SVIP音源 v1.1.1.js",
+      "msg": "发现新版本 v1.3.0\n更新内容: 长青svip音源更新，请尽快更新！\n请更新后使用",
+      "expect": "ignore"
+    },
+    {
+      "n": 37,
+      "name": "2",
+      "id": "pdone/lx-music-source::lx/2.js",
+      "msg": "当前源脚本版本过低(v4)，请下载最新版本(v7)",
+      "expect": "ignore"
+    }
+  ],
+  "__EXCLUDED_FROM_SNAPSHOT": [
+    {
+      "n": 15,
+      "name": "FreeListen-需自备网易云VIP密钥",
+      "msg": "发现新版本 v1.1.2"
+    },
+    {
+      "n": 17,
+      "name": "FreeListen-需自备网易云VIP密钥",
+      "msg": "发现新版本 v1.1.2"
+    },
+    {
+      "n": 27,
+      "name": "[更换URL]星海音乐源 v2.2.4",
+      "msg": "【星海音乐源更新通知】\n当前版本：v2.2.3\n最新版本：v3.2.20\n\n更新内容：\n新增启动域名连通性日志与更新服务"
+    },
+    {
+      "n": 28,
+      "name": "星海音乐源 v2.2.6",
+      "msg": "【星海音乐源更新通知】\n当前版本：v2.2.6\n最新版本：v3.2.20\n\n更新内容：\n新增启动域名连通性日志与更新服务"
+    },
+    {
+      "n": 29,
+      "name": "星海音乐源 v2.2.7 修复导入失败",
+      "msg": "【星海音乐源更新通知】\n当前版本：v2.2.7\n最新版本：v3.2.20\n\n更新内容：\n新增启动域名连通性日志与更新服务"
+    },
+    {
+      "n": 30,
+      "name": "星海音乐源 v2.2.7",
+      "msg": "【星海音乐源更新通知】\n当前版本：v2.2.7\n最新版本：v3.2.20\n\n更新内容：\n新增启动域名连通性日志与更新服务"
+    },
+    {
+      "n": 32,
+      "name": "星海音乐源 v2.3.0",
+      "msg": "【星海音乐源更新通知】\n当前版本：v2.3.0\n最新版本：v3.2.20\n\n更新内容：\n新增启动域名连通性日志与更新服务"
+    },
+    {
+      "n": 34,
+      "name": "3",
+      "msg": "当前源脚本版本过低(v4)，请下载最新版本(v7)"
+    },
+    {
+      "n": 43,
+      "name": "我的聚合音源",
+      "msg": "有新版本啦，点击更新即可～"
+    },
+    {
+      "n": 46,
+      "name": "我的聚合音源",
+      "msg": "有新版本啦，点击更新即可～"
+    },
+    {
+      "n": 47,
+      "name": "xinghai-music-sourcev2.3.19",
+      "msg": "新增启动域名连通性日志与更新服务失败提示"
+    }
+  ]
+}

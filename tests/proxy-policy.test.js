@@ -170,8 +170,9 @@ function startStub() {
       main.includes('net:proxyHealth') && main.includes('net:proxyHealthReset') &&
       preload.includes('proxyHealth') && bridge.includes('/api/net/proxy-health'))
     ck('store 默认含 proxyPolicy', storeSrc.includes("proxyPolicy: 'auto'"))
-    ck('缓存戳 v93 / v60 / v21',
-      html.includes('app.js?v=93') && html.includes('web-bridge.js?v=60') && html.includes('styles.css?v=21'))
+    ck('缓存戳 v100 / v30 / v61 / v21',
+      html.includes('app.js?v=102') && html.includes('sorters.js?v=30') &&
+      html.includes('web-bridge.js?v=61') && html.includes('styles.css?v=21'))
 
     console.log(`\n${bad ? 'FAIL（失败 ' + bad + ' 项）' : 'ALL PASS'}`)
   } catch (e) {

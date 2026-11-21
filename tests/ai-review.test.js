@@ -39,26 +39,38 @@ ok(DEFAULT_CONFIG.aiReview.provider && 'baseUrl' in DEFAULT_CONFIG.aiReview.prov
   ok(s2.config.aiReview.budget && s2.config.aiReview.budget.maxItemsPerRound === 20, '半截配置自动补齐默认 budget')
 })()
 
-console.log('--- ② 三档 × 风险级门控 + 三把锁 ---')
+console.log('--- ② 入口开关 × autoActions 授权（v1.15.0 两维度解耦） ---')
 ;(() => {
   const s = tmpStore()
   const a = new AIReview(s)
   const offGate = a.gate('R1')
   ok(offGate.auto === false && /总开关/.test(offGate.reason), '总开关关闭时零自动（reason 含「总开关」）')
   s.config.aiReview.enabled = true
-  const modeOffGate = a.gate('R1')
-  ok(modeOffGate.auto === false && /off/.test(modeOffGate.reason), 'off 档不自动（reason 含 off）')
-  s.config.aiReview.mode = 'assist'
-  ok(a.gate('R1').auto === true, 'assist 档 R1 只读自动')
-  ok(a.gate('R2').auto === true && a.gate('R3').auto === true, 'assist 档 R2/R3 自动')
-  ok(a.gate('R4').auto === false && a.gate('R5').auto === false, 'assist 档 R4/R5 不自动')
-  ok(a.gate('R6').auto === false && a.gate('R7').auto === false, 'assist 档高风险不自动')
-  s.config.aiReview.mode = 'auto'
-  ok(a.gate('R4').auto === true && a.gate('R5').auto === true, 'auto 档中风险自动')
-  ok(a.gate('R6').auto === false && /allowIrreversible/.test(a.gate('R6').reason), 'auto 档高风险仍需第三锁')
+  // 默认授权：只读/聚类位开，真实执行位全关
+  ok(a.gate('R1').auto === true && a.gate('R2').auto === true && a.gate('R3').auto === true,
+    '默认授权下 R1/R2/R3 只读自动（clusterLog/readonlyReview）')
+  ok(a.gate('R4').auto === false && a.gate('R5').auto === false, '默认授权下 R4/R5 真实执行不自动')
+  ok(a.gate('R6').auto === false && a.gate('R7').auto === false, '默认授权下 R6/R7 高风险不自动')
+  ok(/只给意见/.test(a.gate('R4').reason), '未授权功能 reason 含「只给意见」')
+  // 授权 R4/R5 + 评测达标 → 通过；评测未达标 → 拒绝
+  s.config.aiReview.autoActions.R4 = true
+  s.config.aiReview.autoActions.R5 = true
+  ok(a.gate('R4', { evalVerdict: '达标' }).auto === true, 'R4 授权+评测达标 → 自动')
+  ok(a.gate('R4', { evalVerdict: '未达标' }).auto === false && /评测/.test(a.gate('R4', { evalVerdict: '未达标' }).reason),
+    'R4 评测未达标 → 拒绝')
+  // 高风险双锁：授权位 + irreversible 位 + allowIrreversible
+  s.config.aiReview.autoActions.R6 = true
+  s.config.aiReview.autoActions.R7 = true
+  ok(a.gate('R6', { evalVerdict: '达标' }).auto === false && /不可逆|allowIrreversible/.test(a.gate('R6').reason),
+    'R6 授权但不可逆位未开 → 拒绝')
+  s.config.aiReview.autoActions.irreversible = true
   s.config.aiReview.allowIrreversible = true
-  ok(a.gate('R6').auto === true && a.gate('R7').auto === true, '第三锁打开后高风险才自动')
+  ok(a.gate('R6', { evalVerdict: '达标' }).auto === true && a.gate('R7', { evalVerdict: '达标' }).auto === true,
+    'R6/R7 不可逆双锁全开+达标 → 自动')
   ok(RISK.R6.needsIrreversible && RISK.R7.needsIrreversible, 'R6/R7 标记为不可逆需双锁')
+  // 触发解耦：同一功能 manual/auto 的 gate 判定一致（gate 不看 trigger）
+  ok(a.gate('R4', { evalVerdict: '达标' }).auto === a.gate('R4', { evalVerdict: '达标', trigger: 'auto' }).auto,
+    'gate 判定与触发方式无关（解耦）')
 })()
 
 console.log('--- ③ 证据门槛：客观项 AND + AI 引用可定位 ---')
@@ -72,6 +84,67 @@ console.log('--- ③ 证据门槛：客观项 AND + AI 引用可定位 ---')
   ok(a.quoteLocatable({ quote: 'lx.on("music")' }, 'function(){ lx.on("music"); }') === true, '逐字引用可定位 → 通过')
   ok(a.quoteLocatable({ quote: '不存在的片段' }, 'function(){ lx.on("music"); }') === false, '编造引用 → 定位失败')
   ok(a.quoteLocatable({}, 'anything') === false, '无引用 → 定位失败')
+
+  // 阶段3：collectSignals 生产接线 —— R7 删源证据守卫（最高原则：精准不误伤）
+  const sig = (e, k) => a.collectSignals(e, k)
+  const hardDead = sig({ status: 'dead' }, 'R7')
+  ok(a.evaluateGate(hardDead).pass === true, 'R7 status=dead 硬失效 → 证据全绿，允许自动')
+  const measured = sig({ status: 'ok', apiDownStreak: 12,
+    deep: { checkedAt: 1, platforms: [{ status: 'unusable' }, { status: 'unusable' }] } }, 'R7')
+  ok(a.evaluateGate(measured).pass === true, 'R7 实测全平台不可用+连续失效≥10 → 证据全绿')
+  const noEvidence = sig({ status: 'ok' }, 'R7')
+  ok(a.evaluateGate(noEvidence).pass === false, 'R7 无硬失效也无实测证据 → 证据不全，拒绝自动（降级人工）')
+  const stillUsable = sig({ status: 'ok', apiDownStreak: 20,
+    deep: { checkedAt: 1, platforms: [{ status: 'usable' }] } }, 'R7')
+  ok(a.evaluateGate(stillUsable).pass === false, 'R7 实测仍有可用平台 → 反证成立，禁止自动删（纵使连续失效很高）')
+  const r6NoObf = sig({ status: 'ok' }, 'R6')
+  ok(a.evaluateGate(r6NoObf).pass === false, 'R6 无混淆特征客观锚点 → 拒绝信任放行')
+  const r6Obf = sig({ obfLevel: 'high' }, 'R6')
+  ok(a.evaluateGate(r6Obf).pass === true, 'R6 有混淆特征锚点且非硬失效 → 允许')
+  // v1.15.0：R6 obfEvidence 改以 obfLevel 为准——只认 high/mid，不再看 obfHits 键数。
+  // 核心回归：纯 CJK 转义噪声重算后 obfLevel 清空但 obfHits 仍有 13 键，必须判 false。
+  const obfNoiseHits = { totalUni: 1585, perKbUni: 15.4, evalCalls: 0, total0x: 0, totalExotic: 0, spinLoops: 0, selfSchedCalls: 0, jsjiamiMarks: 0, perKb0x: 0, perKbExotic: 0, selfSchedTimer: 0, selfSchedDecode: 0 }
+  const r6Mid = sig({ obfLevel: 'mid' }, 'R6')
+  ok(a.evaluateGate(r6Mid).pass === true, 'R6 obfLevel=mid → obfEvidence=true（有效等级）')
+  const r6EmptyWithNoise = sig({ obfLevel: '', obfHits: obfNoiseHits }, 'R6')
+  ok(r6EmptyWithNoise.find(x => x.key === 'obfEvidence').ok === false,
+    'R6 obfLevel=空但 obfHits 带13键(纯CJK噪声totalUni=1585) → obfEvidence=false（本次修复核心）')
+  const r6NoneWithNoise = sig({ obfLevel: 'none', obfHits: obfNoiseHits }, 'R6')
+  ok(r6NoneWithNoise.find(x => x.key === 'obfEvidence').ok === false,
+    'R6 obfLevel=none 但 obfHits 带一堆键 → obfEvidence=false')
+  const r6UndefWithNoise = sig({ obfHits: obfNoiseHits }, 'R6')
+  ok(r6UndefWithNoise.find(x => x.key === 'obfEvidence').ok === false,
+    'R6 obfLevel=undefined 但 obfHits 带一堆键 → obfEvidence=false')
+  const r6WeirdWithNoise = sig({ obfLevel: 'LOW', obfHits: obfNoiseHits }, 'R6')
+  ok(r6WeirdWithNoise.find(x => x.key === 'obfEvidence').ok === false,
+    'R6 obfLevel=非标准值(LOW) → 保守不算证据，obfEvidence=false')
+  ok(a.evaluateGate(r6EmptyWithNoise).pass === false, 'R6 纯CJK噪声源整体拒绝自动（降级人工）')
+  const r6DeadHigh = sig({ obfLevel: 'high', status: 'dead' }, 'R6')
+  ok(a.evaluateGate(r6DeadHigh).pass === false, 'R6 obfLevel=high 但硬失效 → notHardDead=false 仍拒绝（不受影响）')
+
+  // v1.15.0 改动1：platforms 对象/数组统一口径（Object.values），反证信号对对象形态也必须生效。
+  const objPlatforms = sig({ status: 'ok', deep: { checkedAt: 1, platforms: { kw: { status: 'usable' } } } }, 'R7')
+  ok(objPlatforms.find(x => x.key === 'noUsablePlatform').ok === false,
+    'platforms 为对象且含 usable → noUsablePlatform=false（反证生效，旧 Array.isArray 口径会漏）')
+  const arrPlatforms = sig({ status: 'ok', deep: { checkedAt: 1, platforms: [{ status: 'usable' }] } }, 'R7')
+  ok(arrPlatforms.find(x => x.key === 'noUsablePlatform').ok === false, 'platforms 为数组且含 usable → noUsablePlatform=false（数组形态保持）')
+
+  // v1.15.0 改动2：R5 objectiveAnchor 收紧为候选 C（三重保障）。
+  const r5Anchor = (e) => sig(e, 'R5').find(x => x.key === 'objectiveAnchor').ok
+  ok(r5Anchor({ status: 'ok', suspected: false, deep: { checkedAt: 1, loadable: false, platforms: {} } }) === true,
+    'R5候选C 正例：loadable=false+实测+无可用+非可疑 → true')
+  ok(r5Anchor({ status: 'dead', suspected: false, deep: { checkedAt: 1, loadable: true, platforms: {} } }) === true,
+    'R5候选C 正例：status=dead+实测+无可用+非可疑 → true（dead 也算判死）')
+  // 反例：候选 A/B 口径会误伤的形态，候选 C 必须判 false
+  ok(r5Anchor({ status: 'ok', suspected: false, deep: { checkedAt: 1, loadable: true, platforms: {} } }) === false,
+    'R5候选C 反例B：loadable=true 真音源(无dead) → false（旧 A 口径会误伤）')
+  ok(r5Anchor({ status: 'ok', suspected: true, deep: { checkedAt: 1, loadable: false, platforms: {} } }) === false,
+    'R5候选C 反例：suspected=true → false（可疑源不算证据）')
+  ok(r5Anchor({ status: 'ok', suspected: false, deep: { checkedAt: 1, loadable: false, platforms: { kw: { status: 'usable' } } } }) === false,
+    'R5候选C 反例：仍有可用平台 → false')
+  ok(r5Anchor({ status: 'ok', suspected: false, deep: { loadable: false, platforms: {} } }) === false,
+    'R5候选C 反例：无 checkedAt（未实测）→ false')
+  ok(r5Anchor({ status: 'ok', suspected: false }) === false, 'R5候选C 反例：无判死无实测 → false（旧 checkedAt||status 口径会误伤）')
 })()
 
 console.log('--- ④ 建议详情 detail：逐字段携带 + 不传 detail 向后兼容 ---')
@@ -105,15 +178,23 @@ console.log('--- ⑤ 审计：before 深拷贝 + undo 幂等 + 损坏不静默 -
   const s = tmpStore()
   const a = new AIReview(s)
   const before = { target: { path: 'db.sources.x', value: { status: 'ok' } } }
-  const rec = a.audit('x', 'R5', before, { target: { path: 'db.sources.x', value: { status: 'done' } } }, 'ai')
+  const rec = a.audit('x', 'R5', before, { target: { path: 'db.sources.x', value: { status: 'done' } } }, 'ai',
+    { scope: { sandbox: true } })
   before.target.value.status = 'MUTATED'
   ok(rec.before.target.value.status === 'ok', 'before 是深拷贝，不随外部对象变化')
   const u1 = a.undo(rec.id)
-  ok(u1.ok === true && u1.undone === true, 'undo 成功')
+  ok(u1.ok === true && u1.undone === true, 'undo 成功（老格式 target 兼容 + sandbox 审计）')
+  ok(s.db.sources.x && s.db.sources.x.status === 'ok', 'undo 真实写回 db.sources.x')
   ok(a.undo(rec.id).note && /无需重复/.test(a.undo(rec.id).note), '重复 undo 幂等（不二次写）')
-  s.db.aiAudit['bad'] = { id: 'bad', before: null, undone: false }
+  // 非沙箱审计禁止 undo（防误操作生产数据）
+  const prodRec = a.audit('p', 'R5', { targets: [{ path: 'db.sources.p', before: { status: 'ok' }, after: null }] },
+    {}, 'ai', { scope: { sandbox: false } })
+  let prodThrew = false
+  try { a.undo(prodRec.id) } catch (e) { prodThrew = /非评测沙箱/.test(e.message) }
+  ok(prodThrew, '非沙箱审计 undo 被拒绝')
+  s.db.aiAudit['bad'] = { id: 'bad', before: null, undone: false, scope: { sandbox: true } }
   let threw = false
-  try { a.undo('bad') } catch (e) { threw = /缺少有效 before/.test(e.message) }
+  try { a.undo('bad') } catch (e) { threw = /缺少有效/.test(e.message) }
   ok(threw, 'before 缺失时报错而非静默成功')
   let missingThrew = false
   try { a.undo('nope') } catch (e) { missingThrew = /不存在/.test(e.message) }
@@ -214,7 +295,8 @@ console.log('--- ⑨ 呈现范式契约：内联 chip / 按钮分流 / R1 日志
   ok(/AI_ACTIONABLE_VERDICT/.test(app) && /function aiActionable/.test(app), 'app.js 有 kind+verdict 动作白名单 aiActionable')
   ok(/R7:\s*\['blacklist'\]/.test(app) && /R5:\s*\['nonSource'\]/.test(app) && /R4:\s*\['follow'\]/.test(app),
     '动作白名单：R7 只 blacklist / R5 只 nonSource / R4 只 follow')
-  ok(/data-ai-apply="/.test(app), 'chip 浮层对真有动作的建议提供「就按这个处理」按钮')
+  ok(/data-ai-apply="/.test(app) && /记下采纳/.test(app), 'chip 浮层提供「记下采纳」按钮（只标记未执行，v1.15 诚实文案）')
+  ok(!/已按 AI 的看法处理/.test(app), 'v1.15 删除「已按AI处理」空标记误导文案')
 
   // R1 降级为日志：前端 logOnly、后端统一走 core 的 run() 执行器
   ok(/logOnly:\s*true/.test(app), 'app.js R1 立即分析带 logOnly:true')
@@ -226,7 +308,9 @@ console.log('--- ⑨ 呈现范式契约：内联 chip / 按钮分流 / R1 日志
   const aiSrc = fs.readFileSync(path.join(ROOT, 'src', 'core', 'aiReview.js'), 'utf8')
   ok(/promptVersion:\s*\(REVIEW_PROMPTS\[kind\]\s*&&\s*REVIEW_PROMPTS\[kind\]\.version\)\s*\|\|\s*'v1'/.test(aiSrc), 'aiReview.makeDetail 统一生成 promptVersion（动态取 REVIEW_PROMPTS[kind].version，默认 v1）')
   ok(/AUTO_READONLY_KINDS\s*=\s*\['R1'\s*,\s*'R2'\s*,\s*'R3'\]/.test(aiSrc), 'core 默认只读档白名单 R1/R2/R3')
-  ok(/autoMarked/.test(aiSrc) && /appliedBy\s*=\s*'ai'/.test(aiSrc), 'core auto 档对 R4-R7 只铺轨标记（不硬拦、不执行业务）')
+  ok(!/appliedBy\s*=\s*'ai'/.test(aiSrc) && /s\.gateEval\s*=/.test(aiSrc),
+    'core v1.15 删除假 applied，仅记录 gateEval（不执行业务）')
+  ok(/deriveMode/.test(aiSrc) && /autoActions/.test(aiSrc), 'core v1.15 两维度解耦：deriveMode + autoActions')
   ok(/writeClusterReport/.test(aiSrc), 'core R1 AI 研究报告方法存在')
 
   // apply 白名单 + kind 校验（双端），堵住只读建议被误标 applied
@@ -249,7 +333,9 @@ console.log('--- ⑨ 呈现范式契约：内联 chip / 按钮分流 / R1 日志
   ok(/createAppLogWriter/.test(fs.readFileSync(path.join(ROOT, 'src', 'core', 'logFile.js'), 'utf8')), 'core/logFile.js 提供 createAppLogWriter')
 
   // AI 页已缩编：建议列表/详情卡移除，配置与聚类入口保留
-  ok(/id="aiBaseUrl"/.test(html) && /id="aiMode"/.test(html), 'AI 页保留中转站/档位配置')
+  ok(/id="aiBaseUrl"/.test(html) && /id="aiAutoEnabled"/.test(html) && /id="aaR4"/.test(html),
+    'AI 页保留中转站 + 自动挡开关 + autoActions 权限勾选（v1.15 无 aiMode 下拉）')
+  ok(!/id="aiMode"/.test(html), 'AI 页已移除旧三档下拉 aiMode')
   ok(/马上归类一次/.test(html), 'AI 页聚类按钮改为「马上归类一次」（大白话）')
   ok(/id="aiDetail"/.test(html) === false, 'AI 页已移除 #aiDetail 详情卡')
   // v1.13.9：随容器移除一并清掉死代码，防止后来人"补回来"一个永远显示不了的渲染函数
@@ -350,7 +436,8 @@ async function learnTests() {
     for (const [label, src] of [['web.js', web], ['main/index.js', mainSrc]]) {
       ok(/本周新增类别/.test(src), label + ' R1 日志带新增类别文案')
       ok(/ai\(\)\.run\('R1'/.test(src), label + ' 定时器走统一 run(R1)')
-      ok(/if \(cfg\.enabled\)[\s\S]{0,200}aiLastClusterAt/.test(src), label + ' R1 聚类只受 enabled 管（与自动挡解耦）')
+      ok(/cfg\.enabled[\s\S]{0,120}clusterLog[\s\S]{0,200}aiLastClusterAt/.test(src),
+    label + ' R1 聚类受 enabled + clusterLog 授权位管（与自动挡开关解耦）')
     }
     ok(/SEED_CLUSTER_RULES/.test(fs.readFileSync(path.join(ROOT, 'src', 'core', 'aiReview.js'), 'utf8')), 'core 内置 seed 规则常量')
 
@@ -360,6 +447,7 @@ async function learnTests() {
         const st = tmpStore(); st.config.aiReview = Object.assign({}, st.config.aiReview)
         const ai = new AIReview(st)
         ai.cfg.enabled = true
+        ai.cfg.autoEnabled = true   // v1.15.0：auto 触发需自动挡独立开关开启
         ai.cfg.clusterLearnEnabled = true
         ai.cfg.clusterLearnMinSamples = 99   // 样本门槛调高，确保 auto 时自生长不调 LLM
         ai.cfg.provider = { baseUrl: 'https://x/v1', apiKey: 'k', model: 'm', headers: {}, timeoutMs: 1000 }
@@ -444,22 +532,33 @@ async function learnTests() {
     const r1b = await a1.run('R1', { entries: [{ id: 'e1', error: 'SSL certificate expired' }], logOnly: true, trigger: 'manual' })
     ok(/本地摘要/.test(r1b.result.report || ''), 'R1 报告：失败降级为本地摘要')
 
-    // 4) R4-R7 自动铺轨：auto 档 gate 放行时标记 appliedBy=ai，不碰业务
+    // 4) R4-R7 自动铺轨：v1.15 删除假 applied，仅记录 gateEval；授权位默认关
     const s4 = tmpStore(); s4.config.aiReview = Object.assign({}, s4.config.aiReview)
     const a4 = new AIReview(s4)
-    a4.cfg.enabled = true; a4.cfg.mode = 'auto'
+    a4.cfg.enabled = true; a4.cfg.autoEnabled = true
     a4.cfg.provider = { baseUrl: 'https://x/v1', apiKey: 'k', model: 'm', headers: {}, timeoutMs: 1000 }
     a4.fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '建议追更' } }] }) })
     const r4 = await a4.run('R4', { entryId: 'u1', text: '有更新地址', trigger: 'auto' })
-    ok(r4.autoMarked === true && r4.suggestion.status === 'applied' && r4.suggestion.appliedBy === 'ai', 'R4 auto 档自动铺轨标记 appliedBy=ai')
-    // off 档不标记
+    ok(r4.suggestion.status === 'pending' && !r4.suggestion.appliedBy && r4.suggestion.gateEval && r4.suggestion.gateEval.pass === false,
+      'R4 默认授权关：产 pending 建议 + gateEval.pass=false，无假 applied')
+    // 授权位开 + 评测达标 → gateEval.pass=true，仍不写 applied（真实执行只在评测沙箱）
+    s4.config.aiReview.autoActions.R4 = true
+    const r4ok = await a4.run('R4', { entryId: 'u3', text: '有更新地址', updateUrl: 'https://x/update.js',
+      trigger: 'auto', evalVerdict: '达标' })
+    ok(r4ok.suggestion.gateEval.pass === true && r4ok.suggestion.status === 'pending' && !r4ok.suggestion.appliedBy,
+      'R4 授权+达标+有updateUrl证据：gateEval.pass=true 但仍 pending、无 applied（不碰业务）')
+    // 阶段3 证据守卫：同样授权+达标，但无 updateUrl 客观锚点 ⇒ 证据缺失 ⇒ gateEval.pass=false
+    const r4noEv = await a4.run('R4', { entryId: 'u4', text: '有更新地址', trigger: 'auto', evalVerdict: '达标' })
+    ok(r4noEv.suggestion.gateEval.pass === false && r4noEv.suggestion.gateEval.missing.indexOf('updateUrl') !== -1,
+      'R4 无 updateUrl 客观证据 ⇒ 证据守卫拒绝自动（降级只给意见）')
+    // 自动挡开关关时，auto 触发被入口门禁拒绝
     const s4b = tmpStore(); s4b.config.aiReview = Object.assign({}, s4b.config.aiReview)
     const a4b = new AIReview(s4b)
-    a4b.cfg.enabled = true; a4b.cfg.mode = 'off'
+    a4b.cfg.enabled = true; a4b.cfg.autoEnabled = false
     a4b.cfg.provider = { baseUrl: 'https://x/v1', apiKey: 'k', model: 'm', headers: {}, timeoutMs: 1000 }
     a4b.fetchImpl = a4.fetchImpl
     const r4b = await a4b.run('R4', { entryId: 'u2', text: '有更新地址', trigger: 'auto' })
-    ok(!r4b.autoMarked && r4b.suggestion.status === 'pending', 'off 档 R4 不铺轨标记')
+    ok(r4b.ok === false && /自动挡/.test(r4b.reason || ''), '自动挡关闭时 auto 触发被拒绝（入口门禁）')
 
     // 6) R4-R7 评测台子：REVIEW_PROMPTS / 结构化输出 / R7 从零建 / entries 逐条 / 不碰业务
     ok(REVIEW_PROMPTS && ['R4', 'R5', 'R6', 'R7'].every(k => REVIEW_PROMPTS[k] && REVIEW_PROMPTS[k].system && Array.isArray(REVIEW_PROMPTS[k].verdicts) && typeof REVIEW_PROMPTS[k].buildText === 'function'),
@@ -496,8 +595,13 @@ async function learnTests() {
     ok(/act === 'aiReview'/.test(appSrc), 'app.js 单条 AI 复检点击分支存在')
     ok(/act === 'aiReview'[\s\S]{0,200}srcIndex\.get\(id\)/.test(appSrc), 'app.js 单条 AI 复检从 srcIndex 取音源（非 rowMap 的 <tr>）')
     ok(/kind: 'R6'/.test(appSrc) && /window\.confirm\(/.test(appSrc), 'app.js 隔离区放行前调 R6 并 confirm')
-    ok(/const kinds = \['R3', 'R4', 'R5', 'R7'\]/.test(appSrc), '批量按钮扩展 R3/R4/R5/R7（R6 留隔离区）')
-    ok(/toast\('已完成 '/.test(appSrc) && /made \+=/.test(appSrc), '批量按钮按真实建议数 toast')
+    ok(/const kinds = \['R3', 'R4', 'R5'\]/.test(appSrc), '批量只跑 R3/R4/R5（v1.15 R7 移出，改单条+二次确认）')
+ ok(/btnAiBatchCancel/.test(appSrc) && /aiBatchCancel/.test(appSrc) && /const AI_BATCH = 20/.test(appSrc),
+   '批量分批续跑(BATCH=20)+cooperative取消+独立aiBusy')
+ ok(/kind === 'R7'/.test(appSrc) && /window\.confirm/.test(appSrc), 'R7 采纳前二次确认')
+ ok(/覆盖 ' \+ covered/.test(appSrc) && /共产出 ' \+ made/.test(appSrc), '批量结束提示用覆盖/建议数口径，不用建议数冒充')
+    ok(/covered \+=/.test(appSrc) && /made \+=/.test(appSrc) && /覆盖 '/.test(appSrc),
+   '批量统计区分覆盖数(covered)与建议数(made)，不再用建议数冒充处理数')
 
     // ============================================================
     console.log('\n=== P0-1：suspected 语义（正向音源特征打分，非「疑似非音源」）===')

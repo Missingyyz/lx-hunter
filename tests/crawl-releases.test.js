@@ -316,8 +316,15 @@ ck('验真把 App 内置脚本垫片列为弱路径', crSrcT.includes('sandbox|p
 ck('压缩包按文件名匹配音源语义（不再看目录名）', crSrcT.includes("String(p.path).split('/').pop()"))
 ck('压缩包体积按 MAX_ASSET_BYTES 封顶', /\(t\.size \|\| 0\) <= MAX_ASSET_BYTES/.test(crSrcT))
 ck('hunter 提供 pruneNonSourceRepos 一键清理', hSrc.includes('async pruneNonSourceRepos'))
-ck('清理只处理确定性失败（限流/临时失败跳过）', hSrc.includes('const isTransient') && hSrc.includes('ECONN'))
-ck('清理连带删除这些仓库贡献的脚本', hSrc.includes('deadSet') && hSrc.includes('removeSources(srcIds)'))
+ck('清理只处理确定性失败（限流/临时失败跳过）—— 临时判据统一收敛到 crawler.isTransientVerifyReason',
+  hSrc.includes('crawlerMod.isTransientVerifyReason') &&
+  /const dead = results\.filter\(x => !x\.v\.ok && !isTransient\(x\.v\.reason\)\)/.test(hSrc) &&
+  (hSrc.includes('const isTransient') || hSrc.includes('isTransient = (r)')) &&
+  crSrcT.includes('function isTransientVerifyReason') &&
+  crSrcT.includes('ECONN'))
+ck('清理连带删除这些仓库贡献的脚本（v1.16 改走 blockRepo 单一路径，removedSources 累加）',
+  hSrc.includes("this.blockRepo(n, { by: 'user', reason: '清理非音源仓库（验真确认无音源脚本）', _internal: true })") &&
+  /removedSources \+= Number\(br\.removedSources\)/.test(hSrc))
 ck('清理后写入 blockedRepos 黑名单', hSrc.includes('blockedRepos'))
 ck('发现器丢弃黑名单仓库（不再回填）', hSrc.includes('blockedRepos.has'))
 ck('store 默认含 blockedRepos', stSrc.includes('blockedRepos: []'))
@@ -356,7 +363,7 @@ ck('被时间窗挡下时给出改法提示', hSrc.includes('把设置页「只�
 ck('前端 0 条且被时间窗跳过时说明原因', appSrc.includes('天内无提交也无新发布，按设置跳过'))
 ck('采集按钮不再宣称绕过过滤', !appSrc.includes('绕过 30 天新鲜度过滤'))
 ck('设置页标注时间窗对单个采集生效', htmlSrc.includes('单个「采集」同样生效'))
-ck('缓存戳不低于 v54（v1.10.7 基线）', /app\.js\?v=(5[4-9]|[6-9]\d)/.test(htmlSrc))
+ck('缓存戳不低于 v54（v1.10.7 基线）', (() => { const m = /app\.js\?v=(\d+)/.exec(htmlSrc); return !!m && Number(m[1]) >= 54 })())
 
 // ---------- ⑫ v1.10.8 混淆隔离区 + 单条信任 ----------
 // 用户诉求：混淆源被自动排除后在界面上"看不见"；要求加一个「混淆隔离」页（已灌入与设置之间），
@@ -392,7 +399,9 @@ ck('缓存戳不低于 v54（v1.10.7 基线）', /app\.js\?v=(5[4-9]|[6-9]\d)/.t
   ck('音源库徽章显示混淆隔离', appSrc.includes("status === 'quarantined'") && appSrc.includes('混淆隔离</span>'))
   ck('隔离条目不落入「未检测」筛选', appSrc.includes("e.status !== 'quarantined'"))
   ck('设置页文案改为隔离表述', htmlSrc.includes('自动隔离') && htmlSrc.includes('「混淆隔离」页'))
-  ck('缓存戳提升到 app.js v93（v1.13.12 隔离区试跑）', htmlSrc.includes('app.js?v=93') && htmlSrc.includes('web-bridge.js?v=60') && htmlSrc.includes('styles.css?v=21'))
+  ck('缓存戳提升到 app.js v100 / sorters.js v30（R10 改名整改）',
+    htmlSrc.includes('app.js?v=102') && htmlSrc.includes('sorters.js?v=30') &&
+    htmlSrc.includes('web-bridge.js?v=61') && htmlSrc.includes('styles.css?v=21'))
 
   // —— v1.10.8 改名检测（prune 301 识别）+ 仓库行快捷拉黑 ——
   {
@@ -409,11 +418,11 @@ ck('缓存戳不低于 v54（v1.10.7 基线）', /app\.js\?v=(5[4-9]|[6-9]\d)/.t
     ck('新名不在清单只提示不自动改', hSrc.includes('新名不在清单，未自动处理'))
     ck('改名清理保留历史音源且不进黑名单', hSrc.includes('历史音源保留') && !/renamedRepos[\s\S]{0,400}blk\.add/.test(hSrc))
     ck('清理结果返回 renamedRepos/renameHints', (hSrc.match(/renamedRepos, renameHints/g) || []).length >= 2)
-    ck('hunter 提供 blockRepo 快捷拉黑', hSrc.includes('blockRepo(repo)') && hSrc.includes('jobGate(\'拉黑仓库\''))
+    ck('hunter 提供 blockRepo 快捷拉黑（v1.16 签名 blockRepo(repo, opts)）', hSrc.includes('blockRepo(repo, opts)') && hSrc.includes('jobGate(\'拉黑仓库\''))
     ck('拉黑三件事：移出清单+黑名单+清残留脚本', /cfg\.blockedRepos = Array\.from\(blk\)[\s\S]{0,400}removeSources\(ids\)/.test(hSrc))
     ck('拉黑拒绝网页形态与非法仓库名', hSrc.includes('请提供 owner/repo 形态的仓库名'))
     ck('Web 暴露 /api/repos/block', webSrc.includes("'/api/repos/block'"))
-    ck('桌面 IPC repos:block + preload + bridge', mainSrc.includes("'repos:block'") && preloadSrc.includes('reposBlock') && bridgeSrc.includes('reposBlock: repo'))
+    ck('桌面 IPC repos:block + preload + bridge（v1.16 兼容 {repo,by,reason}）', mainSrc.includes("'repos:block'") && preloadSrc.includes('reposBlock') && bridgeSrc.includes('reposBlock') && bridgeSrc.includes('/api/repos/block'))
     // v1.10.7 黑名单管理：unblockRepo + /api/repos/unblock + 黑名单卡片/解除按钮
     ck('hunter 提供 unblockRepo（移出黑名单可回清单）', hSrc.includes('unblockRepo(') && hSrc.includes('不在黑名单中') && hSrc.includes("origin: 'unblocked'"))
     ck('Web 路由 /api/repos/unblock + 三端透传', webSrc.includes('/api/repos/unblock') && mainSrc.includes("'repos:unblock'") && preloadSrc.includes('reposUnblock') && bridgeSrc.includes('reposUnblock:'))

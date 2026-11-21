@@ -64,8 +64,10 @@ function ok (name, cond, extra) {
 }
 
 function runProbe (expr, mode) {
+  // windowsHide: 每条用例独立子进程，Windows 上不隐藏就会逐个弹控制台窗
   const r = spawnSync(NODE, [RUNNER, Buffer.from(expr, 'utf8').toString('base64'), mode || 'sync'], {
     cwd: ROOT, encoding: 'utf8', timeout: 60000, maxBuffer: 4 * 1024 * 1024,
+    windowsHide: true,
     env: Object.assign({}, process.env, { NODE_OPTIONS: '' })
   })
   const out = String(r.stdout || '').trim()
@@ -178,6 +180,7 @@ console.log('\n=== ⑤ 阳性对照：检测器对「重建 Error 里藏宿主�
 ;(function () {
   const r = spawnSync(NODE, [MUTANT], {
     cwd: ROOT, encoding: 'utf8', timeout: 60000, maxBuffer: 4 * 1024 * 1024,
+    windowsHide: true,
     env: Object.assign({}, process.env, { NODE_OPTIONS: '' })
   })
   const out = String(r.stdout || '').trim()

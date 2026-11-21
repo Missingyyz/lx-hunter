@@ -104,7 +104,7 @@ function escapedProbe(action, target, extraReadRoots) {
   args.push('--allow-fs-read=' + probe)
   args.push(probe, action)
   if (target) args.push(target)
-  const r = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 20000 })
+  const r = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 20000, windowsHide: true })
   const m = (r.stdout || '').match(/ESCAPE_PROBE (.*)/)
   if (m) { try { return JSON.parse(m[1]) } catch (e) {} }
   return { raw: (r.stderr || '').slice(0, 200), status: r.status }

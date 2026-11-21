@@ -2,7 +2,7 @@
 /** 本地持久化：配置 / 音源库 / 已灌入记录，存于 Electron userData 目录 */
 const fs = require('fs')
 const path = require('path')
-const { usableCount } = require('./checker')
+const { usableCount, obfuscationRisk, classifyQuarantineTrust } = require('./checker')
 const { DEFAULT_REPOS, normalizeRepo } = require('./crawler')
 
 const DEFAULT_CONFIG = {
@@ -74,6 +74,20 @@ const DEFAULT_CONFIG = {
   // 非音源仓库黑名单（v1.10.3）：被「清理非音源仓库脚本」判定删除的仓库（播放器/管理器/网关等）。
   // 记在这里后，搜索发现与社区精选都不会再把它们加回清单，避免「清了又回来」。
   blockedRepos: [],
+  // 黑名单旁路表（v1.16）：记每个被拉黑仓库的来源与快照，供 UI 显示来源徽章 + 解除时按快照还原脚本。
+  // 结构 { 'owner/repo': { by:'ai'|'user', reason, at, snapshot:string[] } }。
+  // ⚠️ 只读展示 + 回滚辅助；绝不参与 blockedRepos 的判定逻辑（那是纯字符串数组，不能改结构）。
+  blockedMeta: {},
+  // 仓库级 AI 语义预判结果（v1.16，复用 coldStart 现成结论，零新增 AI 调用）：
+  // { 'owner/repo': { cls:'tool', reason, at } }。只存 tool（uncertain/real 一律不存、不提示），供 UI 建议层展示。
+  repoAiHints: {},
+  // 搜索发现验真的负缓存（v1.17，配额优化 #1）：{ 'owner/repo': { at, reason } }。
+  // **只存确定性判死**（ok:false 且非限流/网络/超时），TTL 默认 7 天（ghNegativeTtlDays 可调）。
+  // 目的：搜索发现每 24h 会把 40~50 个「名字像音源、实际无音源」的仓库全量重验（3~4 次/仓），
+  // 而结论 7 天内不会变。命中即跳过验真，单轮可省一半以上配额。
+  // ⚠️ 与 blockedRepos 无关：这里不拉黑、不影响采集，仓库补了音源就会在下次验真通过后自动删除。
+  ghNegativeCache: {},
+  ghNegativeTtlDays: 7,
   // ---------------- 站外分发源（v1.11.0）----------------
   // externalSources：用户显式添加的 Pages / 自建域名 / 对象存储直链源，与仓库清单并列的一类采集源。
   // 每项 {url, name, enabled, origin:'external', kind, addedAt, lastProbe, lastCrawl}。
@@ -149,6 +163,17 @@ const DEFAULT_CONFIG = {
   autoDeepPendingDuels: true,
   // P-1432（v1.13.8）：脚本更新信号追更（lx.request 响应嗅探 + updateAlert 双通道）
   autoFollowScriptUpdate: true,
+  // v1.15.x 阶段A：追更策略（autoFollowScriptUpdate 总闸之下的细分，二者 AND）。
+  //   all（默认）=完全等同现网：按 updateUrl 追更、不看 msg 文案；
+  //   substantive=按更新说明过滤，只追写明修复/新功能的实质更新；
+  //   off=关闭追更（等同 autoFollowScriptUpdate:false）。
+  autoFollowPolicy: 'all',
+  // v1.15.x 阶段B：追更地址的 AI 安全否决（单向否决，AI 只回答"安不安全"，不决定追不追）。
+  //   off（默认）=完全不调 AI＝现网行为；
+  //   shadow=调 AI 产 danger 标记 + 旁路日志，但 danger=true 也**不真阻断**，仅供影子观察；
+  //   enforce=danger=true 时真阻断（代码就绪但**默认绝不开**，达门槛后由用户单独拍板）。
+  //   安全不对称：只有 danger===true 阻断；false/unknown/超时/报错/坏JSON/AI关闭一律放行。
+  aiFollowVeto: 'off',
   trustedObfDomains: [],
   patrolAutoDelete: false,
   patrolDeleteAfter: 3,
@@ -183,9 +208,16 @@ const DEFAULT_CONFIG = {
   // baseUrl 填到根（如 https://api.deepseek.com/v1 或自建中转），model 填该中转站支持的模型名，
   // headers 可填该中转站要求的额外鉴权头（如某些中转用 Authorization 之外的自定义头）。
   aiReview: {
-    enabled: false,                 // 总开关，默认关（off 档零副作用）
-    mode: 'off',                    // off | assist | auto
-    allowIrreversible: false,       // auto 档下是否放开 R6/R7（第三把锁，默认否）
+    enabled: false,                 // 总闸，默认关（关闭时手动/自动两挡全停）
+    mode: 'off',                    // 废弃授权语义，仅派生显示 + 老配置兼容
+    autoEnabled: false,             // 自动挡刹车：定时/事件触发是否跑（默认关）
+    allowIrreversible: false,       // 不可逆第三把锁，默认否
+    // v1.15.0 操作授权（两挡共用）：默认都只给意见；旁路两项保留既有零误伤自动化。
+    autoActions: {
+      clusterLog: true, readonlyReview: true, autoMark: false,
+      R4: false, R5: false, R6: false, R7: false, R10: false, irreversible: false
+    },
+    evalExecutorsEnabled: false,    // 真实 executor + audit/undo 仅评测沙箱可用
     provider: {
       baseUrl: '',                  // OpenAI 兼容端点根地址，用户自定义（不锁死厂商）
       apiKey: '',                   // Bearer 密钥；非管理员脱敏（见 web.js sanitizeConfig）
@@ -201,10 +233,9 @@ const DEFAULT_CONFIG = {
     clusterLearnEnabled: true,       // 归纳开关（总开关 enabled 关时不学）
     clusterLearnMinSamples: 5,       // 同类未匹配样本达到此数才归纳，防噪声
     clusterLearnMaxRules: 40,        // 学到的类别规则上限，防规则表膨胀
-    // ---------------- 自动挡（L1：默认全关，只记日志不自动处置） ----------------
-    autoEnabled: false,              // 自动挡总开关，默认关
+    // ---------------- 自动挡调度参数 ----------------
     autoIntervalHours: 24,           // 自动只读复检周期（小时），默认每日；R1 聚类仍用 clusterIntervalHours=168
-    autoScope: 'failed',             // 自动范围：new/failed/quarantined/all，默认仅失败源
+    autoScope: 'failed',             // 自动范围：new/failed/all（quarantined 已并入 failed），默认仅失败源
     autoMaxItems: 20,                // 自动每轮上限
     autoActiveHours: { start: 0, end: 24 },  // 允许时段，默认全天
     shadowEval: false,               // 影子评测开关：AI 决策只记不执行，默认关
@@ -222,6 +253,11 @@ class Store {
     this.importedFile = path.join(dir, 'imported.json')
     const rawCfg = this._read(this.configFile)
     this.config = Object.assign({}, DEFAULT_CONFIG, rawCfg)
+    // v1.16：两组旁路表兜底（老配置缺失/null 时补成空对象，绝不因缺键报错）
+    if (!this.config.blockedMeta || typeof this.config.blockedMeta !== 'object' || Array.isArray(this.config.blockedMeta)) this.config.blockedMeta = {}
+    if (!this.config.repoAiHints || typeof this.config.repoAiHints !== 'object' || Array.isArray(this.config.repoAiHints)) this.config.repoAiHints = {}
+    // v1.17：搜索发现验真负缓存兜底（老配置缺失/null 时补空对象）
+    if (!this.config.ghNegativeCache || typeof this.config.ghNegativeCache !== 'object' || Array.isArray(this.config.ghNegativeCache)) this.config.ghNegativeCache = {}
     // AI 复检配置深合并：浅合并会让旧配置文件里半截 aiReview 覆盖掉默认 provider 字段，
     // 导致缺 headers/timeoutMs 等键。逐层补齐默认，且只补缺失键、尊重用户已存值。
     if (rawCfg && rawCfg.aiReview && typeof rawCfg.aiReview === 'object') {
@@ -238,11 +274,33 @@ class Store {
       if (a.autoEnabled == null) a.autoEnabled = d.autoEnabled
       if (a.autoIntervalHours == null) a.autoIntervalHours = d.autoIntervalHours
       if (a.autoScope == null) a.autoScope = d.autoScope
+      if (a.autoScope === 'quarantined') a.autoScope = 'failed'  // v1.15.0 旧值迁移
       if (a.autoMaxItems == null) a.autoMaxItems = d.autoMaxItems
       if (a.shadowEval == null) a.shadowEval = d.shadowEval
       if (a.autoLlmReviewEnabled == null) a.autoLlmReviewEnabled = d.autoLlmReviewEnabled
       a.autoActiveHours = Object.assign({}, d.autoActiveHours, a.autoActiveHours || {})
+      // v1.15.0 autoActions 逐键补齐（尊重用户已存值）
+      a.autoActions = Object.assign({}, d.autoActions, a.autoActions && typeof a.autoActions === 'object' ? a.autoActions : {})
+      if (a.evalExecutorsEnabled == null) a.evalExecutorsEnabled = d.evalExecutorsEnabled
+      // mode 合法性（兼容老配置）
       if (a.mode !== 'off' && a.mode !== 'assist' && a.mode !== 'auto') a.mode = d.mode
+      // 老库迁移：无 autoActions 标志的老配置，按 mode 推导 autoEnabled / autoActions.autoMark；
+      // 只补缺失、不翻盘用户显式设置。设 _legacyAiMigrated 标记避免重复迁移。
+      if (!a._legacyAiMigrated) {
+        const legacy = rawCfg && rawCfg.aiReview && rawCfg.aiReview.autoActions == null
+        if (legacy) {
+          if (a.mode === 'off') a.autoEnabled = false
+          else { a.autoEnabled = true; if (a.mode === 'auto') a.autoActions.autoMark = true }
+        }
+        a._legacyAiMigrated = true
+      }
+      // 不可逆双锁：allowIrreversible 关则不可逆位与 R6/R7/R10 恒关
+      if (!a.allowIrreversible) {
+        a.autoActions.irreversible = false
+        a.autoActions.R6 = false
+        a.autoActions.R7 = false
+        a.autoActions.R10 = false
+      }
     }
     // v1.11.0：旧配置只有 forceProxy，按它推导 proxyPolicy，保证升级后行为不变
     if (rawCfg && rawCfg.proxyPolicy == null && rawCfg.forceProxy === true) this.config.proxyPolicy = 'force'
@@ -264,6 +322,14 @@ class Store {
       console.log(`[启动] 清扫上次运行中断残留的 checking 标记 ${stuckChecking} 条`)
       this._write(this.dbFile, this.db)   // 立即落盘，避免文件与内存长期不一致
     }
+    // v1.15.0：一次性 obf 重算迁移（历史脏数据：旧版把纯 CJK \uXXXX 转义计入 nUni，
+    // 判出 obfLevel=high/totalUni 上千，而 checker.js 早已修正口径却没重算已落库条目）。
+    // 只刷新 obfLevel/obfHits，不碰 status/quarantine/任何安全字段；只跑一次。
+    if (this._migrateObfRecalc()) this._write(this.dbFile, this.db)
+    // 历史误隔离复查（v1.15.x）：obf 口径修正后，老版本按旧口径判 high 关进隔离区、
+    // 但新口径已不 high 且实测能用的条目，重算迁移只洗白了 obfLevel 却没动隔离状态，
+    // 永远卡死（applyObfGate 低风险分支 kept.push 不清隔离标记）。独立一次性迁移复查放行。
+    if (this._migrateObfQuarantineRecheck()) this._write(this.dbFile, this.db)
     if (!this.db.patrol) this.db.patrol = { lastRun: 0 }
     // v1.10.2 手动删除记录：被删掉的 id 不再由自动采集加回（见 removeSources）
     if (!Array.isArray(this.db.deletedIds)) this.db.deletedIds = []
@@ -274,6 +340,86 @@ class Store {
     if (this._migratePlatforms()) this.saveConfig()
     // 仓库清单迁移（v1.9.12）：首次启动把内置 38 个 + 旧附加仓库播种进统一 repos 清单
     if (this._ensureRepoList()) this.saveConfig()
+  }
+
+  /**
+   * 一次性 obf 重算迁移（v1.15.0）：
+   *  历史脏数据里 obfLevel=high / obfHits.totalUni 上千，是旧版把纯 CJK \uXXXX 转义
+   *  计入混淆指标留下的；checker.js:obfuscationRisk 早已改为只数非 CJK 转义，但已落库
+   *  的条目没被重算。这里在启动时用当前生产函数重算一遍，口径与检测路径统一。
+   *  约束：只刷 obfLevel/obfHits，绝不碰 status/quarantined/usable/act/任何安全字段；
+   *  只对「有 code 且带 obf 字段」的条目重算（无 code 的留待下次 checkBasic 自然刷新）；
+   *  用 db.obfRecalcMigrated 标记保证只跑一次。返回是否发生过写入。
+   */
+  _migrateObfRecalc() {
+    if (this.db.obfRecalcMigrated === true) return false
+    let recalc = 0
+    for (const e of Object.values(this.db.sources || {})) {
+      if (!e || typeof e !== 'object') continue
+      const hasCode = typeof e.code === 'string' && e.code.length > 0
+      if (!hasCode || (!e.obfLevel && !e.obfHits)) continue
+      let risk
+      try { risk = obfuscationRisk(e.code) } catch (_) { continue }
+      e.obfLevel = risk.level || ''
+      e.obfHits = risk.hits || null
+      recalc++
+    }
+    this.db.obfRecalcMigrated = true
+    if (recalc) console.log(`[启动] obf 重算迁移：按当前口径刷新 ${recalc} 条历史混淆标注`)
+    return true
+  }
+
+  /**
+   * 历史误隔离复查（v1.15.x，独立一次性迁移）：
+   *  旧版 obfuscationRisk 把纯 CJK \uXXXX 转义计入混淆指标，把一些正常音源判成 high
+   *  关进隔离区。checker.js 修正口径后，_migrateObfRecalc 洗白了它们的 obfLevel/obfHits，
+   *  但那条迁移刻意不碰 status/quarantined；而 applyObfGate 的低风险分支只是 kept.push
+   *  放行，不清隔离标记（hunter.js:2969），于是这些条目「标注已洗白、状态仍隔离」永远卡死，
+   *  试跑/自动信任/常规检测三条路都救不了（详见功能体检诊断）。
+   *
+   *  本迁移只放行**同时**满足以下全部条件的条目（保守，宁可漏放不可误放）：
+   *    ① status==='quarantined' || quarantined===true（确实在隔离区）
+   *    ② 有 code 且按当前口径重算 obfuscationRisk 不是 high（口径修正后确非重度混淆）
+   *    ③ classifyQuarantineTrust 判 allow（零硬特征：spin/eval/sched 全 0）
+   *    ④ deep 是正式实测（有 checkedAt 且非 probeOnly）且 usableN>=1（实测确实能出链接）
+   *    ⑤ 非 deprecated
+   *  放行动作（保守走法）：清 quarantined / status 回 ok，usable 按 usableCount 恢复，
+   *  error 清空并记一条可追查的历史说明；**不写 trustedObfHashes、不加白名单域名**——
+   *  条目回到正常检测流程，下次检测若内容真高混淆会被 applyObfGate 重新隔离。
+   *  外联域名确认权留给用户走隔离页既有的信任流程，绝不替用户签字。
+   *  用 db.obfQuarantineRecheckMigrated 保证只跑一次。返回是否发生过写入。
+   */
+  _migrateObfQuarantineRecheck() {
+    if (this.db.obfQuarantineRecheckMigrated === true) return false
+    let freed = 0
+    for (const e of Object.values(this.db.sources || {})) {
+      if (!e || typeof e !== 'object' || e.deprecated) continue
+      const inQ = e.status === 'quarantined' || e.quarantined === true
+      if (!inQ) continue
+      const hasCode = typeof e.code === 'string' && e.code.length > 0
+      if (!hasCode) continue
+      let risk
+      try { risk = obfuscationRisk(e.code) } catch (_) { continue }
+      if (risk && risk.level === 'high') continue
+      // 用当前口径重算后的标注回写，避免顶着旧的 high 标注放行
+      e.obfLevel = risk.level || ''
+      e.obfHits = risk.hits || null
+      let cls
+      try { cls = classifyQuarantineTrust(e, this.config) } catch (_) { continue }
+      if (!cls || cls.level !== 'allow') continue
+      const deep = e.deep
+      if (!deep || !deep.checkedAt || deep.probeOnly === true) continue
+      if (usableCount(e) < 1) continue
+      // 保守放行：不写 trustedObfHashes、不碰白名单，只解除隔离状态
+      e.quarantined = false
+      if (e.status === 'quarantined') e.status = 'ok'
+      e.usable = true
+      e.error = '历史 obf 口径误判已纠正（旧版把纯 CJK 转义计入混淆）：已解除隔离回到正常检测；外联域名未确认，如需信任请自行核实'
+      freed++
+    }
+    this.db.obfQuarantineRecheckMigrated = true
+    if (freed) console.log(`[启动] 历史误隔离复查：按当前口径解除 ${freed} 条误判隔离（未写信任名单，内容更新会按现行规则重判）`)
+    return true
   }
 
   /**
@@ -603,8 +749,45 @@ class Store {
     return { cleared }
   }
 
+  /**
+   * 按 id 精确移除删除记录（v1.16：解除拉黑时按快照还原用，取代 clearDeletedIds 核弹）。
+   * 只撤销「这些具体 id 不再采集」的记录，其它删除记录原样保留。
+   * @param {string[]} ids 要撤销删除记录的 id 列表
+   * @returns {{removed:number}} 实际撤销条数
+   */
+  removeDeletedIds(ids) {
+    const list = Array.isArray(ids) ? ids.filter(x => typeof x === 'string' && x) : []
+    if (!list.length) return { removed: 0 }
+    const set = new Set(list)
+    const before = this.deletedIds().length
+    this.db.deletedIds = this.deletedIds().filter(id => !set.has(id))
+    const removed = before - this.db.deletedIds.length
+    if (removed) this.saveDb()
+    return { removed }
+  }
+
   // 整库清空 = 从零开始，连同删除记录一起清掉，否则之后爬取会莫名少几条
   clearSources() { this.db.sources = {}; this.db.deletedIds = []; this.saveDb() }
+
+  /**
+   * v1.15 P2：用户自定义标签（单点写入，只改 userTag）。
+   * 采集/更新/导入流程不得覆盖此字段——它与 releaseTag 是两条独立字段，
+   * 都不写进 name/lxName/scriptVersion（那会破坏 identity.normName / 同名裁决 / 去重分组）。
+   * @param {string} id 音源 id
+   * @param {string} tag 标签文本（空串=清除）
+   * @returns {{ok:boolean, id:string, userTag:string}}
+   */
+  setUserTag (id, tag) {
+    const key = String(id || '')
+    if (!key) throw new Error('缺少音源 id，无法设置标签')
+    const e = this.db.sources[key]
+    if (!e) throw new Error('音源不存在：' + key)
+    const t = String(tag == null ? '' : tag).trim().slice(0, 40)
+    if (t) e.userTag = t
+    else delete e.userTag
+    this.saveDb()
+    return { ok: true, id: key, userTag: t }
+  }
 
   /**
    * 导入单个音源并标记「私人」（v1.10.0）：

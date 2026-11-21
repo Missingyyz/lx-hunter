@@ -47,8 +47,10 @@ function bodyOf (src, name) {
 
 console.log('=== ① 两个状态徽章：文案必须方向可辨、且都有 tooltip ===')
 ;(() => {
-  const body = bodyOf(appSrc, 'statusCell')
-  ok(body.length > 0, '能取到 statusCell 函数体')
+  // F1 形态提醒改动后：suspected/isCheckedNoSource 徽章逻辑在 statusCellBase，
+  // statusCell 变成只加矛盾态小标的包装器（读 e.veto/e.lastPatrol）。徽章断言应提取 base。
+  const body = bodyOf(appSrc, 'statusCellBase')
+  ok(body.length > 0, '能取到 statusCellBase 函数体（徽章逻辑所在）')
 
   // 找 suspected 分支与 isCheckedNoSource 分支的返回语句
   const susLine = (body.match(/if \(e\.suspected\)[\s\S]*?<\/span>'/) || [''])[0]
@@ -128,10 +130,11 @@ console.log('\n=== ⑤ 语义定义未被改动（只改显示）===')
 
 console.log('\n=== ⑥ 缓存戳同步（改 app.js 必须 bump） ===')
 ;(() => {
-  ok(/app\.js\?v=93/.test(htmlSrc), 'index.html 缓存戳已 bump 到 app.js?v=93')
+  ok(/app\.js\?v=102/.test(htmlSrc), 'index.html 缓存戳已 bump 到 app.js?v=102')
+  ok(/sorters\.js\?v=30/.test(htmlSrc), 'index.html 缓存戳已 bump 到 sorters.js?v=30')
   for (const f of ['crawl-releases.test.js', 'external-source.test.js', 'proxy-policy.test.js']) {
     const s = fs.readFileSync(path.join(ROOT, 'tests', f), 'utf8')
-    ok(/app\.js\?v=93/.test(s) && !/app\.js\?v=92/.test(s), f + ' 缓存戳断言已同步到 v93')
+    ok(/app\.js\?v=102/.test(s) && !/app\.js\?v=101/.test(s), f + ' 缓存戳断言已同步到 v102')
   }
 })()
 

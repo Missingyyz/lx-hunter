@@ -122,8 +122,8 @@ function computeVeto(p) {
       if (srv.disableReason === 'after-import') { continue }
       type = VETO_TYPES.DISABLED
       detail = srv.disableReason === 'probe-dead'
-        ? '服务端停用源复检连续判定它无效（检测后停用）'
-        : '服务端把它关掉了（enabled=false）'
+        ? '服务端复检判定无效，已自动停用（非你手动）'
+        : '服务端关闭了该源（enabled=false，非你手动）'
     } else {
       const off = Array.isArray(srv.disabledSources) ? srv.disabledSources.filter(Boolean) : []
       const all = Array.isArray(srv.supportedSources) ? srv.supportedSources.filter(Boolean) : []

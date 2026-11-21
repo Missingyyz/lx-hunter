@@ -24,28 +24,35 @@ function ai(cfg) {
   s.config.aiReview = Object.assign({}, s.config.aiReview, cfg)
   return new AIReview(s)
 }
-console.log('=== 1. gate 档位判定 ===')
+console.log('=== 1. gate 授权判定（v1.15.0 两维度解耦） ===')
 {
-  const off = ai({ enabled: true, mode: 'off' })
-  for (const k of ['R1','R2','R3','R4','R5','R6','R7']) ok('off档 '+k+' 不自动', off.gate(k).auto === false, JSON.stringify(off.gate(k)))
+  // 手动档（enabled 开、自动挡关）：gate 只看授权位，不看触发；默认只读位开、真实执行位关
+  const manual = ai({ enabled: true, autoEnabled: false })
+  for (const k of ['R1','R2','R3']) ok('手动档 '+k+' 只读授权开', manual.gate(k).auto === true)
+  for (const k of ['R4','R5','R6','R7']) ok('手动档 '+k+' 真实执行默认关', manual.gate(k).auto === false)
 
-  const assist = ai({ enabled: true, mode: 'assist' })
-  for (const k of ['R1','R2','R3']) ok('assist档 '+k+' 自动(只读)', assist.gate(k).auto === true)
-  for (const k of ['R4','R5','R6','R7']) ok('assist档 '+k+' 不自动', assist.gate(k).auto === false)
+  // 自动挡（autoEnabled 开）不改变 gate 授权——证明解耦：同功能 manual/auto 判定一致
+  const auto = ai({ enabled: true, autoEnabled: true })
+  ok('解耦：R1 授权与自动挡开关无关', auto.gate('R1').auto === manual.gate('R1').auto)
+  ok('解耦：R4 授权与自动挡开关无关', auto.gate('R4').auto === manual.gate('R4').auto)
 
-  // 总开关关闭：全不自动（即便 auto 档）
-  const dis = ai({ enabled: false, mode: 'auto', allowIrreversible: true })
+  // 总开关关闭：全不自动（gate 层）
+  const dis = ai({ enabled: false, autoEnabled: true, allowIrreversible: true })
   for (const k of ['R1','R4','R6']) ok('总开关关 '+k+' 不自动', dis.gate(k).auto === false)
 
-  // auto 档：R4/R5 可自动铺轨（低中风险），R6/R7 无双锁不自动
-  const auto = ai({ enabled: true, mode: 'auto', allowIrreversible: false })
-  ok('auto档 R4 可自动(铺轨非执行)', auto.gate('R4').auto === true)
-  ok('auto档 R5 可自动(铺轨非执行)', auto.gate('R5').auto === true)
-  ok('auto档 R6 无双锁不自动', auto.gate('R6').auto === false)
-  ok('auto档 R7 无双锁不自动', auto.gate('R7').auto === false)
-  const autoLock = ai({ enabled: true, mode: 'auto', allowIrreversible: true })
-  ok('auto档+双锁 R6 才放行', autoLock.gate('R6').auto === true)
-  ok('auto档+双锁 R7 才放行', autoLock.gate('R7').auto === true)
+  // 授权位开 + 评测达标：R4/R5 才自动；评测未达标拒绝
+  const granted = ai({ enabled: true, autoActions: { R4: true, R5: true } })
+  ok('R4 授权+达标 → 自动', granted.gate('R4', { evalVerdict: '达标' }).auto === true)
+  ok('R5 授权+达标 → 自动', granted.gate('R5', { evalVerdict: '达标' }).auto === true)
+  ok('R4 授权但评测未达标 → 拒绝', granted.gate('R4', { evalVerdict: '未达标' }).auto === false)
+
+  // 高风险双锁：授权位 + irreversible 位 + allowIrreversible，缺一不可
+  const hi = ai({ enabled: true, autoActions: { R6: true, R7: true } })
+  ok('R6 授权但不可逆位未开 → 不自动', hi.gate('R6', { evalVerdict: '达标' }).auto === false)
+  const hi2 = ai({ enabled: true, allowIrreversible: true,
+    autoActions: { R6: true, R7: true, irreversible: true } })
+  ok('R6 不可逆双锁全开+达标 → 放行', hi2.gate('R6', { evalVerdict: '达标' }).auto === true)
+  ok('R7 不可逆双锁全开+达标 → 放行', hi2.gate('R7', { evalVerdict: '达标' }).auto === true)
 }
 
 // ---- 2. 默认安全态 ----

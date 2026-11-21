@@ -91,7 +91,24 @@ function makeProbeQueue (opts) {
       const run = chain.then(() => fn())
       // 即使这一个失败，链条也要继续（否则一次失败会卡死后面所有试跑）
       chain = run.then(() => {}, () => {})
-      return run.then(r => Object.assign({}, r, { roundUsed: seq, roundLimit: limit }))
+      return run.then(r => Object.assign({}, r, { roundUsed: seq, roundLimit: limit, quota: status() }))
+    },
+    /**
+     * v1.15 配额可见：当前轮还剩几条、何时重置。供 UI 常驻显示，不必先点一次试跑才知道。
+     * @returns {{used:number, limit:number, remaining:number, resetAt:number, windowMs:number}}
+     */
+    status
+  }
+
+  function status () {
+    const t = now()
+    const fresh = !!at && (t - at <= windowMs)
+    const u = fresh ? used : 0
+    return {
+      used: u, limit, remaining: Math.max(0, limit - u),
+      resetAt: fresh ? at + windowMs : t,
+      active: fresh,  // 是否已有进行中的轮（false=配额满血、尚未开始计时）
+      windowMs
     }
   }
 }

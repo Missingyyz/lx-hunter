@@ -186,7 +186,7 @@ const AI_EVIDENCE_VAL_UI = {
 // 建议状态（内部枚举）→ 大白话
 const AI_STATUS_UI = {
   pending: '待你处理',
-  applied: '已确认',
+  applied: '已采纳（仅标记，未执行）',
   dismissed: '已忽略',
   undone: '已撤回'
 }
@@ -250,7 +250,7 @@ function aiHintChipHtml(e) {
   // 动作短语优先；没有 verdict 的任务（R1/R2/R3）用结论首句
   const head = phrase || aiBrief(full, 40)
   const basis = phrase ? aiBrief(full, 60) : ''
-  const title = kind + (phrase ? '：' + phrase : '') + ' · ' + full + (action ? '\n该怎么处理：' + action : '')
+  const title = kind + (phrase ? '：' + phrase : '') + ' · ' + full + (action ? '\nAI 建议：' + action : '')
   const n = (Array.isArray(s.evidence) ? s.evidence.length : 0)
   return '<details class="ai-hint-details" style="position:relative;display:inline-block;margin-left:6px;vertical-align:middle">' +
     '<summary style="cursor:pointer;list-style:none;display:inline-block">' +
@@ -260,26 +260,52 @@ function aiHintChipHtml(e) {
       '<div style="font-weight:600;margin-bottom:4px">' + esc(phrase || kind) + '</div>' +
       (basis || (!phrase && full) ? '<div style="margin-bottom:4px">' + esc(phrase ? basis : aiBrief(full, 120)) + '</div>' : '') +
       '<div class="muted" style="font-size:11px">' + esc(kind) + (phrase ? '（' + esc(s.kind) + '）' : '') + '</div>' +
-      (action ? '<div style="margin-top:4px"><span class="muted">该怎么处理：</span>' + esc(action) + '</div>' : '') +
+      (action ? '<div style="margin-top:4px"><span class="muted">AI 建议：</span>' + esc(action) + '</div>' : '') +
       '<details style="margin-top:6px"><summary class="muted" style="cursor:pointer">判断依据（' + n + '）</summary>' + aiEvidenceHtml(s) + '</details>' +
       (aiActionable(s)
-        ? '<button type="button" class="btn sm ai-apply-btn" data-ai-apply="' + esc(s.id) + '" data-ai-apply-kind="' + esc(s.kind) + '" style="margin-top:6px">就按这个处理</button>'
+        ? '<button type="button" class="btn sm ai-apply-btn" data-ai-apply="' + esc(s.id) + '" data-ai-apply-kind="' + esc(s.kind) + '" title="只记下你采纳了这条建议，不会替你改动音源；实际处理仍需你手动操作" style="margin-top:6px">记下采纳</button>'
         : '') +
       '<button type="button" class="btn sm ghost" data-ai-ignore="' + esc(s.id) + '" data-ai-entry="' + esc(String(e.id)) + '" title="本次不再显示这条提醒。刷新页面后如果它还在，会重新出现——想彻底不再提示就按正常流程处理掉这条音源" style="margin-top:6px">本次不用看</button>' +
     '</div></details>'
 }
 
 document.addEventListener('click', async ev => {
+  // v1.15 P2：用户自定义标签（单条编辑，只写 userTag，不动名字/版本）
+  const tagBtn = ev.target && ev.target.closest && ev.target.closest('[data-tag-id]')
+  if (tagBtn) {
+    ev.preventDefault(); ev.stopPropagation()
+    const tid = tagBtn.getAttribute('data-tag-id')
+    const src = (state.sources || []).find(s => String(s.id) === String(tid)) || {}
+    const cur = (typeof LXSourceLabel !== 'undefined' && LXSourceLabel.userTagOf(src)) || ''
+    const val = window.prompt('给这条音源设个你自己的标签（只用于显示和搜索，不改名字/版本）：\n\n' +
+      '当前：' + (cur || '（无）') + '\n留空并确定 = 清除标签', cur)
+    if (val == null) return  // 取消
+    try {
+      const r = await api.sourcesSetUserTag(tid, val)
+      if (r && r.ok === false) { toast('标签没设成：' + (r.error || ''), 'err'); return }
+      toast('标签已更新', 'ok')
+      if (typeof loadSources === 'function') await loadSources()
+    } catch (e) { toast('标签没设成：' + String((e && e.message) || e), 'err') }
+    return
+  }
   const applyBtn = ev.target && ev.target.closest && ev.target.closest('[data-ai-apply]')
   if (applyBtn) {
     ev.preventDefault(); ev.stopPropagation()
     const sid = applyBtn.getAttribute('data-ai-apply')
     const kind = applyBtn.getAttribute('data-ai-apply-kind') || ''
     if (!sid) return
+    // R7 删源是唯一不可逆建议：采纳前二次确认（复用隔离区信任确认范式）。
+    // 注意：当前 apply 只标记采纳、不真删；这条确认是让用户意识到"记下的是一条删源建议"。
+    if (kind === 'R7') {
+      const sure = window.confirm('你记下的是一条「建议删源」的判断。\n\n' +
+        '记下采纳不会立刻删除任何音源；真要删，仍需你自己到音源库勾选后点「删除选中」。\n' +
+        '确认记下这条采纳吗？')
+      if (!sure) return
+    }
     // 动作就在用户看到结论的地方执行（用户拍板：不做建议列表页）。
     // 仍然守「AI 只读提建议、人确认后执行」：这一步就是人的明确点击。
     const label = applyBtn.textContent
-    applyBtn.disabled = true; applyBtn.textContent = '处理中…'
+    applyBtn.disabled = true; applyBtn.textContent = '记录中…'
     try {
       if (typeof api === 'undefined' || !api || typeof api.aiApply !== 'function') {
         toast('当前环境不支持这个操作', 'warn'); return
@@ -292,7 +318,7 @@ document.addEventListener('click', async ev => {
         // needSetting 说明用户得先去设置打开某个开关（不可逆操作 / 总开关），
         // 直接把设置页打开并滚到那块，省得用户找。
         if (d.needSetting === 'allowIrreversible') {
-          const go = window.confirm('这条是不可逆操作（会改音源状态、删了就回不来）。\n\n要先去设置里打开「允许不可逆操作」才能处理。\n现在就去打开吗？')
+          const go = window.confirm('这条属于高风险操作。记下采纳本身不会改动音源，但要让这类建议可被采纳，需先在设置里打开「允许不可逆操作」。\n\n现在就去打开吗？')
           if (go) { if (typeof window.__openAiSettings === 'function') window.__openAiSettings(); else toast('请到「设置 → AI 复检」打开「允许不可逆操作」', 'warn') }
           return
         }
@@ -303,7 +329,7 @@ document.addEventListener('click', async ev => {
         }
         toast('没处理成：' + (d.reason || '等你自己处理'), 'warn'); return
       }
-      toast('已按 AI 的看法处理', 'ok')
+      toast(d.message || '已记下你的采纳（未改动音源，实际处理仍需你手动操作）', 'ok')
       if (typeof loadAiHints === 'function') await loadAiHints()
       if (typeof loadSources === 'function') await loadSources()
       renderTable()
@@ -423,7 +449,7 @@ function ledgerByLxId() {
 /**
  * 已灌入行的健康状态（状态列排序 + 批量选中失效音源都用它）：
  *  rank 0 = 失效 / 异常（巡检判定不通过，或服务端自己报了非 success）
- *  rank 1 = 已停用（全局禁用，或平台级停用 —— 巡检自动禁用也归这里）
+ *  rank 1 = 停用（全局禁用 / 平台级停用 / 巡检自动停用，含系统行为）
  *  rank 2 = 正常（已启用）
  * 「失效」以**巡检结论**为准：巡检就是专门对已灌入音源做服务端侧复测的那件事，
  * 本地主检的口径（库内那 153 条）不代表服务端上这一条还能不能用。
@@ -432,7 +458,7 @@ function insRowState(s, byLxId) {
   const rec = byLxId ? byLxId.get(String(s && s.id)) : null
   const patrol = rec && rec.lastPatrol
   // 停用标记要**每种状态都算**：一条既被巡检判失效、又被巡检自动停用的源，
-  // 状态徽章必须同时说清「失效」和「已停用」，不能因为排名靠前就只显示失效。
+  // 状态徽章必须同时说清「失效」和「停用」，不能因为排名靠前就只显示失效。
   const ds = Array.isArray(s && s.disabledSources) ? s.disabledSources : []
   const globalOff = !!(s && s.enabled === false)
   const platformOff = !globalOff && ds.length > 0
@@ -544,6 +570,7 @@ async function loadConfig() {
   $('cfgAutoTrustObf').checked = c.autoTrustCleanObf !== false
   $('cfgAutoDeepDuels').checked = c.autoDeepPendingDuels !== false
   $('cfgAutoFollowUpdate').checked = c.autoFollowScriptUpdate !== false
+  $('cfgAutoFollowPolicy').value = ['all', 'substantive', 'off'].indexOf(c.autoFollowPolicy) !== -1 ? c.autoFollowPolicy : 'all'
   $('cfgTrustedObfDomains').value = (c.trustedObfDomains || []).join(', ')
   $('cfgCrawlOn').checked = !!c.crawlScheduleEnabled
   $('cfgCrawlAutoImport').checked = !!c.crawlAutoImport
@@ -606,6 +633,7 @@ async function saveAllCfg() {
     autoTrustCleanObf: $('cfgAutoTrustObf').checked,
     autoDeepPendingDuels: $('cfgAutoDeepDuels').checked,
     autoFollowScriptUpdate: $('cfgAutoFollowUpdate').checked,
+    autoFollowPolicy: ['all', 'substantive', 'off'].indexOf($('cfgAutoFollowPolicy').value) !== -1 ? $('cfgAutoFollowPolicy').value : 'all',
     trustedObfDomains: $('cfgTrustedObfDomains').value.split(/[,\uff0c\s]+/).map(x => x.trim()).filter(Boolean),
     crawlScheduleEnabled: $('cfgCrawlOn').checked,
     crawlAutoImport: $('cfgCrawlAutoImport').checked,
@@ -664,6 +692,68 @@ function normRepo(s) {
 
 const ORIGIN_LABEL = { builtin: '内置', custom: '附加', discovered: '发现' }
 
+/**
+ * v1.18 仓库健康度聚合（纯统计，零请求、不改任何状态）。
+ *
+ * 为什么要它（2026-11-21 R10 排查）：仓库清单里 42 个仓外观一致，看不出哪个仓已经一条都播不出、
+ * 哪个仓只是还没测过。AI/自动拉黑经实测都不合格（单文件真音源仓误伤 25.7%），最终方案退回
+ * 「规则标注 + 人工决定」——这里就是那条规则标注，只用本地已有的 deep 实测证据，不做推断。
+ *
+ * 口径与 checker.usableCount 一致（renderer 无 require，就地复算，字段口径见 platCells）：
+ *  - e.deep.platforms 里任一 status==='usable' ⇒ 该条实测可用；
+ *  - 有 platforms 但含 failed ⇒ 该条实测过且不可用；
+ *  - deprecated 条目**照常计入**（行为验证 2026-11-21 的教训）：去重只清 usable 标志位，
+ *    deep.platforms 仍是这条脚本的真实实测证据；整仓跳过会让 wzh15802（2 条可用但被去重）
+ *    假性变死库、wangshiyulin（全 deprecated 的真死库）漏标；
+ *  - deep.probeOnly 的实测结果**不计入**：隔离区试跑产出，任何判定都须当它不存在（hunter.js:3107）。
+ *
+ * @param {Array} sources 全库音源（列表接口已剥正文，deep 仍在）
+ * @returns {Map<string,{total:number,usable:number,dead:number,nodp:number}>} key=归一化小写仓名
+ */
+function buildRepoHealthIndex(sources) {
+  const idx = new Map()
+  for (const e of (Array.isArray(sources) ? sources : [])) {
+    if (!e) continue
+    const low = normRepo(e.repo)
+    if (!low) continue
+    const s = idx.get(low) || { total: 0, usable: 0, dead: 0, nodp: 0 }
+    s.total++
+    const plats = (e.deep && !e.deep.probeOnly && e.deep.platforms) || null
+    const keys = plats ? Object.keys(plats) : []
+    if (!keys.length) { s.nodp++; continue }
+    let anyUsable = false, anyFailed = false
+    for (const k of keys) {
+      const st = plats[k] && plats[k].status
+      if (st === 'usable') anyUsable = true
+      else if (st === 'failed') anyFailed = true
+    }
+    if (anyUsable) s.usable++
+    else if (anyFailed) s.dead++
+    else s.nodp++                      // 全是 skipped/untested = 没有真正的实测结论
+    idx.set(low, s)
+  }
+  return idx
+}
+
+/**
+ * 仓库健康度徽章。**只呈现异常**（用户口径：不显示「一切正常」这类普遍结论，健康仓不打扰）。
+ * @param {Map} idx buildRepoHealthIndex 的结果
+ * @param {string} repo 仓库名
+ */
+function repoHealthBadgeHtml(idx, repo) {
+  const low = normRepo(repo)
+  if (!low || !idx) return ''
+  const s = idx.get(low)
+  if (!s || !s.total) return ''                       // 一条都没入库 = 没证据，不打标
+  if (s.usable > 0) return ''                          // 有实测可用 → 健康，不显示
+  if (s.dead > 0) {
+    const rest = s.total - s.dead
+    const tail = rest > 0 ? `（另 ${rest} 条无实测记录）` : ''
+    return `<span class="repo-origin" style="background:#3a2a22;color:#e8b48a" title="本仓已入库 ${s.total} 条，${s.dead} 条经深度实测且无一平台可播${tail}。可能上游已失效——仅供参考，不参与任何自动判定/拉黑">无可用音源·${s.dead}条失效</span>`
+  }
+  return `<span class="repo-origin" style="background:#2a2f3a;color:#9aa7bd" title="本仓已入库 ${s.total} 条，但都没有深度实测记录（未检测或只跑了快速打分）。没测过≠坏了，故不判失效">未实测·${s.total}条</span>`
+}
+
 function renderRepoList(repos, defaultRepos) {
   if (Array.isArray(repos)) state.config.repos = repos
   if (Array.isArray(defaultRepos)) state.defaultRepos = defaultRepos
@@ -679,6 +769,7 @@ function renderRepoList(repos, defaultRepos) {
   // 排序：内置在前，其次附加，最后发现；同类按名称
   const order = { builtin: 0, custom: 1, discovered: 2 }
   const sorted = list.slice().sort((a, b) => (order[a.origin] || 3) - (order[b.origin] || 3) || String(a.repo).localeCompare(b.repo))
+  const healthIdx = buildRepoHealthIndex(state.sources)   // v1.18：只用已加载的音源库聚合，零请求
   box.innerHTML = sorted.map(r => {
     const on = r.enabled !== false
     const o = ORIGIN_LABEL[r.origin] || '附加'
@@ -688,6 +779,8 @@ function renderRepoList(repos, defaultRepos) {
     return `<div class="repo-row" data-repo="${esc(r.repo)}">
       <label class="repo-toggle"><input type="checkbox" class="repo-enabled" ${on ? 'checked' : ''}><span>${on ? '启用' : '已禁用'}</span></label>
       <span class="repo-name">${esc(r.repo)}</span>
+      ${repoHealthBadgeHtml(healthIdx, r.repo)}
+      ${repoAiBadge(r.repo)}
       ${kindTag}<span class="repo-origin origin-${esc(r.origin)}">${o}</span>
       <button class="btn btn-sm repo-crawl" title="主动采集：只爬这一个${isWeb ? '网页音源站' : '仓库'}（采集策略按设置：时间窗 + 只收最新版）">采集</button>
       ${isWeb ? '' : `<button class="btn btn-sm danger-ghost repo-block" title="拉黑：移出清单 + 加入黑名单（搜索发现/社区精选不再自动回填）+ 清掉该仓库已采的脚本">拉黑</button>`}
@@ -695,6 +788,19 @@ function renderRepoList(repos, defaultRepos) {
     </div>`
   }).join('')
   renderBlockedRepos()
+  renderRepoAiPending()
+}
+
+/** 仓库行的只读 AI 徽章（v1.16）：AI 判 tool 且未被忽略时提示「待确认」（纯展示，不改任何状态）。 */
+function repoAiBadge(repo) {
+  const hints = (state.config && state.config.repoAiHints && typeof state.config.repoAiHints === 'object') ? state.config.repoAiHints : {}
+  const low = String(repo || '').toLowerCase()
+  const ignored = state.repoAiIgnored || (state.repoAiIgnored = new Set())
+  if (ignored.has(low)) return ''
+  let h = null
+  for (const k of Object.keys(hints)) { if (String(k).toLowerCase() === low) { h = hints[k]; break } }
+  if (!h || h.cls !== 'tool') return ''
+  return `<span class="repo-origin" style="background:#2a2f3a;color:#a9c4e8" title="AI 觉得这像非音源仓库（播放器/客户端/管理器）——仅供参考，待你在上方「AI 建议」里确认；拿不准的不会显示">AI觉得像非音源·待确认</span>`
 }
 
 // 仓库黑名单（v1.10.7）：展示 blockedRepos + 一键解除（解除后自动加回清单）
@@ -705,16 +811,85 @@ function renderBlockedRepos() {
   const bl = Array.isArray(state.config.blockedRepos) ? state.config.blockedRepos : []
   if (!bl.length) { box.innerHTML = ''; return }
   const wasOpen = (() => { const d = box.querySelector('details.blocked-details'); return d && d.open })()
+  // v1.16 旁路表：按仓库查来源标记（blockedMeta 键用原形，blockedRepos 存小写 → 不区分大小写匹配）
+  const meta = (state.config && state.config.blockedMeta && typeof state.config.blockedMeta === 'object') ? state.config.blockedMeta : {}
+  const srcOf = (repo) => {
+    const low = String(repo || '').toLowerCase()
+    for (const k of Object.keys(meta)) { if (String(k).toLowerCase() === low) return meta[k] }
+    return null
+  }
   box.innerHTML = `<details class="blocked-details"${wasOpen ? ' open' : ''}>
     <summary title="点开/收起黑名单">仓库黑名单（${bl.length}）——这些仓库已被拉黑：不在清单、搜索发现/社区精选不会自动回填；解除后会自动加回清单恢复采集</summary>
     <div style="margin-top:6px">` +
-    bl.map(b => `<div class="repo-row blocked-row" data-repo="${esc(b)}">
-      <span class="repo-origin" style="background:#3a2a2a;color:#e8b4b4">已拉黑</span>
+    bl.map(b => {
+      const m = srcOf(b)
+      const byTag = m && m.by === 'ai'
+        ? '<span class="repo-origin" style="background:#2a2f3a;color:#a9c4e8" title="来源：AI 建议后拉黑' + (m.reason ? '（' + esc(String(m.reason)) + '）' : '') + '">AI建议</span>'
+        : (m ? '<span class="repo-origin" style="background:#33302a;color:#e8d9b4" title="来源：我手动拉黑">我手动加</span>' : '')
+      const snapN = m && Array.isArray(m.snapshot) ? m.snapshot.length : 0
+      const snapTip = snapN ? `\n解除时可按快照恢复 ${snapN} 条脚本的采集记录` : ''
+      return `<div class="repo-row blocked-row" data-repo="${esc(b)}">
+      <span class="repo-origin" style="background:#3a2a2a;color:#e8b4b4">已拉黑</span>${byTag}
       <span class="repo-name">${esc(b)}</span>
-      <button class="btn btn-sm blk-unblock" title="解除拉黑：移出黑名单并自动加回仓库清单，恢复采集">解除拉黑</button>
-    </div>`).join('') +
+      <button class="btn btn-sm blk-unblock" title="解除拉黑：移出黑名单并自动加回仓库清单，恢复采集${esc(snapTip)}">解除拉黑</button>
+    </div>`
+    }).join('') +
     `</div></details>`
 }
+
+/**
+ * v1.16 建议层：AI 判「可能不是音源仓库」的折叠块（纯只读展示，默认收起）。
+ * 数据来自 config.repoAiHints（由冷启动预判旁路写入，复用现成 AI 结论、零新增调用）。
+ * 只列「仍在仓库清单里、未被拉黑、本次会话未忽略」的 tool 判定——已处理/无意义的都不打扰。
+ * 确认拉黑走 blockRepo(by:'user')（人确认的），绝不自动写黑名单。
+ */
+function renderRepoAiPending() {
+  const box = $('repoAiPendingBox')
+  if (!box) return
+  const hints = (state.config && state.config.repoAiHints && typeof state.config.repoAiHints === 'object') ? state.config.repoAiHints : {}
+  const blSet = new Set((Array.isArray(state.config.blockedRepos) ? state.config.blockedRepos : []).map(x => String(x || '').toLowerCase()))
+  const inList = new Set((Array.isArray(state.config.repos) ? state.config.repos : []).map(x => String(normalizeRepoClient(x && x.repo) || '').toLowerCase()).filter(Boolean))
+  const ignored = state.repoAiIgnored || (state.repoAiIgnored = new Set())
+  const pend = Object.keys(hints).filter(r => {
+    const h = hints[r]
+    if (!h || h.cls !== 'tool') return false
+    const low = String(r).toLowerCase()
+    if (blSet.has(low)) return false          // 已拉黑 → 不提示
+    if (!inList.has(low)) return false        // 不在清单 → 无意义（不采集它了）
+    if (ignored.has(low)) return false        // 本次会话已忽略
+    return true
+  })
+  if (!pend.length) { box.innerHTML = ''; return }
+  const wasOpen = (() => { const d = box.querySelector('details.repo-ai-details'); return d && d.open })()
+  box.innerHTML = `<details class="repo-ai-details"${wasOpen ? ' open' : ''}>
+    <summary title="点开/收起">AI 觉得这 ${pend.length} 个可能不是音源仓库（播放器/客户端/管理器）——确认后不再采集。拿不准的 AI 不会列在这里。</summary>
+    <div style="margin-top:6px">` +
+    pend.map(r => {
+      const h = hints[r] || {}
+      return `<div class="repo-row repo-ai-row" data-repo="${esc(r)}">
+        <label class="chk" style="margin:0"><input type="checkbox" class="repo-ai-pick" checked></label>
+        <span class="repo-name">${esc(r)}</span>
+        <span class="hint" style="margin:0 6px;flex:1;font-size:11px;opacity:.8" title="${esc(String(h.reason || ''))}">${esc(String(h.reason || '').slice(0, 60))}</span>
+        <span class="repo-origin" style="background:#2a2f3a;color:#a9c4e8">AI建议</span>
+      </div>`
+    }).join('') +
+    `</div>
+    <div class="repo-add" style="margin-top:8px">
+      <button class="btn btn-sm" id="btnRepoAiAll" title="全选/全不选">全选</button>
+      <button class="btn btn-sm danger-ghost" id="btnRepoAiBlock" title="把勾选中的仓库拉黑（移出清单+加入黑名单+清脚本，解除时可回滚）">确认拉黑选中项</button>
+      <button class="btn btn-sm ghost" id="btnRepoAiIgnore" title="本次会话不再提示这些仓库（不持久化，刷新后重新评估）">都不是，忽略</button>
+    </div>
+    <p class="hint" style="margin:4px 0 0">这只是 AI 的语义建议，仅供参考；确认后才真正拉黑，随时可在下方黑名单里解除。</p></details>`
+}
+
+// 客户端侧最简仓库名规范化（与 core normalizeRepo 同口径：去掉 https 前缀与结尾 .git，保持 owner/repo）
+function normalizeRepoClient(x) {
+  let s = String(x == null ? '' : x).trim()
+  if (!s) return ''
+  s = s.replace(/^https?:\/\/github\.com\//i, '').replace(/^https?:\/\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '')
+  return s
+}
+
 
 // 持久化当前清单（就地改 state.config.repos 后调用）
 async function persistRepos() {
@@ -818,7 +993,16 @@ document.getElementById('blockedBox').addEventListener('click', async (ev) => {
     if (!r || r.ok === false) throw new Error((r && r.error) || '未知错误')
     const d = r.data || {}
     await loadConfig()
-    toast(`已解除拉黑「${d.unblocked || repo}」${d.reAdded ? '，已加回仓库清单' : ''}`, 'ok')
+    const dName = d.unblocked || repo
+    if (d.metaFound === false) {
+      // v1.16.1：没有采集快照（改动前的旧 prune 拉的黑名单没有 blockedMeta）→ 已删脚本不会自动采回。
+      // 不能静默装成功，否则用户以为恢复完了、实际仓库空着。
+      toast(`已解除拉黑「${dName}」${d.reAdded ? '，已加回仓库清单' : ''}；但该仓没有采集快照（历史拉黑数据），`
+        + '之前被清掉的脚本需要重新采集才能回来', 'warn')
+    } else {
+      toast(`已解除拉黑「${dName}」${d.reAdded ? '，已加回仓库清单' : ''}` +
+        (d.restoredIds ? `，已按快照恢复 ${d.restoredIds} 条脚本的采集记录` : ''), 'ok')
+    }
   } catch (e) {
     toast('解除拉黑失败: ' + String((e && e.message) || e), 'err')
   } finally {
@@ -832,6 +1016,52 @@ document.getElementById('blockedBox').addEventListener('click', async (ev) => {
   if (el) el.addEventListener('input', () => {
     state.repoFilter = el.value || ''
     renderRepoList()
+  })
+}
+
+// v1.16 建议层事件：全选 / 确认拉黑选中项 / 都不是忽略（本次会话隐藏）
+{
+  const box = $('repoAiPendingBox')
+  if (box) box.addEventListener('click', async (ev) => {
+    const t = ev.target
+    if (!t || !t.closest) return
+    if (t.closest('#btnRepoAiAll')) {
+      const picks = Array.from(box.querySelectorAll('.repo-ai-pick'))
+      const allOn = picks.every(p => p.checked)
+      picks.forEach(p => { p.checked = !allOn })
+      return
+    }
+    if (t.closest('#btnRepoAiIgnore')) {
+      const ignored = state.repoAiIgnored || (state.repoAiIgnored = new Set())
+      box.querySelectorAll('.repo-ai-row').forEach(row => {
+        const r = row.getAttribute('data-repo'); if (r) ignored.add(String(r).toLowerCase())
+      })
+      renderRepoList(state.config.repos, state.defaultRepos)
+      return
+    }
+    const blkBtn = t.closest('#btnRepoAiBlock')
+    if (!blkBtn) return
+    const rows = Array.from(box.querySelectorAll('.repo-ai-row'))
+    const picked = rows.filter(row => { const p = row.querySelector('.repo-ai-pick'); return p && p.checked })
+    const repos = picked.map(row => row.getAttribute('data-repo')).filter(Boolean)
+    if (!repos.length) return toast('没有勾选任何仓库', 'err')
+    if (!confirm('把勾选的 ' + repos.length + ' 个仓库拉黑？\n\n· 从仓库清单移除\n· 加入黑名单（不再自动回填）\n· 连带清掉已采集的脚本（解除拉黑时可按快照还原采集记录）\n\n' + repos.slice(0, 8).join('\n') + (repos.length > 8 ? '\n…' : ''))) return
+    blkBtn.disabled = true
+    let ok = 0
+    try {
+      for (const repo of repos) {
+        const r = await api.reposBlock(repo, { by: 'user' })   // 人确认的 → by:'user'
+        if (r && r.ok !== false) ok++          // 单个失败不中断其余
+      }
+      await loadConfig()
+      if (typeof refreshInstalled === 'function') refreshInstalled()
+      loadSources()
+      toast(`已拉黑 ${ok}/${repos.length} 个仓库（可在下方黑名单解除）`, ok === repos.length ? 'ok' : 'warn')
+    } catch (e) {
+      toast('拉黑失败: ' + String((e && e.message) || e), 'err')
+    } finally {
+      blkBtn.disabled = false
+    }
   })
 }
 
@@ -1171,6 +1401,43 @@ $('btnPruneNonSource').addEventListener('click', async () => {
       (d.unchecked ? `，还有 ${d.unchecked} 个未验真，可再点一次继续` : ''), 'ok')
   } catch (e) {
     toast('清理失败：' + String((e && e.message) || e), 'err')
+  } finally {
+    btn.disabled = false
+    btn.textContent = old
+  }
+})
+
+// v1.16 让 AI 评估非音源仓库：先 dryRun 列出可自动拉黑的候选（门控全过的），
+// 未开启自动拉黑时应为空（gate 会拒绝），此时提示用户到「AI 建议」人工确认。
+$('btnPruneAi') && $('btnPruneAi').addEventListener('click', async () => {
+  const btn = $('btnPruneAi')
+  const old = btn.textContent
+  btn.disabled = true
+  btn.textContent = '评估中…'
+  try {
+    const r = await api.reposPruneAi({ dryRun: true })
+    if (!r || r.ok === false) throw new Error((r && r.error) || '未知错误')
+    const d = r.data || r
+    const checked = Number(d.checked) || 0
+    const blocked = Array.isArray(d.blocked) ? d.blocked : []
+    const skipped = Array.isArray(d.skipped) ? d.skipped : []
+    if (!checked) return toast('没有可评估的仓库：需要先开启 AI 复检并跑过一轮爬取（冷启动预判才会产出判定）', 'warn')
+    if (blocked.length) {
+      if (!confirm(`门控全过、可自动拉黑的仓库 ${blocked.length} 个：\n\n` + blocked.slice(0, 10).join('\n') + (blocked.length > 10 ? '\n…' : '') +
+        '\n\n拉黑会移出清单、加入黑名单并清掉其脚本（解除时可按快照恢复采集）。确定执行？')) return
+      const ex = await api.reposPruneAi({ dryRun: false })
+      if (!ex || ex.ok === false) throw new Error((ex && ex.error) || '执行失败')
+      const ed = ex.data || ex
+      await loadConfig()
+      loadSources()
+      toast(`已自动拉黑 ${(ed.blocked || []).length} 个仓库`, 'ok')
+    } else {
+      // 门控未过（默认关/缺证据等）：引导到建议层人工确认
+      const reason = skipped.length ? (skipped[0].reason || '门控未通过') : '三重旁证未齐全'
+      toast(`暂无满足「自动拉黑」条件的仓库（${reason}）。AI 判定的可疑仓库已列在上方「AI 建议」里，可人工确认拉黑`, 'warn')
+    }
+  } catch (e) {
+    toast('AI 评估失败：' + String((e && e.message) || e), 'err')
   } finally {
     btn.disabled = false
     btn.textContent = old
@@ -1774,6 +2041,9 @@ async function loadSources() {
   clampPage()
   renderStats()
   renderTable()
+  // v1.18：仓库健康度徽章依赖音源库（state.sources），而设置页可能先于 loadSources 渲染过——
+  // 拿到数据后补渲染一次（repoList 是常驻 DOM，隐藏页也能安全更新）
+  if (state.config && Array.isArray(state.config.repos)) renderRepoList()
   renderPatrolInfo()
   renderCrawlInfo()
 }
@@ -1875,6 +2145,10 @@ function matchFilter(e) {
     case 'imported': if (importedState(e) !== 'all') return false; break
   }
   if (!q) return true
+  // v1.15 P2：搜索走统一口径（含 lxName / userTag / releaseTag），与显示/排序同源，不再各拼一套。
+  if (typeof LXSourceLabel !== 'undefined' && LXSourceLabel.searchTextOf) {
+    return LXSourceLabel.searchTextOf(e).includes(q)
+  }
   return [e.scriptName, e.name, e.author, e.repo, e.path].some(v => String(v || '').toLowerCase().includes(q))
 }
 
@@ -2030,6 +2304,7 @@ async function probeQuarantined (id, btn) {
       const msg = String(r.error || '未知错误')
       if (msg.indexOf('达到上限') >= 0) {
         toast(msg, 'warn')
+        if (typeof refreshProbeQuota === 'function') refreshProbeQuota()
       } else if (msg.indexOf('二次确认') >= 0) {
         toast('这条需要二次确认才能试跑：' + msg, 'warn')
       } else {
@@ -2060,12 +2335,42 @@ async function probeQuarantined (id, btn) {
   }
 }
 
+// v1.15 试跑配额可见：常驻显示"本轮还可试跑 N/5，M 分钟后重置"；用尽则禁用所有试跑按钮并给出恢复时间。
+// 配额真值在后端 probeQueue（唯一来源），这里只查询展示，不在前端另算一套（防两端漂移）。
+async function refreshProbeQuota () {
+  const el = $('qzProbeQuota')
+  if (!el || !api || typeof api.sourcesProbeQuota !== 'function') return
+  try {
+    const r = await api.sourcesProbeQuota()
+    const d = (r && r.data) || r || {}
+    if (r && r.ok === false || !Number.isFinite(d.remaining)) {
+      el.textContent = '试跑配额：未知'; el.className = 'badge'; return
+    }
+    const mins = d.resetAt ? Math.max(1, Math.ceil((d.resetAt - Date.now()) / 60000)) : 10
+    const exhausted = d.remaining <= 0
+    el.textContent = exhausted
+      ? `试跑配额用完（0/${d.limit}）· ${mins} 分钟后重置`
+      : (d.active === false
+        ? `本轮还可试跑 ${d.remaining}/${d.limit}（点第一次开始计时）`
+        : `本轮还可试跑 ${d.remaining}/${d.limit} · ${mins} 分钟后重置`)
+    el.className = 'badge' + (exhausted ? ' warn' : '')
+    el.title = `单轮最多 ${d.limit} 条，${mins} 分钟后（或重启应用）自动重置。试跑会占用本机 CPU，请看完结果再继续。`
+    // 用尽时禁用所有「试跑一次」按钮（当前批没在跑的前提下）
+    for (const b of document.querySelectorAll('.qz-probe')) {
+      if (b.disabled && /试跑中/.test(b.textContent)) continue  // 正在跑的别动
+      b.disabled = exhausted
+      if (exhausted) b.title = `本轮配额已用完，${mins} 分钟后自动重置`
+    }
+  } catch (e) { el.textContent = '试跑配额：读取失败' }
+}
+
 function renderQuarantine() {
   // P-1433：被同内容去重标废弃的条目不再出现在隔离页——它们的「信任放行」永远失败
   // （后端正确拒绝废弃条目），继续展示只会误导（2026-11-16 aya 三发布包实测）。
   const list = (state.sources || []).filter(e => !e.deprecated && (e.status === 'quarantined' || e.quarantined))
   $('qzCount').textContent = list.length + ' 条被隔离'
   $('qzEmpty').hidden = list.length > 0
+  if (typeof refreshProbeQuota === 'function') refreshProbeQuota()
   $('qzList').innerHTML = list.map(e => {
     const lv = qzLevelOf(e)
     const reasons = qzReasonsOf(e)
@@ -2086,16 +2391,31 @@ function renderQuarantine() {
     // 试跑按钮（v1.13.12）：拆「先信任才能验证」死锁的入口。只实测、不信任。
     // block 档也保留可点（不灰死），差别是点了要过二次确认——见 probeQuarantined()。
     const probeBtn = '<button class="btn btn-sm qz-probe" title="用本机沙箱真实跑一次，看它能出几个平台的链接。不会信任、不会放行，跑完仍在隔离区">试跑一次</button>'
+    // R8（v1.15.0）：只读可信度评价——回答"可不可信"（价值判断），与"能不能出链"(试跑·事实)
+    // 和"是否信任放行"(R6·改状态)三件事分开。只产建议、不改任何状态、不进应用白名单。
+    const aiCredBtn = '<button class="btn btn-sm ghost qz-ai-cred" title="只让 AI 看一眼这条可不可信，给个参考意见。不会改隔离状态、不会放行、不会删任何东西">AI 看可信度</button>'
+    // 版本号（2026-11-21 用户实测反馈）：同一仓库的多个 release 包在隔离区里**同名同形**
+    // （实测 luanmuc/backend-api 六条「豆包定制[聚合音源]」只有体积差 292/304/345/346KB），
+    // 用户要点「信任放行」却分不清自己点的是哪一版。数据里本来就有 scriptVersion
+    // （音源库主表列一直在显示，app.js 的 nm-sub），隔离区这行漏了。
+    // 取不到版本时退回文件名（path 常含 v8.16.4 这类信息），再取不到就什么都不加——
+    // 宁缺不造：绝不用 size 之类冒充版本，那会让人误判新旧。
+    const qzVer = (() => {
+      const raw = String(e.scriptVersion || e.version || '').replace(/^v/i, '')
+      if (raw) return ' v' + raw.slice(0, 24)
+      const pm = String(e.path || '').match(/v(\d+\.\d+(?:\.\d+)?)/i)
+      return pm ? ' v' + pm[1] : ''
+    })()
     return `<div class="qz-row" data-id="${esc(e.id)}">
       <div class="qz-main">
-        <span class="qz-name">${esc(e.lxName || e.scriptName || e.name || e.id)}</span>
+        <span class="qz-name">${esc(e.lxName || e.scriptName || e.name || e.id)}${qzVer ? '<span style="font-weight:400;font-size:12px;color:var(--muted)">' + esc(qzVer) + '</span>' : ''}</span>
         <span class="qz-meta">${esc(e.repo || '')}${size ? ' · ' + size : ''} · ${esc(obfTipUi(e))}</span>
         ${riskTxt}
         <span class="qz-deep">${domTxt ? esc(domTxt) : ''}</span>
         ${(() => { const ai = aiHintFor(e); return ai && ai.status === 'pending' ? `<span class="qz-deep">✦AI 看法：${esc(aiBrief(ai.conclusion, 60))}</span>` : '' })()}
         <span class="qz-deep">${esc(qzDeepSummary(e))}</span>
       </div>
-      <span class="qz-actions">${probeBtn}${btn}</span>
+      <span class="qz-actions">${probeBtn}${aiCredBtn}${btn}</span>
     </div>`
   }).join('')
 }
@@ -2109,6 +2429,38 @@ $('qzList').addEventListener('click', async (ev) => {
     const pId = pRow && pRow.getAttribute('data-id')
     if (!pId) return
     await probeQuarantined(pId, probeBtn)
+    return
+  }
+  // R8 只读可信度：调 aiRun({kind:'R8'}) 产建议，只写 chip/日志，不碰隔离状态/信任名单。
+  const credBtn = ev.target.closest('.qz-ai-cred')
+  if (credBtn) {
+    if (credBtn.disabled) return
+    const cRow = credBtn.closest('.qz-row')
+    const cId = cRow && cRow.getAttribute('data-id')
+    if (!cId) return
+    const src = ((state.sources || []).find(s => String(s.id) === String(cId))) || {}
+    const entry = typeof toEntry === 'function' ? toEntry(src)
+      : { id: cId, name: src.lxName || src.scriptName || src.name || '', error: src.error || '' }
+    credBtn.disabled = true; const oldTxt = credBtn.textContent; credBtn.textContent = 'AI 看着…'
+    try {
+      if (typeof api === 'undefined' || !api || typeof api.aiRun !== 'function') { toast('当前环境不支持这个操作', 'warn'); return }
+      const r = await api.aiRun({ kind: 'R8', trigger: 'manual', entries: [entry], logOnly: false })
+      const d = (r && r.data) || r || {}
+      if (r && r.ok === false) { toast('AI 没看成：' + (r.error || ''), 'err'); return }
+      const sug = d.suggestion || (Array.isArray(d.suggestions) && d.suggestions[0])
+      if (sug) {
+        const verdict = sug.eval && sug.eval.verdict
+        const labelV = verdict === 'credible' ? '看起来可信' : verdict === 'suspicious' ? '看着可疑' : ''
+        toast('AI 看可信度：' + (labelV ? labelV + '（仅供参考，放行由你决定）' : '仅供参考，放行由你决定'), 'info')
+      } else {
+        toast('AI 没给出判断（仅供参考，放行由你决定）', 'info')
+      }
+      if (typeof loadAiHints === 'function') await loadAiHints()
+    } catch (err) {
+      toast('AI 没看成：' + String((err && err.message) || err), 'err')
+    } finally {
+      credBtn.disabled = false; credBtn.textContent = oldTxt
+    }
     return
   }
   const btn = ev.target.closest('.qz-trust')
@@ -2213,7 +2565,7 @@ function platCells(e) {
   }).join('')
 }
 
-function statusCell(e) {
+function statusCellBase(e) {
   if (e.checking) return '<span class="badge accent">检测中…</span>'
   // v1.13.0：服务端处置冻结（禁用/单平台禁用/护栏隔离/删除）→ 内容不变就不再灌入。
   // 和「已灌入」并列显示：它说明的不是"灌过没有"，而是"为什么不会再灌"。
@@ -2289,6 +2641,22 @@ function statusCell(e) {
   return '<span class="badge gray">未检测</span>'
 }
 
+/**
+ * F1 形态提醒·矛盾态小标（纯展示层，只读 e.veto / e.lastPatrol，不碰任何计算与写入链）：
+ * 当服务端处置信号（禁用/隔离/删，vBadge 的同一来源）与本机巡检结论 ok=true 矛盾时，
+ * 在状态徽章旁加一枚「两套信号不一致·待复核」。一律标注仅供参考、不影响本机巡检、
+ * 不强行对齐两套信号，也不落任何新字段。两者不矛盾或信号缺失时不显示（普遍结论不打扰）。
+ */
+function statusCell(e) {
+  const base = statusCellBase(e)
+  const svcHandled = !!(e && e.veto && !e.veto.partial)   // 服务端整源处置（隔离/禁用/删），与 vBadge 同源
+  const patrolOk = !!(e && e.lastPatrol && e.lastPatrol.at && e.lastPatrol.ok === true)
+  if (!svcHandled || !patrolOk) return base
+  const srv = e.veto.type === 'isolated' ? '服务端隔离' : e.veto.type === 'removed' ? '服务端已删' : '服务端禁用'
+  const conflict = `<span class="badge gray" title="两套信号不一致：${esc(srv)}（服务端处置信号），但本机最近一次巡检判定通过。两者仅供参考、互不对齐，也不影响本机巡检结论；请手动复核。">两套信号不一致·待复核</span>`
+  return base + ' ' + conflict
+}
+
 /** validTier 中文标签（v1.9.10，对齐 lxhub 的 confirmed/probable 两级置信）
  *  P0-4：probable 来自 checker.js:974 `else if (e.suspected) e.validTier = 'probable'`，
  *  语义同样是「像音源、但没实测通过」。文案与状态徽章统一成「疑似音源·未检测」口径，
@@ -2324,6 +2692,21 @@ function displayName(e) {
   return repo + (ver ? ' · ' + ver : '') + '（名称编码异常，待重新采集）'
 }
 
+/**
+ * v1.15 P2：音源标签 chip（用户自定义 + release 来源），只读展示 + 单条编辑入口。
+ * tag 绝不写进 name/lxName/scriptVersion（破坏 identity/同名裁决）——只在行尾单独渲染。
+ */
+function tagChips (e) {
+  if (typeof LXSourceLabel === 'undefined') return ''
+  const u = LXSourceLabel.userTagOf(e)
+  const r = LXSourceLabel.releaseTagOf(e)
+  let h = ''
+  if (u) h += `<span class="badge tag-user" title="你自定义的标签（采集/更新不会覆盖）">${esc(u)}</span>`
+  if (r) h += `<span class="badge tag-release" title="采集自 release：${esc(r)}（只读）">release: ${esc(r)}</span>`
+  h += `<button class="btn btn-sm ghost tag-edit" data-tag-id="${esc(e.id)}" title="给这条音源设一个你自己的标签（只用于显示/搜索，不改名字和版本）">${u ? '改标签' : '+标签'}</button>`
+  return h
+}
+
 function rowHtml(e) {
   const nm = displayName(e)
   const vt = e.validTier ? `<span class="vt vt-${e.validTier}" title="探针置信：${vtLabel(e.validTier)}">${vtLabel(e.validTier)}</span>` : ''
@@ -2338,9 +2721,9 @@ function rowHtml(e) {
     : ''
   return `
     <td class="c-chk"><input type="checkbox" data-id="${esc(e.id)}" ${state.selected.has(e.id) ? 'checked' : ''}></td>
-    <td><span class="nm">${esc(nm)}</span>${priv}${aiHintChipHtml(e)}
+    <td><span class="nm">${esc(nm)}</span>${priv}${tagChips(e)}${aiHintChipHtml(e)}
         <span class="nm-sub">${esc([e.scriptVersion, e.author].filter(Boolean).join(' · ') || nm)}</span>${vt}${al}</td>
-    <td class="c-plat"><div class="plats">${platCells(e)}</div>${LXSort.qualityBriefHtml(e)}${LXSort.qualityRobustnessHtml(e)}${LXSort.coldStartBadgeHtml(e)}${LXSort.updateTipsBadgeHtml(e)}</td>
+    <td class="c-plat"><div class="plats">${platCells(e)}</div>${LXSort.qualityBriefHtml(e)}${LXSort.qualityRobustnessHtml(e)}${LXSort.coldStartBadgeHtml(e)}${LXSort.updateTipsBadgeHtml(e)}${LXSort.followClassBadgeHtml(e)}</td>
     <td class="c-repo"><span class="repo">${esc(e.repo)}</span>${snap}</td>
     <td class="c-status">${statusCell(e)}</td>
     <td class="c-op">
@@ -3005,19 +3388,12 @@ $('btnFullPlat').addEventListener('click', async () => {
 })
 
 // ✦AI 复检选中：勾选优先，没勾就复检当前筛选结果；只记录建议并标 chip，不改判定。
-// R3(命名) + R4(更新) + R5(非音源) + R7(拉黑) 逐类产建议；R6 信任放行仍在隔离区，不在此批量。
-const btnAiCheck = document.getElementById('btnAiCheck')
-if (btnAiCheck) btnAiCheck.addEventListener('click', async () => {
-  if (state.busy) return toast('已有任务在运行', 'warn')
-  if (!api.aiRun) return toast('当前环境用不了 AI 复检', 'warn')
-  // 口径同深度检测：pool = 当前可用范围，picked = 其中被勾选的，勾选非空则只用勾选
-  const pool = filtered().filter(e => !e.deprecated)
-  const picked = pool.filter(e => state.selected.has(e.id))
-  const targets = picked.length ? picked : pool
-  if (!targets.length) return toast('当前没有可复检的音源', 'warn')
-  // R4-R7 的 buildText 依赖 deep/实测证据：缺这些字段时 R7「实测优先/≥10次阈值/dead必删」
-  // 三条规则只有 status=dead 能用，实测可用的源模型看不到 ⇒ 生产漏判。字段与 aiReview.buildText 对齐。
-  const toEntry = (e) => ({
+// 音源对象 → AI 复检输入（客观字段，不拼脚本文字/密钥）。R4-R7/R8 的 buildText 都依赖这些字段，
+// 缺 deep/实测时 R7「实测优先/≥10次/dead必删」三条规则只有 status=dead 能用 ⇒ 生产漏判。
+// 提到模块级供批量复检与隔离区 R8 共用（此前定义在批量 handler 内部，R8 拿不到）。
+function toEntry (e) {
+  e = e || {}
+  return {
     id: e.id,
     name: e.lxName || e.name || e.scriptName || '',
     error: e.error || '',
@@ -3030,34 +3406,73 @@ if (btnAiCheck) btnAiCheck.addEventListener('click', async () => {
     suspected: e.suspected,
     validTier: e.validTier || '',
     obfLevel: e.obfLevel || '',
-    // 以下为 R7 删源/R5 非音源/R6 隔离需要的客观证据（buildText 只读这些，不拼脚本文字/密钥）
-    deep: e.deep || null,                                  // 对象 {checkedAt,loadable,platforms}，buildText 序列化为「平台数N 可用M 失败K」
-    deepSummary: e.deepSummary || '',                      // 兼容字符串格式
-    usable: e.usable,                                      // 可用性标记（true/false）
-    apiDownStreak: e.apiDownStreak != null ? e.apiDownStreak : e.failStreak, // 连续失效次数（兼容 failStreak）
-    apiHosts: Array.isArray(e.apiHosts) ? e.apiHosts : [],  // 外联域名
-    obfHits: e.obfHits || {},                              // 混淆特征（对象或数组）
+    // 以下为 R7 删源/R5 非音源/R6·R8 隔离需要的客观证据（buildText 只读这些）
+    deep: e.deep || null,
+    deepSummary: e.deepSummary || '',
+    usable: e.usable,
+    apiDownStreak: e.apiDownStreak != null ? e.apiDownStreak : e.failStreak,
+    apiHosts: Array.isArray(e.apiHosts) ? e.apiHosts : [],
+    obfHits: e.obfHits || {},
     obfDomains: Array.isArray(e.obfDomains) ? e.obfDomains : []
-  })
-  const entries = targets.map(toEntry)
-  btnAiCheck.disabled = true
+  }
+}
+
+// v1.15 批量 AI 改进：R7 从批量移出（删源改单条入口+二次确认），只跑 R3/R4/R5；
+// 分批续跑（BATCH=20，批间串行）+ 批级 cooperative 取消（当前批跑完再停）+ 独立 aiBusy（不碰 jobCancel）。
+const AI_BATCH = 20
+let aiBusy = false
+let aiBatchCancel = false
+// R7 单条入口：只对单条建议走确认，复用隔离区信任确认范式，不进批量。
+const btnAiCheck = document.getElementById('btnAiCheck')
+if (btnAiCheck) btnAiCheck.addEventListener('click', async () => {
+  if (aiBusy) return toast('AI 复检正在跑，请等这一轮结束', 'warn')
+  if (!api.aiRun) return toast('当前环境用不了 AI 复检', 'warn')
+  // 口径同深度检测：pool = 当前可用范围，picked = 其中被勾选的，勾选非空则只用勾选
+  const pool = filtered().filter(e => !e.deprecated)
+  const picked = pool.filter(e => state.selected.has(e.id))
+  const targets = picked.length ? picked : pool
+  if (!targets.length) return toast('当前没有可复检的音源', 'warn')
+
+  aiBusy = true; aiBatchCancel = false
+  btnAiCheck.disabled = true; btnAiCheck.textContent = 'AI 复检中…（可点取消）'
+  if ($('btnAiBatchCancel')) $('btnAiBatchCancel').hidden = false
+  $('progWrap').hidden = false
+  $('aiBatchStatus').textContent = ''
+  const kinds = ['R3', 'R4', 'R5']   // R7 移出批量：删源走单条入口 + 二次确认
+  const total = targets.length
+  let covered = 0                    // 覆盖条数（不管有没有产建议）
+  let made = 0                       // 产出的建议数（≠覆盖数）
+  let failed = 0                     // 失败批次数
   try {
-    let made = 0
-    const failedKinds = []
-    const kinds = ['R3', 'R4', 'R5', 'R7']
     for (const kind of kinds) {
-      const r = await api.aiRun({ kind, entries, trigger: 'manual' })
-      if (r && r.ok === false) { failedKinds.push((r && r.error) || kind); continue } // 单类失败不阻断其他类
-      const d = (r && r.data) || r || {}
-      if (d.ok === false) { failedKinds.push(d.error || kind); continue }
-      made += Array.isArray(d.suggestions) ? d.suggestions.length : 0
+      if (aiBatchCancel) break
+      for (let start = 0; start < targets.length; start += AI_BATCH) {
+        if (aiBatchCancel) break
+        const batch = targets.slice(start, start + AI_BATCH)
+        const entries = batch.map(toEntry)
+        const step = kind + ' ' + (Math.floor(start / AI_BATCH) + 1) + '/' + Math.ceil(total / AI_BATCH) + ' 批'
+        $('progStep').textContent = 'AI 看 ' + step + '…'
+        $('progNum').textContent = covered + '/' + (total * kinds.length)
+        $('progFill').style.width = Math.min(100, (covered / (total * kinds.length)) * 100) + '%'
+        let r, d = {}
+        try {
+          r = await api.aiRun({ kind, entries, trigger: 'manual' })
+          d = (r && r.data) || r || {}
+          if ((r && r.ok === false) || d.ok === false) throw new Error((r && r.error) || d.error || kind)
+        } catch (e) { failed++; $('aiBatchStatus').textContent = kind + ' 这批没看成：' + String((e && e.message) || e); continue }
+        made += Array.isArray(d.suggestions) ? d.suggestions.length : (Number(d.recorded) || 0)
+        covered += Number(d.processed != null ? d.processed : entries.length)
+      }
     }
-    if (!made && failedKinds.length === kinds.length) {
-      toast('AI 没看成，全部失败：' + failedKinds.join('、'), 'err')
-      return
-    }
-    toast('已完成 ' + (made || entries.length) + ' 条，看法标在音源旁边了' + (failedKinds.length ? '（' + failedKinds.length + ' 类失败）' : ''), 'ok')
-    // 刷新建议列表（loadSuggestions 内部会 loadAiHints 并触发 chip 更新），再重载音源库重绘表格
+    const cancelled = aiBatchCancel
+    $('progStep').textContent = cancelled ? '已取消（当前批已跑完）' : 'AI 复检完成'
+    $('progNum').textContent = covered + '/' + (total * kinds.length)
+    $('progFill').style.width = Math.min(100, (covered / (total * kinds.length)) * 100) + '%'
+    const noMade = Math.max(0, covered - made)
+    toast('AI 复检' + (cancelled ? '已取消' : '完成') + '：覆盖 ' + covered + '/' + (total * kinds.length) +
+      ' 条，共产出 ' + made + ' 条建议；失败 ' + failed + ' 批、未产出 ' + noMade + ' 条' +
+      '（R7 删源请到单条入口逐条确认）', failed || cancelled ? 'warn' : 'ok')
+    // 每批已由后端落库防丢失；这里只刷新视图
     if (typeof window.__aiRefreshSuggestions === 'function') {
       try { await window.__aiRefreshSuggestions() } catch (e) { /* 建议列表刷新失败静默 */ }
     }
@@ -3065,8 +3480,20 @@ if (btnAiCheck) btnAiCheck.addEventListener('click', async () => {
     await loadSources()
   } catch (e) {
     toast('AI 复检没做完：' + String((e && e.message) || e), 'warn')
-  } finally { btnAiCheck.disabled = false }
+  } finally {
+    aiBusy = false
+    btnAiCheck.disabled = false; btnAiCheck.textContent = '✦让 AI 看选中的'
+    if ($('btnAiBatchCancel')) $('btnAiBatchCancel').hidden = true
+    setTimeout(() => { if (!aiBusy) { $('progWrap').hidden = true; $('aiBatchStatus').textContent = '' } }, 1200)
+  }
 })
+// 批量 AI 取消：只置 cooperative 标志，当前批跑完自然停；不复用 jobCancel（那是检测/灌入的任务位）。
+if ($('btnAiBatchCancel')) $('btnAiBatchCancel').addEventListener('click', cancelAiBatch)
+function cancelAiBatch () {
+  if (!aiBusy) return toast('当前没有 AI 复检在跑')
+  aiBatchCancel = true
+  $('aiBatchStatus').textContent = '已请求取消，当前批跑完就停…'
+}
 
 
 async function startCheck(ids) {
@@ -3311,9 +3738,20 @@ function installedRow(s, st, active) {
     const when = new Date(p.at).toLocaleString('zh-CN', { hour12: false })
     patrolBadge = p.ok
       ? `<span class="badge ok" title="巡检通过（${esc(when)}）">巡检正常</span>`
-      : `<span class="badge dead" title="巡检判定失效（${esc(when)}）：${esc(p.note || '')}\n通常已被巡检自动停用；确认不需要了就勾选删除。可点「健康巡检」重测一次。">巡检失效</span>`
+      : `<span class="badge dead" title="巡检判定失效（${esc(when)}）：${esc(p.note || '')}\n系统已自动停用（非你手动）；确认不需要了就勾选删除。可点「健康巡检」重测一次。">巡检失效</span>`
   }
-  const svcBadge = s.status && s.status !== 'success' ? `<span class="badge warn">${esc(s.status)}</span>` : ''
+  // F1 形态提醒（纯展示层，读实时 list 字段，不解析 error 文本）：
+  //  字段直译，不做状态推断；普遍/默认态（after-import、success）不提示、写日志即可。
+  //  隔离优先用 list 的独立信号 isolated（等价于后端 getIsolations 的隔离信息），不看 error 文案。
+  let svcBadge = ''
+  if (s.isolated === true || s.isolated === 'true') {
+    svcBadge = '<span class="badge warn" title="服务端自检护栏已隔离此音源（隔离信号来自服务端实时列表）。仅供参考、需手动复核处理，不影响本机巡检判定。">服务端已隔离·请复核</span>'
+  } else if (s.enabled === false && s.disableReason !== 'after-import') {
+    svcBadge = `<span class="badge gray" title="服务端整源开关为禁用（原因：${esc(String(s.disableReason || '未标注'))}），非灌入默认态。仅供参考、需手动处理，不影响本机巡检判定。">服务端已禁用·请手动处理</span>`
+  }
+  // 其余状态（status=failed 但非隔离/非整源禁用）、after-import（灌入默认禁用态）、
+  // 部分平台禁用（disabledSources 非空）：均不新增整源提示——默认/普遍态不打扰，
+  // 分别沿用已有平台列徽章与「已停用」badge；纯展示层不解析 error 文本、不推断原因。
   // 私有源也要能勾（本页删的是「服务端上该账号可见的音源」，公共清理才只碰公开源）；
   // 但删除时按各自的 owner 路由身份，否则对私有源不生效
   tr.innerHTML = `
@@ -3359,7 +3797,7 @@ function renderInstalledRows() {
   const offN = rows.filter(r => r.st.rank === 1).length
   $('insInfo').textContent = `共 ${list.length} 个自定义音源`
     + (badN ? ` · 巡检失效 ${badN} 个` : '')
-    + (offN ? ` · 已停用 ${offN} 个` : '')
+    + (offN ? ` · 停用 ${offN} 个（含巡检/系统自动）` : '')
   // 勾选池收敛：服务端已经删掉的 id 要跟着消失（否则会重复删、报一堆失败）
   const liveIds = new Set(list.map(s => s.id))
   for (const id of Array.from(state.insSel)) if (!liveIds.has(id)) state.insSel.delete(id)
@@ -3416,7 +3854,7 @@ function renderInsSelInfo() {
       }
       const parts = []
       if (bad) parts.push(`巡检失效 ${bad}`)
-      if (off) parts.push(`已停用 ${off}`)
+      if (off) parts.push(`停用 ${off}（含系统自动）`)
       if (parts.length) extra = `（${parts.join('、')}）`
     }
     info.textContent = n ? `已勾选 ${n} 个${extra}` : ''
@@ -3472,7 +3910,7 @@ $('btnInsSelFailed').addEventListener('click', () => {
   if (!hit.length) return toast('当前账号没有失效 / 停用的音源', 'info')
   const bad = hit.filter(s => insRowState(s, byLxId).rank === 0).length
   const off = hit.length - bad
-  toast(`已勾选 ${hit.length} 个` + (bad || off ? `（${[bad ? `巡检失效 ${bad}` : '', off ? `已停用 ${off}` : ''].filter(Boolean).join('、')}）` : '')
+  toast(`已勾选 ${hit.length} 个` + (bad || off ? `（${[bad ? `巡检失效 ${bad}` : '', off ? `停用 ${off}（含系统自动）` : ''].filter(Boolean).join('、')}）` : '')
     + '，确认后点「删除选中」', 'ok')
 })
 
@@ -4280,10 +4718,14 @@ async function boot() {
       const c = (r && r.data && r.data.config) || (r && r.config) || {}
       const p = c.provider || {}
       if ($('aiEnabled')) $('aiEnabled').checked = !!c.enabled
-      if ($('aiMode')) $('aiMode').value = c.mode || 'off'
       if ($('aiAllowIrrev')) $('aiAllowIrrev').checked = !!c.allowIrreversible
-      // 自动挡（后端字段缺省时退回页面上的默认值，保证老配置/空配置也能正常显示）
+      // v1.15.0：mode 由两挡开关派生，不再写 select；autoActions 逐项回填
       if ($('aiAutoEnabled')) $('aiAutoEnabled').checked = !!c.autoEnabled
+      const aa = c.autoActions || {}
+      for (const [id, key] of Object.entries({
+        aaClusterLog: 'clusterLog', aaReadonlyReview: 'readonlyReview', aaAutoMark: 'autoMark',
+        aaR4: 'R4', aaR5: 'R5', aaR6: 'R6', aaR7: 'R7', aaR10: 'R10'
+      })) { if ($(id)) $(id).checked = key === 'clusterLog' || key === 'readonlyReview' ? aa[key] !== false : !!aa[key] }
       if ($('aiAutoInterval')) $('aiAutoInterval').value = Number(c.autoIntervalHours || 24)
       if ($('aiAutoScope')) $('aiAutoScope').value = c.autoScope || 'failed'
       if ($('aiAutoMax')) $('aiAutoMax').value = Number(c.autoMaxItems || 20)
@@ -4298,17 +4740,19 @@ async function boot() {
       if ($('aiHeaders')) $('aiHeaders').value = p.headers && Object.keys(p.headers).length ? JSON.stringify(p.headers) : ''
       // apiKey 不回显明文；placeholder 提示是否已配置
       if ($('aiApiKey')) $('aiApiKey').placeholder = p.apiKey ? '已配置（留空不修改）' : '输入 API Key'
-      currentConfig = c && typeof c === 'object' ? c : { enabled: false, mode: 'off' }
+      currentConfig = c && typeof c === 'object' ? c : { enabled: false, autoEnabled: false }
       updateStatus(currentConfig)
       loaded = true
       await loadSuggestions()
-    } catch (e) { /* 配置读不到时保持默认 off，不影响主链路 */ }
+    } catch (e) { /* 配置读不到时保持默认关，不影响主链路 */ }
   }
   function updateStatus(c) {
     const el = $('aiStatus')
     if (!el) return
     const on = !!c.enabled
-    el.textContent = on ? ('已启用 · ' + (c.mode || 'off')) : '未启用'
+    // v1.15.0：mode 由开关派生展示，不再读 c.mode
+    const derived = !on ? '未启用' : (c.autoEnabled ? '手动+自动' : '仅手动')
+    el.textContent = on ? ('已启用 · ' + derived) : '未启用'
     el.className = 'badge' + (on ? ' ok' : '')
   }
 
@@ -4324,9 +4768,21 @@ async function boot() {
       if (ht) { try { headers = JSON.parse(ht) } catch (e) { toast('额外请求头不是合法 JSON'); return } }
       const patch = {
         enabled: !!($('aiEnabled') && $('aiEnabled').checked),
-        mode: ($('aiMode') && $('aiMode').value) || 'off',
         allowIrreversible: !!($('aiAllowIrrev') && $('aiAllowIrrev').checked),
         autoEnabled: !!($('aiAutoEnabled') && $('aiAutoEnabled').checked),
+        // v1.15.0：mode 不再写入，由两挡开关派生；autoActions 两挡共用
+        autoActions: {
+          clusterLog: !!($('aaClusterLog') && $('aaClusterLog').checked),
+          readonlyReview: !!($('aaReadonlyReview') && $('aaReadonlyReview').checked),
+          autoMark: !!($('aaAutoMark') && $('aaAutoMark').checked),
+          R4: !!($('aaR4') && $('aaR4').checked),
+          R5: !!($('aaR5') && $('aaR5').checked),
+          R6: !!($('aaR6') && $('aaR6').checked),
+          R7: !!($('aaR7') && $('aaR7').checked),
+          R10: !!($('aaR10') && $('aaR10').checked),
+          // irreversible 位与 allowIrreversible 绑定：勾了高风险总锁即视为允许不可逆（后端还会再 AND 一次）
+          irreversible: !!($('aiAllowIrrev') && $('aiAllowIrrev').checked)
+        },
         autoIntervalHours: Number(($('aiAutoInterval') && $('aiAutoInterval').value) || 24),
         autoScope: ($('aiAutoScope') && $('aiAutoScope').value) || 'failed',
         autoMaxItems: Number(($('aiAutoMax') && $('aiAutoMax').value) || 20),

@@ -105,7 +105,13 @@ console.log('=== B. 采集层候选预过滤（路径 + 体积） ===')
   eq('maxPerRepo 上限仍然生效', extractCandidates(many, 10).items.length, 10)
 
   const crawlSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'core', 'crawler.js'), 'utf8')
-  ok('预过滤数量写进爬取日志（可见、可审计）', /预过滤 \$\{cand\.filtered\.path \+ cand\.filtered\.size\} 个非音源候选/.test(crawlSrc))
+  // v1.18：类目从「客户端源码 + 空/超大」扩到「客户端源码 + 构建/发布脚本 + 空/超大」，
+  // 断言改成只要三个类目都进日志即可（不再钉死拼接顺序）
+  ok('预过滤数量写进爬取日志（可见、可审计）',
+    /预过滤 \$\{cand\.filtered\.path \+ cand\.filtered\.size \+ cand\.filtered\.tool\} 个非音源候选/.test(crawlSrc) &&
+    /客户端源码目录 \$\{cand\.filtered\.path\}/.test(crawlSrc) &&
+    /构建\/发布脚本 \$\{cand\.filtered\.tool\}/.test(crawlSrc) &&
+    /空\/超大文件 \$\{cand\.filtered\.size\}/.test(crawlSrc))
 }
 
 console.log('=== C. 替换上传的重试间隔（纯策略） ===')

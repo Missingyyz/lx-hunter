@@ -184,7 +184,34 @@ function filterLatestOnly(items) {
  * 只排除「名字就说明是客户端本体」的目录；音源脚本极少放在这些位置，
  * 万一真有，用户仍可用「手动导入 / 行级采集仓库」补回。
  */
-const CLIENT_SOURCE_PATH = /^(?:src\/(?:renderer|main|common|stores|utils|workers)|server\/(?:routes|utils)|packages\/[^/]+\/src)\//
+const CLIENT_SOURCE_PATH = /^(?:src\/(?:renderer[^/]*|main|common|stores|utils|workers)|server\/(?:routes|utils)|packages\/[^/]+\/src)\//
+
+/**
+ * 构建 / 发布 / 运维脚本目录（v1.18）。
+ *
+ * 背景（2026-11-21 R10 入库口排查，实测 8197 快照 1668 条）：非音源仓库的垃圾脚本
+ * 绝大多数不是「名字像音源」混进来的，而是从**应用型仓库**（播放器本体、后端服务、
+ * SDK 示例）的构建链目录里整目录灌进来的。`extractCandidates` 只按路径/体积预过滤，
+ * 不做内容打分，于是这些文件全被建成候选并入库（`crawler.js:1032` 无条件 push）。
+ *
+ * 实测命中（全库 1668 条回测，健康仓零误伤）：
+ *   - `build-config/` 14 条（shellsec/lx-music-desktop-auto-source 的打包脚本）
+ *   - `publish/`      11 条（同上，发布/改日志脚本）
+ *   - `scripts/`      30 条（luanmuc/* 的审计探针，实测 0 条可用、无一是音源脚本）
+ *
+ * 判据只认「名字就说明是构建/发布链」的目录；音源脚本按惯例放在仓库根或 `sources/`，
+ * 极少出现在这些位置。万一真有，用户仍可用「手动导入 / 行级采集仓库」补回。
+ */
+const BUILD_TOOLING_PATH = /^(?:build-config|publish|scripts)\//
+
+/**
+ * 仓库根目录下的工具类配置文件（v1.18，同上背景）。
+ *
+ * `.ncurc.js` / `postcss.config.js` 这类是打包器配置，实测 scoreEntry 均为 0 分、
+ * 无任何可用记录。只匹配**根目录**的配置文件：`sources/xx.config.js` 这类子目录文件
+ * 不受影响（正则用 ^...$ 锚定整条路径，不含 `/`）。
+ */
+const ROOT_TOOL_CONFIG = /^(?:\.[^/]*rc\.js|[^/]*\.config\.js)$/i
 
 /** 脚本正文大小上限，与 checker.MAX_CONTENT_BYTES 同口径（超了检测会判「文件过大」） */
 const MAX_SCRIPT_BYTES = 2 * 1024 * 1024
@@ -213,13 +240,15 @@ function isBlockedPath(path) {
  *  @returns {{items:Array<{path,sha,size}>, filtered:{path:number,size:number}}} */
 function extractCandidates(tree, maxPerRepo) {
   const out = []
-  const filtered = { path: 0, size: 0, block: 0 }
+  const filtered = { path: 0, size: 0, block: 0, tool: 0 }
   const items = (tree && tree.tree) || []
   for (const item of items) {
     if (item.type !== 'blob' || !/\.js$/i.test(item.path || '')) continue
     if (/(^|\/)(node_modules|test|tests|__tests__|dist\/assets)\//.test(item.path)) continue
     if (/(webpack|vite|rollup|babel|jest|eslint|tsconfig)[^/]*\.js$/i.test(item.path)) continue
     if (CLIENT_SOURCE_PATH.test(item.path)) { filtered.path++; continue }
+    // v1.18：构建/发布/运维脚本目录 + 根目录打包器配置 —— 应用型仓库的纯噪声来源
+    if (BUILD_TOOLING_PATH.test(item.path) || ROOT_TOOL_CONFIG.test(item.path)) { filtered.tool++; continue }
     // P-1434 采集特征库：文件名/路径命中特征关键词 → 不采集（示例音源/插件等非音源脚本）
     if (isBlockedPath(item.path)) { filtered.block++; continue }
     const size = Number(item.size)
@@ -326,6 +355,68 @@ function judgeFreshness(commitsArr, releasesArr, sinceTs) {
  */
 const GH_ETAG_CACHE = new Map()   // url -> { etag, json }
 const GH_ETAG_MAX = 800
+// v1.17：ETag 缓存落盘（配额优化 #2）。
+//  为什么要落盘：8197 实测每天重启 8~25 次（5 天 90 次），纯内存缓存在每次冷启后清空 →
+//  每轮都全量 200，v1.13.0 的 304 优化命中率 ≈ 0（实测每轮只命中 1 次）。
+//  为什么不直接 hack 进 db：crawler 至今零文件 IO 依赖（纯函数 + 网络），保持它不碰磁盘；
+//  改由 hunter 在爬取前后调 hydrateEtagCache / etagCacheSnapshot 与 store 的原子写对接
+//  （写盘失败最多丢缓存，绝不影响采集 —— 见 hunter.runCrawl 的 try/catch）。
+//  体积约束：只持久化「小响应」（序列化后 ≤ ETAG_PERSIST_MAX_BYTES/条），tree 这类大响应
+//  只在同进程内有效 —— 否则 42 仓的 tree JSON 会把 db 撑到几十 MB。
+const ETAG_PERSIST_MAX_BYTES = 32 * 1024        // 单条 json 序列化上限
+const ETAG_PERSIST_TOTAL_ITEMS = 600            // 落盘条数上限
+const ETAG_PERSIST_TOTAL_BYTES = 512 * 1024     // 落盘总量上限
+const ETAG_PERSIST_TTL_MS = 14 * 86400 * 1000   // 14 天未再命中即丢弃（ETag 本身会随内容变）
+
+/**
+ * 导出可落盘的 ETag 缓存快照（v1.17）。过期条目与超大条目直接跳过。
+ * @param {number} [now]
+ * @returns {{v:number, at:number, items:Object}} 可直接 JSON 存进 db.ghEtagCache
+ */
+function etagCacheSnapshot(now) {
+  const t = Number(now) || Date.now()
+  const items = {}
+  let n = 0
+  let bytes = 0
+  for (const [url, rec] of GH_ETAG_CACHE) {
+    if (n >= ETAG_PERSIST_TOTAL_ITEMS) break
+    if (!rec || !rec.etag) continue
+    if (rec.at && t - rec.at > ETAG_PERSIST_TTL_MS) continue
+    let s = ''
+    try { s = JSON.stringify(rec.json) } catch (e) { continue }
+    if (!s || s.length > ETAG_PERSIST_MAX_BYTES) continue   // 大响应不落盘（tree 等）
+    if (bytes + s.length > ETAG_PERSIST_TOTAL_BYTES) break
+    items[url] = { etag: rec.etag, json: rec.json, at: rec.at || t }
+    n++
+    bytes += s.length
+  }
+  return { v: 1, at: t, items }
+}
+
+/**
+ * 从落盘快照恢复 ETag 缓存（v1.17）。任何异常/脏数据都只当没缓存（最坏退化为全量 200）。
+ * @param {object} snap db.ghEtagCache
+ * @param {number} [now]
+ * @returns {number} 实际恢复条数
+ */
+function hydrateEtagCache(snap, now) {
+  try {
+    if (!snap || typeof snap !== 'object' || !snap.items || typeof snap.items !== 'object') return 0
+    const t = Number(now) || Date.now()
+    let n = 0
+    for (const url of Object.keys(snap.items)) {
+      const rec = snap.items[url]
+      if (!rec || !rec.etag) continue
+      if (rec.at && t - rec.at > ETAG_PERSIST_TTL_MS) continue
+      if (GH_ETAG_CACHE.size > GH_ETAG_MAX) break
+      GH_ETAG_CACHE.set(url, { etag: rec.etag, json: rec.json == null ? null : rec.json, at: rec.at || t })
+      n++
+    }
+    return n
+  } catch (e) {
+    return 0
+  }
+}
 
 /**
  * 条件请求统计（v1.13.1）：给日志一个「这轮到底省了多少配额」的硬数字。
@@ -362,7 +453,7 @@ async function ghGetJson(url, token, timeoutMs) {
     const etag = res.headers && typeof res.headers.get === 'function' ? res.headers.get('etag') : null
     if (etag) {
       if (GH_ETAG_CACHE.size > GH_ETAG_MAX) GH_ETAG_CACHE.clear()
-      GH_ETAG_CACHE.set(url, { etag, json })
+      GH_ETAG_CACHE.set(url, { etag, json, at: Date.now() })
     }
   }
   return { ok: res.ok, notModified: false, status: res.status, json }
@@ -612,17 +703,23 @@ async function verifyRepoHasSource(repo, o) {
   // v1.13.0（配额优化第 5 项）：调用方已经知道分支名（搜索结果里就带 default_branch）时，
   // 直接跳过 /repos/{repo} 这次请求 —— 每个候选仓库省 1 次配额，最多少 60 次/轮。
   let branch = String((o && o.branch) || '').trim()
+  // v1.16.1：meta 必须提到函数作用域。原先它声明在 `if (!branch)` 块内，而 :688 的
+  // `looksLikeSourceRepo(meta)` 在块外读它——branch 由调用方传入（搜索结果自带 default_branch）
+  // 时该分支根本不执行，于是「无 .js 且无压缩包」的仓库走到 :688 会抛 ReferenceError，
+  // 被上层包成 'ERR ...' → 误判为临时失败（清理漏仓、R10 永远拿不到 verifyHasSource=false）。
+  const meta = {}
   if (!branch) {
     const info = await get(`https://api.github.com/repos/${repo}`)
     if (!info.ok) return { ok: false, reason: 'repo HTTP ' + info.status }
-    let meta = {}
-    try { meta = JSON.parse(await readText(info, tmo)) } catch (e) {}
+    let m = {}
+    try { m = JSON.parse(await readText(info, tmo)) } catch (e) {}
+    Object.assign(meta, m && typeof m === 'object' ? m : {})
     branch = meta.default_branch || 'main'
   }
-  const tr = await get(`https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`)
-  if (!tr.ok) return { ok: false, reason: 'tree HTTP ' + tr.status }
-  let tj = {}
-  try { tj = JSON.parse(await readText(tr, tmo)) } catch (e) {}
+  // v1.17：tree 走 ghGetJson 吃 ETag（同进程内重复验真同仓 → 304 零配额）
+  const tr = await ghGetJson(`https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`, token, tmo)
+  if (!tr.ok && !tr.notModified) return { ok: false, reason: 'tree HTTP ' + tr.status }
+  const tj = (tr && tr.json) || {}
   const items = Array.isArray(tj.tree) ? tj.tree : []
   const js = items.filter(t => t.type === 'blob' && /\.js$/i.test(t.path) &&
     (t.size || 0) < 2 * 1024 * 1024 && !/node_modules|\.min\.js/i.test(t.path))
@@ -685,15 +782,20 @@ async function verifyRepoHasSource(repo, o) {
   //   因此压缩包名要按词匹配音源语义（只看文件名，目录路径不算——CeruMusic 的
   //   docs/public/plugins/ 目录名就曾把教程 zip 蒙混过去），或者压缩包很少且仓库身份本身就像音源仓库。
   const packNamed = packs.some(p => /音源|music[-_\s.]?sources?|song[-_\s.]?sources?|lx[-_\s.]?music|lx[-_\s.]?source|lxmusic|lx[-_\s.]?plugin/i.test(String(p.path).split('/').pop() || ''))
+  // 仓库身份兜底：调用方传了 branch（搜索结果自带 default_branch）时没查过 /repos/{repo}，
+  // meta 里没有 full_name/description/topics。用仓库名补上 full_name，保证「名字像音源仓库」
+  // 这条判据在两条路径下表现一致——否则同样的仓库会因调用方是否传 branch 而判出不同结果。
+  if (!meta.full_name && !meta.name) meta.full_name = String(repo)
   const packOk = packNamed || (packs.length <= 5 && looksLikeSourceRepo(meta))
   if (packs.length && packOk) return { ok: true, reason: '压缩包分发', score: best, packs: packs.length }
   // ★ 只发 Release 资产的仓库：树里可能空空如也，再看一眼 release 资产名。
   //   Electron 客户端/服务端的发行包也是 zip/7z（90~230MB 的 dmg/exe/zip），不能算音源——
   //   判据用「像源文件名」或「体积很小（源脚本打包通常几百 KB）」，构建产物两条都不满足。
   try {
-    const rl = await get(`https://api.github.com/repos/${repo}/releases?per_page=5`)
+    // v1.17：releases 走 ghGetJson 吃 ETag（列表 URL 稳定，未发新版即 304 零配额）
+    const rl = await ghGetJson(`https://api.github.com/repos/${repo}/releases?per_page=5`, token, tmo)
     if (rl.ok) {
-      const list = JSON.parse(await readText(rl, tmo))
+      const list = rl.json
       const hit = (Array.isArray(list) ? list : []).some(rel =>
         (rel.assets || []).some(a => isSourceAsset(a)))
       if (hit) return { ok: true, reason: 'Release 资产分发', score: best }
@@ -716,6 +818,51 @@ async function runPool(items, n, fn) {
     }
   }))
   return out
+}
+
+/**
+ * 确定性判死 vs 临时失败（v1.17）：只有前者才允许写进负缓存。
+ * 判据与 hunter.js 的 isTransient 同口径 —— 限流/权限/网络/超时都算临时，绝不缓存。
+ */
+const GH_TMP_FAIL_RE = /HTTP (403|429|5\d\d)|ERR |ECONN|timeout|abort|请求超时|fetch failed/i
+
+function isTransientVerifyReason(reason) {
+  return GH_TMP_FAIL_RE.test(String(reason || ''))
+}
+
+/** 负缓存默认 TTL：7 天（到期后再验一次，仓库补了音源能自己回来） */
+const GH_NEG_TTL_MS = 7 * 86400 * 1000
+
+/**
+ * 从负缓存里剔除「仍在 TTL 内」的仓库（v1.17，配额优化 #1：搜索发现验真负缓存）。
+ *
+ * 为什么值得做：搜索发现每 24h 会把 40~50 个"名字像音源、实际没音源"的仓库全量重验一次
+ * （tree + contents×3 + releases ≈ 3~4 次/仓），实测单轮 150~190 次配额几乎全花在这里；
+ * 而这些结论 7 天内不会变。命中即跳过 → 单轮可省一半以上。
+ *
+ * 只信确定性结论：reason 命中临时失败正则的一律不放行到"跳过"（等于没缓存），
+ * 避免一次限流把好仓库固化成 7 天不验。
+ *
+ * @param {string[]} repos
+ * @param {object} negCache { 'owner/repo': {at, reason} }
+ * @param {number} [now]
+ * @param {number} [ttlMs]
+ * @returns {{keep:string[], skipped:string[]}}
+ */
+function filterNegativeCached(repos, negCache, now, ttlMs) {
+  const list = Array.isArray(repos) ? repos : []
+  const cache = negCache && typeof negCache === 'object' ? negCache : {}
+  const t = Number(now) || Date.now()
+  const ttl = Number(ttlMs) > 0 ? Number(ttlMs) : GH_NEG_TTL_MS
+  const keep = []
+  const skipped = []
+  for (const r of list) {
+    const k = String(normalizeRepo(r) || r || '').toLowerCase()
+    const rec = k ? cache[k] : null
+    if (rec && rec.at && t - Number(rec.at) < ttl && !isTransientVerifyReason(rec.reason)) skipped.push(r)
+    else keep.push(r)
+  }
+  return { keep, skipped }
 }
 
 async function discoverReposViaSearch(opts) {
@@ -785,24 +932,48 @@ async function discoverReposViaSearch(opts) {
   }
   // 内容验真（可选）：逐个仓库看有没有真音源脚本 / 压缩包 / 发行资产。
   // 只有显式 verify===true 才做——搜索本身是"发现"，实际爬取前才值得花这些 API 配额。
+  //
+  // v1.17 负缓存（配额优化 #1）：7 天内已确定性判死（ok:false 且非临时失败）的仓库直接跳过，
+  // 不再重拉 tree/contents/releases。命中数回给调用方写日志，新结论回给调用方落库。
   let droppedNoSource = 0
   const details = []
+  const negCache = o.negativeCache && typeof o.negativeCache === 'object' ? o.negativeCache : null
+  const negHits = []
+  const negNew = {}
   if (o.verify === true && out.length) {
-    const vr = await runPool(out, Math.max(1, Number(o.verifyConcurrency) || 4),
+    let verifyList = out
+    if (negCache) {
+      const f = filterNegativeCached(out, negCache, Date.now(), o.negativeTtlMs)
+      verifyList = f.keep
+      for (const r of f.skipped) negHits.push(r)
+      droppedNoSource += f.skipped.length
+    }
+    const vr = await runPool(verifyList, Math.max(1, Number(o.verifyConcurrency) || 4),
       (r) => verifyRepoHasSource(r, Object.assign({}, o, { branch: branches[r] || '' })))
     const kept = []
-    for (let i = 0; i < out.length; i++) {
+    for (let i = 0; i < verifyList.length; i++) {
       const v = vr[i] || { ok: false, reason: '验真失败' }
-      details.push({ repo: out[i], ok: !!v.ok, reason: v.reason, score: v.score })
-      if (v.ok) kept.push(out[i])
-      else droppedNoSource++
+      const repo = verifyList[i]
+      details.push({ repo, ok: !!v.ok, reason: v.reason, score: v.score })
+      if (v.ok) {
+        kept.push(repo)
+        // 验真通过 → 标记「需从负缓存删除」（仓库补了音源，不能让它被旧结论压制 7 天）
+        negNew[String(normalizeRepo(repo) || repo).toLowerCase()] = null
+        continue
+      }
+      droppedNoSource++
+      // 只记确定性判死；临时失败绝不入缓存
+      if (!isTransientVerifyReason(v.reason)) {
+        negNew[String(normalizeRepo(repo) || repo).toLowerCase()] = { at: Date.now(), reason: String(v.reason || '').slice(0, 120) }
+      }
     }
     return {
       repos: kept, perKeyword, searched: keywords.length, total: kept.length,
-      discovered: out.length, droppedNoSource, details
+      discovered: out.length, droppedNoSource, details,
+      verified: verifyList.length, negHits, negNew
     }
   }
-  return { repos: out, perKeyword, searched: keywords.length, total: out.length, droppedNoSource: 0 }
+  return { repos: out, perKeyword, searched: keywords.length, total: out.length, droppedNoSource: 0, negHits, negNew }
 }
 
 /**
@@ -859,24 +1030,27 @@ async function crawl(opts, onEvent, shouldStop) {
           continue
         }
       }
-      // ① 仓库文件树
-      const res = await fetchWithTimeout(`https://api.github.com/repos/${repo}/git/trees/HEAD?recursive=1`, { headers: ghHeaders(opts.token) }, timeoutMs)
-      if (res.status === 404) {
+      // ① 仓库文件树（v1.17：改走 ghGetJson 吃 ETag —— 未变仓库 304 零配额。
+      //   tree 是每仓最大的响应，此前裸 fetch 让 304 优化完全没覆盖到它）
+      const treeRes = await ghGetJson(`https://api.github.com/repos/${repo}/git/trees/HEAD?recursive=1`, opts.token, timeoutMs)
+      if (treeRes.status === 404) {
         stats.deadRepos.push(repo)
         onEvent('log', { level: 'warn', module: '爬取', msg: `${repo}：仓库不存在（404），标记失效` })
         continue
       }
-      const text = await readText(res, timeoutMs)
-      const tree = JSON.parse(text)
+      const tree = (treeRes && treeRes.json) || {}
+      // 非 200 且非 304：把 GitHub 的 message（含 "API rate limit exceeded"）带出来，
+      // 否则下方外层 /rate limit exceeded/ 的配额耗尽识别会失效。
+      if (!treeRes.ok && !treeRes.notModified) throw new Error('GitHub API: ' + (tree.message ? String(tree.message).slice(0, 80) : 'HTTP ' + treeRes.status))
       if (tree.message) throw new Error('GitHub API: ' + String(tree.message).slice(0, 80))
       if (tree.truncated) onEvent('log', { level: 'warn', module: '爬取', msg: `${repo} 文件树被截断，可能漏掉部分文件` })
       const cand = extractCandidates(tree, opts.maxCandidatesPerRepo)
       const cands = cand.items
-      if (cand.filtered.path || cand.filtered.size) {
+      if (cand.filtered.path || cand.filtered.size || cand.filtered.tool) {
         onEvent('log', {
           level: 'info', module: '爬取',
-          msg: `${repo}：预过滤 ${cand.filtered.path + cand.filtered.size} 个非音源候选` +
-            `（客户端源码目录 ${cand.filtered.path}、空/超大文件 ${cand.filtered.size}）`
+          msg: `${repo}：预过滤 ${cand.filtered.path + cand.filtered.size + cand.filtered.tool} 个非音源候选` +
+            `（客户端源码目录 ${cand.filtered.path}、构建/发布脚本 ${cand.filtered.tool}、空/超大文件 ${cand.filtered.size}）`
         })
       }
       const newOnes = []
@@ -965,6 +1139,9 @@ async function crawl(opts, onEvent, shouldStop) {
                 path: 'release:' + a.tag + ':' + a.name,
                 url: a.url,
                 assetKey: a.key,
+                // v1.15 P2：releaseTag 独立正式字段（只读展示，不参与 identity/同名裁决）。
+                // 不写进 name/lxName/scriptVersion——写进去会破坏 normName/分组，可能重复灌入。
+                releaseTag: String(a.tag || '').slice(0, 80),
                 name: a.name.replace(/\.js$/i, ''),
                 // v1.12.1：预填 release tag 作版本号（检测后会被脚本 meta.version 覆盖）。
                 // 没有它，未检测的新版条目 versionNum=0，同名裁决/去重没法识别
@@ -993,7 +1170,11 @@ async function crawl(opts, onEvent, shouldStop) {
               const picked = pickScriptsFromZip(files, 'release:' + a.tag + ':' + a.name, repo, a.url, 50)
               if (picked.length) {
                 relHit += picked.length
-                for (const it of picked) { it.assetKey = a.key; newOnes.push(it) }
+                for (const it of picked) {
+                  it.assetKey = a.key
+                  it.releaseTag = String(a.tag || '').slice(0, 80)  // P2 双字段：zip 内条目同样落 releaseTag
+                  newOnes.push(it)
+                }
                 onEvent('log', { level: 'info', module: '爬取', msg: `${repo}：release ${a.tag} 压缩包 ${a.name} 解出 ${picked.length} 个音源脚本` })
               }
             }
@@ -1064,11 +1245,10 @@ async function resolveRepoRename(repo, o) {
   try {
     // 注意：repo 不能 encodeURIComponent——会把 owner/repo 的斜杠编成 %2F，GitHub 直接 404
     //（实测 2026-11-08）。repo 来自 normalizeRepo（owner/repo 形态），与 verifyRepoHasSource 同样原样插值。
-    const res = await fetchWithTimeout(`https://api.github.com/repos/${repo}`,
-      { headers: ghHeaders(token) }, tmo)
-    if (!res.ok) { res.body && res.body.resume && res.body.resume(); return { moved: false, to: '' } }
-    let j = {}
-    try { j = JSON.parse(await readText(res, tmo)) } catch (e) { return { moved: false, to: '' } }
+    // v1.17：走 ghGetJson 吃 ETag（改名探测的 URL 稳定，未改名即 304 零配额）
+    const r = await ghGetJson(`https://api.github.com/repos/${repo}`, token, tmo)
+    if (!r.ok) return { moved: false, to: '' }
+    const j = (r && r.json) || {}
     const to = String(j.full_name || '')
     if (!to || to.toLowerCase() === String(repo).toLowerCase()) return { moved: false, to: '' }
     return { moved: true, to }
@@ -1082,6 +1262,8 @@ module.exports = {
   resetGhStats, ghStatsSnapshot,
   parseReleaseAssets, fetchRepoFreshness, judgeFreshness,
   discoverReposViaSearch, looksLikeSourceRepo, verifyRepoHasSource, resolveRepoRename, isSourceAsset,
+  filterNegativeCached, isTransientVerifyReason, GH_NEG_TTL_MS,
+  etagCacheSnapshot, hydrateEtagCache,
   extractCandidates, extractArchiveCandidates, pickScriptsFromZip, normalizeRepo, isBlockedPath,
   filterLatestOnly, latestBaseName, versionNumOf,
   RELEASES_PER_REPO, MAX_ASSET_BYTES, MAX_RELEASE_DL_PER_REPO

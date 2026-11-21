@@ -1,11 +1,14 @@
 'use strict'
 /** 任务编排：爬取 / 检测 / 灌入 / 撤回 */
-const { crawl, checkQuota, filterDeadRepos, DEFAULT_REPOS, setCrawlBlockPatterns, normalizeRepo, discoverReposViaSearch, verifyRepoHasSource, resolveRepoRename } = require('./crawler')
+const crawlerMod = require('./crawler')
+const { crawl, checkQuota, filterDeadRepos, DEFAULT_REPOS, setCrawlBlockPatterns, normalizeRepo, discoverReposViaSearch, verifyRepoHasSource, resolveRepoRename } = crawlerMod
 const { crawlWebSite, isWebRepo, probeExternalSource, normalizeExternalUrl } = require('./websource')
 const { fetchCommunityRepos } = require('./community')
 const { collectFromHubs } = require('./hubfeed')
 const { checkBasic, deepCheck, extractMeta, sha256Str, usableCount, stoppable, isLocalNetworkIssue, patrolJudge, obfuscationRisk, obfuscationTip, obfDomains, obfDomainVerdict, applyProbeRecord, probeApiHosts, apiDownVerdict, passedPlatforms, regressionJudge, probeTopTier, classifyQuarantineTrust, isProbeOnlyDeep } = require('./checker')
 const { crawlFetch, readText, sleep, resolveHostIps } = require('./net')
+// 阶段A：追更策略（纯规则，不接 AI），按 updateTip.msg 过滤纯催更/广告，供 _followUpdateTips 使用
+const { shouldFollowUpdateTip } = require('./updateTipPolicy')
 const { getActiveService, getService, getBatchImportAccounts, getIsolations, NO_ACCOUNT_ERR, resolveEnableAfterImport } = require('./services')
 const { Store } = require('./store')
 // 2026-11-10 科学性复核：版本算法 / 身份键 / 质量判据统一到单一来源，
@@ -376,13 +379,20 @@ function identityMismatch(cfg, serverList) {
  * 只在开启 patrolAutoDelete 且连续失效次数达到 patrolDeleteAfter（默认 3）时返回 true。
  * 注意：本地未灌入服务端（无 lxId）的音源不该走删除（runPatrol 已用 aliveLxIds 过滤），
  * 这里只负责「阈值判定」，不负责「能不能删」。
+ *
+ * v1.18 批次D：新增 minThreshold —— 本轮 patrolJudge **实际使用的判死阈值**。
+ * 版权/会员类失败会把判死阈值从 2 放宽到 4，而 patrolDeleteAfter 默认仍是 3；若只看配置值，
+ * streak=4 判死时 4>=3 会**跳过禁用直接删除**（不可逆），违反「禁用先于删除」这条红线
+ * （index.html 巡检设置区明示）。删除线因此必须 ≥ 判死线，故取两者较大值。
  * @param {object} cfg 配置（含 patrolAutoDelete / patrolDeleteAfter）
  * @param {number} streak 连续失效次数（rec.patrolFailStreak）
+ * @param {number} [minThreshold] 本轮实际判死阈值（j.need）；缺省时退回只看 patrolDeleteAfter
  */
-function patrolAutoDeleteWanted(cfg, streak) {
+function patrolAutoDeleteWanted(cfg, streak, minThreshold) {
   if (!cfg || cfg.patrolAutoDelete !== true) return false
   const deleteThreshold = Number(cfg.patrolDeleteAfter) > 0 ? Number(cfg.patrolDeleteAfter) : 3
-  return Number(streak) >= deleteThreshold
+  const need = Number(minThreshold) > 0 ? Number(minThreshold) : 0
+  return Number(streak) >= Math.max(deleteThreshold, need)
 }
 
 /**
@@ -761,6 +771,37 @@ function checkUpdateTipHostBelongsTo (e, host, known) {
   return { ok: false, why: '域名 ' + host + ' 不在该音源已知的域名集合内（' + Array.from(known).slice(0, 4).join('、') + '）' }
 }
 
+/**
+ * 阶段B：判断一个 host 是否被多个音源共享（共享域名是**正常常见现象，不是危险信号**，
+ * 仅供 AI 作弱参考）。只读遍历，不改 known 集合 / rebinding / 任何库字段。
+ */
+function updateTipHostIsShared (host, sources, selfId) {
+  if (!host) return false
+  let n = 0
+  for (const x of (Array.isArray(sources) ? sources : [])) {
+    if (!x || x.id === selfId) continue
+    const hs = knownHostsForEntry(x)
+    if (hs.has(host)) { n++; if (n >= 2) return true }
+  }
+  return false
+}
+
+/**
+ * v1.16：在 blockedMeta 里按仓库名查找键（大小写不敏感 + 兼容老数据原形 key）。
+ * 新数据写入用小写 key；老数据可能是原形（含大写），故遍历比对。返回实际命中的 key 或 null。
+ */
+function findBlockedMetaKey (meta, name) {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null
+  const low = String(name || '').toLowerCase()
+  if (Object.prototype.hasOwnProperty.call(meta, low)) return low
+  for (const k of Object.keys(meta)) {
+    if (String(k).toLowerCase() === low) return k
+    const mk = meta[k] && meta[k].repo ? String(meta[k].repo).toLowerCase() : ''
+    if (mk && mk === low) return k
+  }
+  return null
+}
+
 class Hunter {
   constructor(store, emit) {
     this.store = store
@@ -928,6 +969,24 @@ class Hunter {
       if (!usable) return arr
       const cls = await a.classifyColdStart(items, 'repo')
       if (!cls || !Object.keys(cls).length) return arr      // 不预判 → 原序
+      // v1.16 建议层：把 AI 明确判 'tool' 的仓库持久化到 cfg.repoAiHints，供 UI 建议层展示
+      //（复用本次现成结论，零新增 AI 调用）。uncertain/real 一律不存、不提示——避免打扰。
+      // 旁路写入：失败静默，绝不影响排序主链路；绝不据此自动拉黑（拉黑只能人工确认或走 R10 门控）。
+      try {
+        const cfg = this.store.config
+        if (!cfg.repoAiHints || typeof cfg.repoAiHints !== 'object' || Array.isArray(cfg.repoAiHints)) cfg.repoAiHints = {}
+        let changed = false
+        for (const r of arr) {
+          const c = cls[r]
+          if (!c || c.class !== 'tool') continue
+          const prev = cfg.repoAiHints[r]
+          // 同一仓库已有同结论就不重复写，避免每轮爬取都刷 saveConfig
+          if (prev && prev.cls === 'tool' && prev.reason === (c.reason || '')) continue
+          cfg.repoAiHints[r] = { cls: 'tool', reason: String(c.reason || '').slice(0, 120), at: Date.now() }
+          changed = true
+        }
+        if (changed) this.store.saveConfig()
+      } catch (_) { /* 建议层旁路失败静默 */ }
       const { classifyReposPure } = require('./coldStart')
       return classifyReposPure(arr, cls)                    // 稳定重排，元素一个不少（low-value 延后不拉黑）
     } catch (e) { return arr }
@@ -1089,6 +1148,33 @@ class Hunter {
     }
   }
 
+  /**
+   * v1.17（配额优化 #5）：判断「上一轮爬取是不是刚开始就被进程杀掉」。
+   *
+   * 为什么需要：`crawlLastAttempt` 在 runCrawl 开跑时立刻写（hunter.js:1330），而
+   * `crawlNextAt` 只在 finally 的 _finishCrawlSchedule 里写（:1526）。进程在两者之间被杀
+   * （8197 实测每天重启 8~25 次）→ 下一轮启动时 crawlNextAt 仍是**上一轮之前**的值 →
+   * 定时器判「已到期」→ 立刻重跑一整轮，白花约 62 次配额（实测 11-18 有两轮相隔 2 分钟）。
+   *
+   * 判据（两个条件同时成立才算「被打断」）：
+   *   ① crawlLastAttempt 距今 < 10 分钟（刚开跑不久）
+   *   ② crawlNextAt 落后于 crawlLastAttempt（说明那轮没算出下一轮 = 没正常收尾）
+   * 只影响**定时器**触发；用户手动点采集不受影响（那是明确意图，应照跑）。
+   *
+   * @param {number} [now]
+   * @param {number} [windowMs] 默认 10 分钟
+   * @returns {{interrupted:boolean, ageMs:number, lastAttempt:number, nextAt:number}}
+   */
+  crawlAttemptInterrupted(now, windowMs) {
+    const t = Number(now) || Date.now()
+    const win = Number(windowMs) > 0 ? Number(windowMs) : 10 * 60 * 1000
+    const lastAttempt = Number(this.store.db && this.store.db.crawlLastAttempt) || 0
+    const nextAt = Number(this.store.db && this.store.db.crawlNextAt) || 0
+    const ageMs = lastAttempt ? t - lastAttempt : Infinity
+    const interrupted = !!lastAttempt && ageMs >= 0 && ageMs < win && nextAt < lastAttempt
+    return { interrupted, ageMs, lastAttempt, nextAt }
+  }
+
   async runCrawl(opts) {
     this.batchId = Date.now().toString(36).slice(-6)
     this.jobGate(opts && Array.isArray(opts.only) && opts.only.length ? '主动采集' : (opts && opts.incremental ? '定时增量爬取' : '全量爬取'), opts && Array.isArray(opts.only) && opts.only.length ? opts.only.join('、') : '')
@@ -1154,9 +1240,18 @@ class Hunter {
             // 逐个拉文件树抽检 .js（scoreEntry>=4），并放行压缩包分发与 Release 资产分发的仓库。
             verify: cfg.searchVerify !== false,
             verifyConcurrency: 4,
+            // v1.17 负缓存（配额优化 #1）：7 天内确定性判死的仓库不再重验。
+            // 实测单轮 150~190 次配额几乎全花在「46 个名字像音源、实际无音源」的重复验真上。
+            negativeCache: (cfg.ghNegativeCache && typeof cfg.ghNegativeCache === 'object') ? cfg.ghNegativeCache : null,
+            negativeTtlMs: Number(cfg.ghNegativeTtlDays) > 0 ? Number(cfg.ghNegativeTtlDays) * 86400000 : undefined,
             // 突破项①阶段1：验真前批量语义预判，只把像真音源仓的排前面（低价值只延后不拉黑）
             prioritize: (repos, meta) => this._coldStartPrioritizeRepos(repos, meta)
           })
+          // v1.17：把本轮验真结论并进负缓存（null=验真通过→删；对象=确定性判死→记 7 天）
+          this._mergeNegativeCache(d && d.negNew)
+          if (d && Array.isArray(d.negHits) && d.negHits.length) {
+            this.log(`搜索发现：${d.negHits.length} 个仓库 7 天内已确认无音源，跳过重验（省约 ${d.negHits.length * 3} 次配额）`, '爬取')
+          }
           // 黑名单里的仓库（曾判定为非音源后被清理）直接丢弃，不再回填清单
           const dReposNew = d.repos.filter(n => !blockedRepos.has(String(normalizeRepo(n) || n).toLowerCase()))
           const blockedNow = d.repos.length - dReposNew.length
@@ -1279,6 +1374,8 @@ class Hunter {
     this.store.db.crawlLastAttempt = Date.now()
     this.store.saveDb()
     let crawlError = null
+    // v1.17：开跑前把落盘的 ETag 缓存灌回内存（跨重启复用 304）。失败只当没缓存。
+    this._loadGhEtagCache()
     try {
       const known = this._knownMaps()   // 手动/定时爬取都用判重地图：压缩包 sha 未变不解压、release 资产已抓不重下
       // crawlSinceDays（v1.7.2）：只爬 N 天内有更新的仓库（0=不限）。静默仓库整仓跳过，
@@ -1413,6 +1510,9 @@ class Hunter {
       this.log('爬取异常：' + String((e && e.message) || e), '爬取', 'error')
     } finally {
       this.job.running = false
+      // v1.17：每轮结束把 ETag 缓存落盘（节流写盘：一轮只写一次，避免频繁 IO）。
+      // 放在 job 状态复位后、调度计算前：写盘失败也只丢缓存，不影响调度。
+      this._saveGhEtagCache()
       this.emit('job', {
         running: false, type: 'crawl', done: true,
         summary: Object.assign({ incremental }, merge)
@@ -1430,6 +1530,92 @@ class Hunter {
       latestOnly: cfg.crawlLatestOnly !== false
     }
   }
+
+  /**
+   * v1.17：带缓存的仓库验真（配额优化 #3）。R10（pruneAiRepos）与「清理非音源仓库」
+   * （_pruneNonSourceRepos）共用同一份缓存 —— 两个入口在近轮重复验同一批仓时只花一次配额。
+   * 只缓存确定性结论；临时失败（403/429/5xx/网络/超时）不缓存，下轮可重试。
+   * @param {string} repo
+   * @param {object} cfg store.config
+   * @returns {Promise<{ok:boolean, reason?:string}>}
+   */
+  async _verifyRepoCached(repo, cfg) {
+    const VERIFY_TTL = 30 * 60 * 1000
+    if (!this._repoVerifyCache) this._repoVerifyCache = new Map()
+    const key = String(repo).toLowerCase()
+    const hit = this._repoVerifyCache.get(key)
+    if (hit && Date.now() - hit.at < VERIFY_TTL) return hit.v
+    let v
+    try {
+      v = await verifyRepoHasSource(repo, { token: cfg.ghToken, timeoutMs: cfg.timeoutMs })
+    } catch (e) {
+      v = { ok: false, reason: 'ERR ' + String((e && e.message) || e) }
+    }
+    if (!v || !crawlerMod.isTransientVerifyReason(v.reason)) {
+      this._repoVerifyCache.set(key, { at: Date.now(), v })
+    }
+    return v
+  }
+
+  /**
+   * v1.17：把本轮搜索验真的结论并进 cfg.ghNegativeCache（配额优化 #1）。
+   *  - 值 = {at, reason} → 确定性判死，记下 TTL（默认 7 天）后重验；
+   *  - 值 = null → 本轮验真通过，删除旧结论（仓库补了音源，不能被旧结论压制）。
+   * 临时失败上游已过滤，这里不再判断。写盘失败静默（绝不影响采集）。
+   * @param {object} negNew { 'owner/repo': {at,reason}|null }
+   */
+  _mergeNegativeCache(negNew) {
+    if (!negNew || typeof negNew !== 'object') return
+    const keys = Object.keys(negNew)
+    if (!keys.length) return
+    try {
+      const cfg = this.store.config
+      if (!cfg.ghNegativeCache || typeof cfg.ghNegativeCache !== 'object' || Array.isArray(cfg.ghNegativeCache)) cfg.ghNegativeCache = {}
+      const cache = cfg.ghNegativeCache
+      let added = 0, removed = 0
+      for (const k of keys) {
+        if (!k) continue
+        if (negNew[k] === null) { if (cache[k]) { delete cache[k]; removed++ } continue }
+        cache[k] = negNew[k]
+        added++
+      }
+      // 容量上限：超 2000 条按 at 淘汰最旧（防止长期积累把 config 撑大）
+      const all = Object.keys(cache)
+      if (all.length > 2000) {
+        all.sort((a, b) => (Number(cache[a] && cache[a].at) || 0) - (Number(cache[b] && cache[b].at) || 0))
+        for (const k of all.slice(0, all.length - 2000)) delete cache[k]
+      }
+      if (added || removed) this.store.saveConfig()
+    } catch (e) { /* 旁路：负缓存写失败不影响采集 */ }
+  }
+
+  /**
+   * v1.17：ETag 缓存落盘（配额优化 #2）。
+   * 为什么需要：8197 实测每天重启 8~25 次，纯内存 ETag 缓存每次冷启清空 →
+   * v1.13.0 的 304 优化命中率 ≈ 0（每轮只命中 1 次）。落盘后跨重启复用，304 才真正生效。
+   * 降级：读/写任何异常都只当「没缓存 / 这次没存」，最坏退化为旧行为（全量 200），绝不影响采集。
+   */
+  _loadGhEtagCache() {
+    try {
+      const snap = this.store.db.ghEtagCache
+      if (!snap) return 0
+      const n = crawlerMod.hydrateEtagCache ? crawlerMod.hydrateEtagCache(snap) : 0
+      if (n) this.log(`GitHub ETag 缓存：从本地恢复 ${n} 条（跨重启复用 304，省全量请求）`, '爬取')
+      return n
+    } catch (e) { return 0 }
+  }
+
+  _saveGhEtagCache() {
+    try {
+      if (!crawlerMod.etagCacheSnapshot) return
+      const snap = crawlerMod.etagCacheSnapshot()
+      const n = snap && snap.items ? Object.keys(snap.items).length : 0
+      if (!n) return
+      this.store.db.ghEtagCache = snap
+      this.store.saveDb()
+    } catch (e) { /* 写盘失败只丢缓存，不影响采集 */ }
+  }
+
 
   /**
    * 收尾：算出「下一次定时爬取最早什么时候允许跑」并落库（v1.13.0）
@@ -2317,14 +2503,15 @@ class Hunter {
         if (k >= batch.length) return
         const repo = batch[k]
         try {
-          results[k] = { repo, v: await verifyRepoHasSource(repo, { token: cfg.ghToken, timeoutMs: cfg.timeoutMs }) }
+          // v1.17：走共享验真缓存（与 R10 同一份，TTL 30min）
+          results[k] = { repo, v: await this._verifyRepoCached(repo, cfg) }
         } catch (e) {
           results[k] = { repo, v: { ok: false, reason: 'ERR ' + String((e && e.message) || e) } }
         }
       }
     }))
     // 临时失败（限流/权限/网络）不算判定结果，绝不据此删东西
-    const isTransient = (r) => /HTTP (403|429|5\d\d)|ERR |ECONN|timeout|abort/i.test(String(r || ''))
+    const isTransient = (r) => crawlerMod.isTransientVerifyReason(r)
     const dead = results.filter(x => !x.v.ok && !isTransient(x.v.reason))
     const skipped = results.filter(x => !x.v.ok && isTransient(x.v.reason)).length
 
@@ -2333,14 +2520,22 @@ class Hunter {
 //    改名 backend-api 后新旧两条并存）。这里对每个候补做一次轻量探测（1~2 次调用）：
     //    新名已在清单（重复旧名）→ 自动移出旧名条目，历史音源保留不删脚本、不进黑名单；
     //    新名不在清单 → 只提示不自动改（避免误判）。任何探测失败都当没改名（宁漏不误）。
-    const renameResults = new Array(batch.length)
+    //
+    // v1.17（配额优化 #4）：**已判死（dead）的仓跳过改名探测**。dead 的仓会被拉黑并移出清单，
+    // 探测它是否改名没有意义（改名了也不该留在清单里）；只有「验真通过」的活仓才需要区分
+    // 「旧名重复」。每次 prune 因此省下 dead.length 次 GET /repos/{repo}（实测约 15 次）。
+    const deadSet = new Set(dead.map(x => String(x.repo).toLowerCase()))
+    const renameTargets = batch.filter(r => !deadSet.has(String(r).toLowerCase()))
+    const renameSkipped = batch.length - renameTargets.length
+    if (renameSkipped) this.log(`改名探测：跳过 ${renameSkipped} 个已判死的仓库（它们会被拉黑，探改名无意义；省 ${renameSkipped} 次配额）`, '音源库')
+    const renameResults = new Array(renameTargets.length)
     let ri = 0
-    await Promise.all(Array.from({ length: Math.min(4, batch.length) }, async () => {
+    await Promise.all(Array.from({ length: Math.min(4, renameTargets.length) }, async () => {
       while (true) {
         const k = ri++
-        if (k >= batch.length) return
+        if (k >= renameTargets.length) return
         try {
-          renameResults[k] = await resolveRepoRename(batch[k], { token: cfg.ghToken, timeoutMs: cfg.timeoutMs })
+          renameResults[k] = await resolveRepoRename(renameTargets[k], { token: cfg.ghToken, timeoutMs: cfg.timeoutMs })
         } catch (e) {
           renameResults[k] = { moved: false, to: '', error: String((e && e.message) || e) }
         }
@@ -2348,10 +2543,10 @@ class Hunter {
     }))
     const renamedRepos = []   // {from,to} 新名已在清单 → 已自动清理旧名条目
     const renameHints = []    // {from,to} 新名不在清单 → 仅提示
-    for (let k = 0; k < batch.length; k++) {
+    for (let k = 0; k < renameTargets.length; k++) {
       const rr = renameResults[k]
       if (!rr || !rr.moved || !rr.to) continue
-      const from = batch[k]
+      const from = renameTargets[k]
       const to = String(rr.to)
       if (to.toLowerCase() === String(from).toLowerCase()) continue
       const haveNew = rl.some(x => {
@@ -2381,31 +2576,21 @@ class Hunter {
         (removedSources ? `；另清理黑名单残留脚本 ${removedSources} 条` : ''), '音源库')
       return { checked: batch.length, removedRepos: [], removedSources, skipped, unchecked: Math.max(0, cands.length - batch.length), renamedRepos, renameHints }
     }
-    const deadSet = new Set(dead.map(x => String(x.repo).toLowerCase()))
-    // ① 移出仓库清单
+    // ①~③ v1.16：改为逐仓走 blockRepo 单一写路径（移出清单 + 加入黑名单 + 清脚本 + 写 blockedMeta/snapshot），
+    //   与仓库行「拉黑」完全等价，不再自己维护 blockedRepos（避免两套写路径、且让 prune 也能回滚）。
+    //   by:'user'——prune 是用户点按钮触发的；_internal 跳过 jobGate（本方法已在任务位内）。
     const removedRepos = []
-    this.store.config.repos = rl.filter(x => {
+    for (const x of dead) {
       const n = normalizeRepo(x && x.repo)
-      if (n && deadSet.has(n.toLowerCase())) { removedRepos.push(n); return false }
-      return true
-    })
-    // ② 删掉这些仓库贡献的脚本：不限 deprecated —— 旧版本副本同样是垃圾，统一删干净
-    //    （removeSources 会记入 deletedIds，后续不会自动加回）
-    const srcIds = []
-    for (const e of this.store.getSources()) {
-      if (!e) continue
-      const r = normalizeRepo(e.repo)
-      if (r && deadSet.has(r.toLowerCase())) srcIds.push(e.id)
+      if (!n) continue
+      try {
+        const br = this.blockRepo(n, { by: 'user', reason: '清理非音源仓库（验真确认无音源脚本）', _internal: true })
+        removedRepos.push(br.blocked)
+        removedSources += Number(br.removedSources) || 0
+      } catch (e) {
+        this.log(`非音源仓库清理：拉黑「${n}」失败（${String((e && e.message) || e).slice(0, 60)}），已跳过`, '音源库', 'warn')
+      }
     }
-    if (srcIds.length) {
-      const r = this.store.removeSources(srcIds)
-      removedSources += (r && r.deleted) || 0
-    }
-    // ③ 黑名单：发现器/社区精选不再回填
-    const blk = new Set((Array.isArray(this.store.config.blockedRepos) ? this.store.config.blockedRepos : [])
-      .map(x => String(x || '').toLowerCase()).filter(Boolean))
-    for (const r of removedRepos) blk.add(r.toLowerCase())
-    this.store.config.blockedRepos = Array.from(blk)
     this.store.saveConfig()
     this.store.saveDb()
     this.log(`非音源仓库清理完成：移除仓库 ${removedRepos.length} 个、连带删除脚本 ${removedSources} 条` +
@@ -2423,8 +2608,12 @@ class Hunter {
    * 与「删除」按钮的区别：删除只移出清单，会被搜索发现/社区精选重新加回。
    * 返回 {blocked, removedSources}；内置仓库也允许拉黑（用户明确点名即尊重）。
    */
-  blockRepo(repo) {
-    this.jobGate('拉黑仓库', String(repo || ''))
+  blockRepo(repo, opts) {
+    const o = opts && typeof opts === 'object' ? opts : {}
+    // 内部批量迁移（_pruneNonSourceRepos / pruneAiRepos 已在任务位内）跳过 jobGate，避免自锁
+    if (!o._internal) this.jobGate('拉黑仓库', String(repo || ''))
+    const by = o.by === 'ai' ? 'ai' : 'user'
+    const reason = String(o.reason || '').slice(0, 200)
     const name = normalizeRepo(String(repo || ''))
     if (!name || /^https?:\/\//i.test(String(repo || ''))) throw new Error('请提供 owner/repo 形态的仓库名')
     const cfg = this.store.config
@@ -2448,13 +2637,31 @@ class Hunter {
     }
     let removedSources = 0
     if (ids.length) removedSources = (this.store.removeSources(ids) || {}).deleted || 0
+    // v1.16 旁路表：记来源 + 被删脚本快照（供 UI 来源徽章 + 解除时按快照还原）。
+    // ⚠️ 只写 cfg.blockedMeta（旁路），绝不动 blockedRepos 的字符串结构。
+    // ② key 统一用小写，与 blockedRepos 口径一致（否则解除时按原形取不到 → snapshot 静默丢失）。
+    if (!cfg.blockedMeta || typeof cfg.blockedMeta !== 'object' || Array.isArray(cfg.blockedMeta)) cfg.blockedMeta = {}
+    const metaKey = name.toLowerCase()
+    const prevMeta = cfg.blockedMeta[metaKey]
+    // ③ 同 key 重复拉黑时 snapshot **合并**（不覆盖），避免"拉黑→解除→再拉黑"丢第一次记录
+    const snapSet = new Set(Array.isArray(prevMeta && prevMeta.snapshot) ? prevMeta.snapshot : [])
+    for (const id of ids) snapSet.add(id)
+    cfg.blockedMeta[metaKey] = {
+      repo: name,   // 保留原始大小写形态，供 UI 展示
+      by,
+      reason: reason || (by === 'ai' ? 'AI 判定非音源仓库' : '手动拉黑'),
+      at: Date.now(),
+      snapshot: Array.from(snapSet)   // 本次 + 历史被清掉的脚本 id；解除时按此还原「不再采集」记录
+    }
     this.store.saveConfig()
     this.store.saveDb()
-    this.log(`已拉黑仓库 ${name}：${removedFromList ? '移出清单' : '本就不在清单'}、${alreadyBlocked ? '原本已在黑名单' : '加入黑名单'}、清理脚本 ${removedSources} 条（后续搜索发现/社区精选不再回填）`, '音源库', 'warn')
-    return { blocked: name, removedFromList, alreadyBlocked, removedSources }
+    this.log(`已拉黑仓库 ${name}（来源：${by === 'ai' ? 'AI 建议' : '手动'}）：${removedFromList ? '移出清单' : '本就不在清单'}、${alreadyBlocked ? '原本已在黑名单' : '加入黑名单'}、清理脚本 ${removedSources} 条（后续搜索发现/社区精选不再回填）`, '音源库', 'warn')
+    return { blocked: name, removedFromList, alreadyBlocked, removedSources, by, snapshot: Array.from(snapSet) }
   }
 
   // 解除拉黑（v1.10.7）：从 blockedRepos 移除；可选同步回仓库清单（默认回，一键恢复采集）
+  // v1.16：按 blockedMeta 里的 snapshot 撤销「不再采集」记录，让被清掉的脚本能重新被采集回来
+  //（修复旧版「解了黑名单但脚本永远回不来」的缺陷）。不用 clearDeletedIds 核弹。
   unblockRepo(repo, reAdd) {
     this.jobGate('解除拉黑', String(repo || ''))
     const name = normalizeRepo(String(repo || ''))
@@ -2466,6 +2673,17 @@ class Hunter {
     if (!wasBlocked) throw new Error(`仓库 ${name} 不在黑名单中`)
     blk.delete(name.toLowerCase())
     cfg.blockedRepos = Array.from(blk)
+    // v1.16：按快照还原被删脚本的「不再采集」记录（②大小写不敏感查找，兼容老原形 key）
+    let restoredIds = 0
+    let metaFound = false
+    const metaKey = findBlockedMetaKey(cfg.blockedMeta, name)
+    const meta = metaKey ? cfg.blockedMeta[metaKey] : null
+    if (meta && Array.isArray(meta.snapshot) && meta.snapshot.length) {
+      metaFound = true
+      const r = this.store.removeDeletedIds(meta.snapshot)
+      restoredIds = (r && r.removed) || 0
+    }
+    if (metaKey) delete cfg.blockedMeta[metaKey]
     let reAdded = false
     const wantReAdd = reAdd === undefined ? true : !!reAdd
     if (wantReAdd) {
@@ -2476,8 +2694,111 @@ class Hunter {
       if (!has) { cfg.repos = (Array.isArray(cfg.repos) ? cfg.repos : []).concat([{ repo: name, enabled: true, builtin: false, origin: 'unblocked' }]); reAdded = true }
     }
     this.store.saveConfig()
-    this.log(`已解除拉黑仓库 ${name}：移出黑名单${reAdded ? '、已加回仓库清单' : ''}（后续可正常采集）`, '音源库', 'info')
-    return { unblocked: name, wasBlocked, reAdded }
+    this.log(`已解除拉黑仓库 ${name}：移出黑名单${reAdded ? '、已加回仓库清单' : ''}${restoredIds ? `、按快照恢复 ${restoredIds} 条脚本的采集记录（下次爬取可重新采回）` : ''}`, '音源库', 'info')
+    return { unblocked: name, wasBlocked, reAdded, restoredIds, metaFound }
+  }
+
+  /**
+   * v1.16 第二步：AI 判非音源仓库的门控自动拉黑（默认关，必须三重旁证 AND 全过才动手）。
+   *
+   * 与建议层的分工：建议层只把 AI 的 tool 判定写进 cfg.repoAiHints 供人确认；本方法才真正
+   * 走 gate('R10')（总闸 + autoActions.R10 + allowIrreversible 不可逆双锁 + 评测达标 + 证据 AND），
+   * 全过才对**已在 repoAiHints 里判 tool、且仍在仓库清单**的仓逐条 blockRepo(by:'ai')。
+   * 任一环节不过：该仓留在建议层等人工确认，绝不自动动手。
+   *
+   * 复用现成 AI 结论（repoAiHints 来自 coldStart 旁路），**不新增任何 AI prompt 调用**。
+   * 客观旁证②（验真无音源）走**真实 verifyRepoHasSource**（不是"库内有无条目"），
+   * 限流/网络失败视为"不确定"→旁证不成立→不拉黑（保守，绝不误伤）；
+   * 客观旁证③（可用音源数）按 deep.platforms 实测累加（不用 e.usable，两者有历史不一致）。
+   *
+   * @param {object} [opts] { dryRun:true } 只算不写（默认 false）
+   * @returns {Promise<{checked:number, blocked:string[], skipped:Array, gateReason:string}>}
+   */
+  async pruneAiRepos(opts) {
+    const o = opts && typeof opts === 'object' ? opts : {}
+    // 占任务位：本方法含真实网络验真（≤20 仓 × 1~2 次 GitHub 请求），不能与爬取/巡检并发。
+    // 已在任务位内（自动挡循环调用）时用 opts._internal 跳过，避免自锁。
+    if (!o._internal) this.jobGate('AI 评估非音源仓库')
+    const ownJob = !o._internal
+    if (ownJob) {
+      this.job = { running: true, type: 'prune-ai', cancel: false, progress: {}, step: '验真 AI 判定的非音源仓库' }
+      this.emit('job', { running: true, type: 'prune-ai' })
+    }
+    try {
+      return await this._pruneAiRepos(o)
+    } finally {
+      if (ownJob) {
+        this.job = { running: false, type: '', cancel: false, progress: {}, step: '' }
+        this.emit('job', { running: false, type: '' })
+      }
+    }
+  }
+
+  async _pruneAiRepos(o) {
+    const cfg = this.store.config
+    const hints = (cfg.repoAiHints && typeof cfg.repoAiHints === 'object') ? cfg.repoAiHints : {}
+    const inList = Array.isArray(cfg.repos) ? cfg.repos : []
+    const listNames = new Set(inList.map(x => String(normalizeRepo(x && x.repo) || '').toLowerCase()).filter(Boolean))
+    // 候选：AI 判 tool 且仍在清单（不在清单的已被处理，无需重复）
+    const cands = Object.keys(hints).filter(r => hints[r] && hints[r].cls === 'tool' && listNames.has(String(r).toLowerCase()))
+    const out = { checked: 0, blocked: [], skipped: [], gateReason: '' }
+    if (!cands.length) return out
+    // 预算保护：单次最多处理 20 个仓，避免一次拉黑过多（也控制验真配额：≤20×2 次请求）
+    const batch = cands.slice(0, 20)
+    const a = this._ai()
+    if (!a) { out.gateReason = 'AI 复检未初始化'; return out }
+    // 评测凭证：R10 属需评测达标的功能（gate 硬门，且不可逆类缺省即拒）。当前无线上评测结论时
+    // 如实传 '未评测' → gate 拒绝自动（只能走建议层人工确认）。将来接入 R10 评测后换真实结论即可。
+    const evalVerdict = String((cfg.aiReview && cfg.aiReview.evalVerdictR10) || '未评测')
+    const isTransient = (why) => crawlerMod.isTransientVerifyReason(why)
+    // v1.17：验真走共享缓存 _verifyRepoCached（与 _pruneNonSourceRepos 同一份，TTL 30min）
+    const verifyRepo = (repo) => this._verifyRepoCached(repo, cfg)
+    // 该仓贡献的「实测可用音源数」：按 deep.platforms 逐条判 usable，不用 e.usable（历史不一致）
+    const countUsableByDeep = (low) => {
+      let n = 0
+      for (const e of this.store.getSources()) {
+        if (!e || !e.deep) continue
+        const r = normalizeRepo(e.repo)
+        if (!r || r.toLowerCase() !== low) continue
+        const plats = e.deep.platforms
+        const arr = Array.isArray(plats) ? plats : (plats && typeof plats === 'object' ? Object.values(plats) : [])
+        if (arr.some(p => p && (p.status === 'usable' || p.usable === true))) n++
+      }
+      return n
+    }
+    for (const repo of batch) {
+      out.checked++
+      try {
+        const low = String(repo).toLowerCase()
+        const usable = countUsableByDeep(low)
+        // 客观验真②：v.ok===true → 有音源；v.ok===false 且非临时失败 → 确认无音源；
+        // 其余（临时失败/异常）→ 不确定（传 undefined，使 verifyHasSource===false 不成立 → 不拉黑）
+        const vr = await verifyRepo(repo)
+        let verified
+        if (vr && vr.ok === true) verified = true
+        else if (vr && vr.ok === false && !isTransient(vr.reason)) verified = false
+        else verified = undefined
+        // 三重旁证：AI 判 tool + 客观验真确无音源 + 可用音源数 0（三者真 AND）
+        const facts = { aiClass: 'tool', verifyHasSource: verified, usableSourceCount: usable }
+        const signals = a.collectSignals(facts, 'R10')
+        const g = a.gate('R10', { signals, evalVerdict })
+        if (!g.auto) { out.skipped.push({ repo, reason: g.reason || '门控未通过' }); continue }
+        if (o.dryRun) { out.blocked.push(repo); continue }
+        const r = this.blockRepo(repo, { by: 'ai', reason: (hints[repo] && hints[repo].reason) || 'AI 判定非音源仓库（三重旁证）', _internal: true })
+        out.blocked.push(repo)
+        // 审计留痕（供事后复核；blockedRepos 不在 undo 白名单，故此处只做记录不冒充可 undo）
+        try {
+          a.audit('repo:' + repo, 'blocklist', { targets: [{ path: 'config.blockedRepos', before: null, after: repo }] }, { targets: [{ path: 'config.blockedRepos', before: null, after: repo }] },
+            'ai', { scope: { sandbox: false, gateEval: { pass: true }, repo, snapshot: (r && r.snapshot) || [], reason: 'R10 三重旁证' } })
+          a.store.saveDb()
+        } catch (_) {}
+      } catch (err) {
+        out.skipped.push({ repo, reason: String((err && err.message) || err).slice(0, 120) })
+      }
+    }
+    if (out.blocked.length) this.log(`AI 自动拉黑非音源仓库：${out.blocked.length} 个（三重旁证齐全、门控全过）→ ${out.blocked.slice(0, 6).join('、')}${out.blocked.length > 6 ? '…' : ''}`, '音源库', 'warn')
+    else if (out.skipped.length) this.log(`AI 自动拉黑：${out.skipped.length} 个候选未过门控（默认关/缺证据），已留建议层待人工确认`, '音源库', 'info')
+    return out
   }
 
   // ---------------- 站外分发源（v1.11.0）----------------
@@ -4466,6 +4787,13 @@ class Hunter {
    *   下轮检测时若音源更新了已知域名，还能再试一次。
    */
   async _followUpdateTips(cfg) {
+    // 阶段A：off 档＝关闭追更（等同 autoFollowScriptUpdate:false），入口即返回，不动两处调用点。
+    if ((cfg && cfg.autoFollowPolicy) === 'off') return
+    const policy = (cfg && cfg.autoFollowPolicy) || 'all'
+    // 阶段B：AI 安全否决档位（off=零调用 / shadow=只标记 / enforce=danger 真阻断），默认 off
+    const vetoMode = (cfg && cfg.aiFollowVeto) === 'shadow' || (cfg && cfg.aiFollowVeto) === 'enforce'
+      ? cfg.aiFollowVeto : 'off'
+    if (!this._followVetoResults) this._followVetoResults = new Map()   // 内存旁路：sha256(tip.url) → danger，不落库、不写 e.updateTips
     const items = this.store.getSources().filter(e => !e.deprecated && Array.isArray(e.updateTips) && e.updateTips.length)
     if (!items.length) return
     const TOTAL_BUDGET_MS = 3 * 60 * 1000
@@ -4486,6 +4814,18 @@ class Hunter {
           this.log(`updateUrl 追更停止（预算/上限，已跟进 ${followed} 条），其余下次检测继续`, '采集', 'warn')
           return
         }
+        // ── 阶段A：追更策略（在 R9 域名校验**之前**，纯规则、不接 AI）──
+        //   followClass 三态一律写给 tip 供 UI 展示（all 档也写，方便看规则结论）；
+        //   substantive 档下 ignore/gray 直接跳过追更（不写 followedUpdateUrls，下轮可重试）；
+        //   all 档维持现网行为：不看 msg、全追，仅多写一个展示字段。
+        //   ⚠️ 不碰 R9 三层校验 / 逐跳 guard / 同名裁决 / contentHash 去重。
+        const followClass = shouldFollowUpdateTip(tip.msg)
+        tip.followClass = followClass
+        if (policy === 'substantive' && followClass !== 'follow') {
+          skipped++
+          this.log(`updateUrl 追更跳过：追更策略=仅实质更新，本条更新说明判定为 ${followClass}（无实质修复/新功能）→ 不下载（来自「${e.lxName || e.scriptName || e.name}」）`, '采集', 'info')
+          continue
+        }
         // ── R9：下载前校验（两层）──
         const v = checkUpdateTipUrl(tip.url)
         if (!v.ok) {
@@ -4505,6 +4845,48 @@ class Hunter {
           skipped++
           this.log(`updateUrl 追更跳过：更新地址的域名解析结果不可信（${ipCheck.why}）→ 不下载（来自「${e.lxName || e.scriptName || e.name}」）`, '采集', 'warn')
           continue
+        }
+        // ── 阶段B：AI 安全否决（R9 三层全过之后、真正下载之前）──
+        //   单向否决：只有 enforce 档且 AI 明确 danger===true 才阻断；其余一律放行。
+        //   off 档零 AI 调用、零字段计算；shadow 只产标记+旁路日志、不阻断。
+        //   ⚠️ 不进删源/禁用链、不放宽 R9/逐跳 guard/同名裁决、不动 known/rebinding、不改阶段A 规则。
+        if (vetoMode !== 'off') {
+          try {
+            const msg = String((tip && tip.msg) || '')
+            // msg 只提取布尔风险标记，**原文绝不发给 AI**（防话术注入骗放行）
+            const risk = {
+              hasNudge: /请尽快更新|有新版本|版本过低|点击(更新|下载)|加群|群号|svip音源更新/.test(msg),
+              hasAd: /广告|引流|推广|赞助|扫码|二维码/.test(msg),
+              hasGroupOrCaptcha: /加群|群号|验证码/.test(msg),
+              hasInstruction: /忽略.{0,6}(指令|规则)|系统消息|一律判|覆盖.{0,4}规则/.test(msg),
+              hasVersionOnly: /^.{0,20} v?\d+\.\d+(\.\d+)?$/.test(msg)
+            }
+            const structured = {
+              host: v.host,
+              isKnownHost: true,                                  // R9 第②层已过
+              isSharedHost: updateTipHostIsShared(v.host, this.store.getSources(), e.id),
+              ipPrivate: false,                                   // R9 第③层已过（能到这里的都不是私网）
+              wildcardDns: false,                                 // R9 第①层黑名单已过
+              msgRiskFlags: risk
+            }
+            const ai = this._ai ? this._ai() : null
+            const res = ai && typeof ai.classifyUpdateTipSafety === 'function'
+              ? await ai.classifyUpdateTipSafety(structured) : { danger: 'unknown' }
+            const danger = res && res.danger
+            const key = sha256Str(tip.url)
+            this._followVetoResults.set(key, { danger, reason: res && res.reason || '', mode: vetoMode, at: Date.now() })
+            if (danger === true) {
+              if (vetoMode === 'enforce') {
+                skipped++
+                this.log(`updateUrl 追更跳过：AI 安全否决（danger=true，enforce 档）→ 不下载（来自「${e.lxName || e.scriptName || e.name}」）`, '采集', 'warn')
+                continue
+              }
+              // shadow：只记旁路日志，照常下载
+              this.log(`updateUrl 追更[影子]：AI 标记 danger=true（shadow 档不阻断，仅供观察）→ 照常下载（来自「${e.lxName || e.scriptName || e.name}」）`, '采集', 'info')
+            }
+          } catch (_) {
+            // AI 否决链任何异常一律放行（安全不对称：绝不因旁路故障误伤好源）
+          }
         }
         followed++
         this.log(`updateUrl 追更：「${e.lxName || e.scriptName || e.name}」拉取 ${tip.url.slice(0, 60)}…`, '采集', 'info')
@@ -5188,6 +5570,9 @@ class Hunter {
         let verdict = 'unknown'
         let note = ''
         let suspectTag = false   // 「疑似失效」：与「无法判定（网络原因）」在日志里分开说，避免用户看不懂
+        // 本轮 patrolJudge 实际使用的判死阈值（版权类会被放宽到 4）。下方删除判定要用，
+        // 故必须在 try 外声明 —— j 本身是 try 内的块级常量，catch 路径拿不到。
+        let judgeNeed = 0
         try {
           const { code } = await checkBasic(e, cfg, (t, p) => this.emit(t, p), this.mirrorPref)
           if (e.fetchMirror) this.mirrorPref = e.fetchMirror
@@ -5216,6 +5601,7 @@ class Hunter {
             if (manualPriorFail && prevStreak === 0) prevStreak = 1
             const d = await deepCheck(e, code, cfg, (t, p) => this.emit(t, p), () => this.cancelRequested)
             const j = patrolJudge(d, { prevStreak, threshold: cfg.patrolDisableAfter, updated: contentChanged })
+            judgeNeed = Number(j.need) || 0
             if (j.streak != null) rec.patrolFailStreak = j.streak
             suspectTag = j.verdict === 'suspect'
             verdict = j.verdict === 'suspect' ? 'unknown' : j.verdict
@@ -5269,9 +5655,20 @@ class Hunter {
           // 私人音源（v1.10.0）绝不自动删除：用户手动导入的个人源，失效了也只禁用，本体留在库里。
           // （服务端侧删除同样跳过——私人源常由用户直接在平台上维护，自动删容易误伤。）
           const streak = Number(rec.patrolFailStreak) || 0
+          // 「禁用先于删除」红线（index.html 巡检设置区明示）：能进删除分支的源，必须在前一轮
+          // 就已经被判死并禁用过 —— 即本轮 streak 要**严格大于**本轮实际判死阈值。
+          // v1.18 批次D 起版权/会员类失败的判死阈值从 2 放宽到 4，而 patrolDeleteAfter 默认仍是 3；
+          // 若只看配置值，版权类源会在 streak=4「首次判死」那一轮 4>=3 直接删除（不可逆），
+          // 从未被禁用过。故删除线取 max(配置删除线, 判死线+1)。
+          // 非版权类 need=2 → max(3,3)=3，与原行为完全一致（无回归）。
+          // judgeNeed=0（下载失败/内容非音源/apiDown 等不经 patrolJudge 的判死路径）时
+          // 退回原口径，不额外收紧。
+          const effNeed = judgeNeed > 0
+            ? Math.max(Number(cfg.patrolDeleteAfter) || 3, judgeNeed + 1)
+            : (Number(cfg.patrolDeleteAfter) || 3)
           // !e.private 为纵深防御：buildPatrolItems 已在队列层把私人源全部排除，
           // 这里再守一次，防止将来有人从别的入口直接塞条目进来时被误删。
-          const wantDelete = patrolAutoDeleteWanted(cfg, streak) && !e.private
+          const wantDelete = patrolAutoDeleteWanted(cfg, streak, effNeed) && !e.private
           if (wantDelete) {
             try {
               const r = await this._patrolEnqueueServerWrite('delete', async () => {

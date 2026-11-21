@@ -77,8 +77,10 @@ function ok (name, cond, extra) {
 // 子进程执行器（铁律：每条用例独立进程，逃逸会真的执行 Function('return process')）
 // ============================================================================
 function runProbe (expr, mode) {
+  // windowsHide: 每条用例独立子进程（铁律要求），Windows 上不隐藏就会逐个弹控制台窗
   const r = spawnSync(NODE, [RUNNER, Buffer.from(expr, 'utf8').toString('base64'), mode || 'sync'], {
     cwd: ROOT, encoding: 'utf8', timeout: 60000, maxBuffer: 4 * 1024 * 1024,
+    windowsHide: true,
     env: Object.assign({}, process.env, { NODE_OPTIONS: '' })
   })
   const out = String(r.stdout || '').trim()
@@ -164,6 +166,7 @@ console.log('\n=== ④ 全量注入面矩阵：不允许出现宿主 realm Error
 ;(function () {
   const r = spawnSync(NODE, [path.join(__dirname, 'tools', 'throw-leak-matrix.js'), '--json'], {
     cwd: ROOT, encoding: 'utf8', timeout: 900000, maxBuffer: 16 * 1024 * 1024,
+    windowsHide: true,
     env: Object.assign({}, process.env, { NODE_OPTIONS: '' })
   })
   // ⚠ --json 输出是 **pretty-printed 多行 JSON**，不能按行解析。
@@ -204,6 +207,7 @@ console.log('\n=== ⑤ 变异测试：阳性对照（宿主 Error 直接塞进�
   const script = path.join(__dirname, 'tools', 'throw-leak-mutant-runner.js')
   const r = spawnSync(NODE, [script], {
     cwd: ROOT, encoding: 'utf8', timeout: 60000, maxBuffer: 4 * 1024 * 1024,
+    windowsHide: true,
     env: Object.assign({}, process.env, { NODE_OPTIONS: '' })
   })
   const out = String(r.stdout || '').trim()

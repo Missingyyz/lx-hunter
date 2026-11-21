@@ -9,10 +9,10 @@
 
 /** 各范围的人话标签（describeNextAIReview 用） */
 const SCOPE_LABEL = {
-  new: '未检新源',
-  failed: '仅失败源',
-  quarantined: '仅隔离源',
-  all: '全部音源'
+  new: '仅新增（未检新源）',
+  failed: '仅失败源（含隔离区）',
+  all: '全部有效源（不含废弃/私有）'
+  // quarantined 已并入 failed，不再作为独立可选范围（v1.15.0 做减法）
 }
 
 /**
@@ -71,7 +71,7 @@ function aiSchedulePlan(cfg, aiState, now) {
   const last = Math.max(Number(st.lastAttempt) || 0, Number(st.lastRun) || 0)
   const failed = !!st.lastError
   const gapMs = failed ? Math.min(intervalMs, retryMinutes * 60000) : intervalMs
-  const scope = c.autoScope || 'new'
+  const scope = c.autoScope || 'failed'   // v1.15.0：与 store/core 默认对齐（旧值为 new 的历史不一致已修）
   const limit = Math.min(MAX_ITEMS, Math.max(1, Number(c.autoMaxItems) || 20))
   const activeNow = getActiveHoursOk(c, t)
   const elapsed = t - last
@@ -108,8 +108,10 @@ function selectScope(sources, scope, limit, now) {
     const x = e || {}
     switch (mode) {
       case 'new': return x.lastCheck === 0 || !(x.deep && x.deep.checkedAt)
-      case 'failed': return !!(x.error || x.status === 'dead' || x.status === 'quarantined')
-      case 'quarantined': return !!(x.status === 'quarantined' || x.quarantined)
+      // failed 含隔离区：status==='quarantined' 或 e.quarantined 标记
+      case 'failed': return !!(x.error || x.status === 'dead' || x.status === 'quarantined' || x.quarantined)
+      // v1.15.0：quarantined 旧值重定向到 failed（向后兼容，等同失败源）
+      case 'quarantined': return !!(x.error || x.status === 'dead' || x.status === 'quarantined' || x.quarantined)
       case 'all': return true
       default: return false
     }
