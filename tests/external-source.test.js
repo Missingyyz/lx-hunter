@@ -301,7 +301,7 @@ ck('payloadHash 二进制安全且稳定',
   ck('loadConfig / saveAllCfg / 数据导入后都刷新站外源列表',
     (appSrc.match(/renderExternalList\(/g) || []).length >= 5)
   ck('缓存戳 v100 / v30 / v61 / v21',
-    htmlSrc.includes('app.js?v=102') && htmlSrc.includes('sorters.js?v=30') &&
+    htmlSrc.includes('app.js?v=103') && htmlSrc.includes('sorters.js?v=30') &&
     htmlSrc.includes('web-bridge.js?v=61') && htmlSrc.includes('styles.css?v=21'))
 
   console.log(`\n${bad ? 'FAIL（失败 ' + bad + ' 项）' : 'ALL PASS'}`)

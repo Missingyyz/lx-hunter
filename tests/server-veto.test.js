@@ -205,4 +205,68 @@ ok('多平台账本：importedTo 里的任一 lxId 都能作为判定依据', ()
   assert.strictEqual(r.veto.e1.lxId, 'x.js')
 })
 
+// ---- 零平台「未知源」（failed + supportedSources=[]）冻结 ----
+ok('failed + 空平台数组 → unloaded，且冻结', () => {
+  const r = computeVeto({
+    imported: { e1: rec('src.js') },
+    sources: { e1: { id: 'e1', contentHash: 'sha-old' } },
+    serverList: [{ id: 'src.js', enabled: true, status: 'failed', supportedSources: [], updateAlert: { log: '请更新' } }],
+    activePlatformId: 'p1',
+    prev: {},
+    now: NOW
+  })
+  assert.strictEqual(r.veto.e1.type, VETO_TYPES.UNLOADED)
+  assert.ok(/未注册任何平台|未知源/.test(r.veto.e1.detail))
+  assert.strictEqual(isFrozen(r.veto, { id: 'e1', contentHash: 'sha-old' }), true)
+})
+
+ok('边界：老服务端不报 supportedSources（undefined）→ 不冻结', () => {
+  const r = computeVeto({
+    imported: { e1: rec('src.js') },
+    sources: { e1: { id: 'e1', contentHash: 'sha-old' } },
+    serverList: [{ id: 'src.js', enabled: true, status: 'failed' }],
+    activePlatformId: 'p1',
+    prev: {},
+    now: NOW
+  })
+  assert.strictEqual(r.veto.e1, undefined)
+})
+
+ok('边界：failed + 平台齐全（版本过旧形态）→ 不冻结', () => {
+  const r = computeVeto({
+    imported: { e1: rec('src.js') },
+    sources: { e1: { id: 'e1', contentHash: 'sha-old' } },
+    serverList: [{ id: 'src.js', enabled: true, status: 'failed', supportedSources: ['kg', 'tx', 'wy'], updateAlert: { log: 'v1.3.0' } }],
+    activePlatformId: 'p1',
+    prev: {},
+    now: NOW
+  })
+  assert.strictEqual(r.veto.e1, undefined)
+})
+
+ok('边界：after-import + failed + 空平台 → 仍冻结（零平台优先于默认态豁免）', () => {
+  const r = computeVeto({
+    imported: { e1: rec('src.js') },
+    sources: { e1: { id: 'e1', contentHash: 'sha-old' } },
+    serverList: [{ id: 'src.js', enabled: false, disableReason: 'after-import', status: 'failed', supportedSources: [] }],
+    activePlatformId: 'p1',
+    prev: {},
+    now: NOW
+  })
+  assert.strictEqual(r.veto.e1.type, VETO_TYPES.UNLOADED, '零平台在 enabled 判定之前，after-import 豁免只作用于 disabled 分支')
+})
+
+ok('零平台冻结后脚本更新（contentHash 变化）→ 自动解冻', () => {
+  const r = computeVeto({
+    imported: { e1: rec('src.js') },
+    sources: { e1: { id: 'e1', contentHash: 'sha-new' } },
+    serverList: [{ id: 'src.js', enabled: true, status: 'failed', supportedSources: [] }],
+    activePlatformId: 'p1',
+    prev: { e1: { type: VETO_TYPES.UNLOADED, sha: 'sha-old', since: NOW - 86400000 } },
+    now: NOW
+  })
+  assert.strictEqual(r.veto.e1, undefined)
+  assert.strictEqual(r.cleared, 1)
+})
+
 console.log(`\n全部通过（${pass} 项）`)

@@ -165,7 +165,18 @@ async function afterImport(cfg, d, url) {
   if (id && cfg.enableAfterImport !== false) {
     const t = await toggle(cfg, id, true, { owner: info.owner })
     info.enabled = t.success
-    if (!t.success) info.message = '已导入但启用失败：' + t.message
+    if (!t.success) {
+      info.message = '已导入但启用失败：' + t.message
+      // v1.14.2：把「为什么启用失败」原样带回给 hunter（原来只留 message，原因丢失）。
+      // 覆盖范围如实说明：只对 **hunter 自己发起的 toggle** 有效；
+      // 用户在 lxserver 网页手动点启用/加白，hunter 拿不到该响应，也就不会有这个标记。
+      if (t.needUnsafeVM) {
+        info.needUnsafeVM = true
+        info.vmGloballyEnabled = t.vmGloballyEnabled
+        info.requireUnsafe = t.requireUnsafe
+        info.disabledVM = t.disabledVM
+      }
+    }
   }
   return info
 }
@@ -187,7 +198,27 @@ async function toggle(cfg, id, enabled, opts) {
   if (opts && opts.reason) body.reason = opts.reason
   const r = await req(cfg, 'POST', '/api/custom-source/toggle', body, 120000)
   if (!r.ok) return { success: false, message: (r.data && r.data.error) || `HTTP ${r.status}` }
-  if (r.data && r.data.success === false) return { success: false, message: (r.data && (r.data.error || r.data.message)) || '切换失败' }
+  if (r.data && r.data.success === false) {
+    // v1.14.2（2026-11-24）：服务端「启用被回滚」时会明确告诉原因，别再吞掉。
+    // 实测（lxserver handleToggle）：脚本 requireUnsafe 且未加白 → 服务端先写 enabled=true、
+    // 加载失败后回滚成 false，并返回
+    //   { success:false, requireUnsafe:true, message:'该脚本需要原生 VM 模式运行…' }
+    // 或 { success:false, disabledVM:true, error:'VM_DISABLED' }（全局 VM 总闸关着时）。
+    // 从前这里只保留 message，下游只能看到「启用失败」，判不出卡在哪 ——
+    // hunter 于是把它当「用户主动停用」冻 24h，而它其实只差一个 VM 白名单。
+    const d = r.data || {}
+    const msg = String(d.message || '')
+    return {
+      success: false,
+      message: d.error || d.message || '切换失败',
+      needUnsafeVM: !!(d.requireUnsafe || d.disabledVM ||
+        msg.indexOf('原生 VM') !== -1 || d.error === 'VM_DISABLED'),
+      vmGloballyEnabled: d.vmGloballyEnabled,
+      requireUnsafe: !!d.requireUnsafe,
+      disabledVM: !!d.disabledVM,
+      enabled: d.enabled
+    }
+  }
   return { success: true }
 }
 

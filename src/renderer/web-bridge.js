@@ -222,6 +222,8 @@
     jobCancel: () => call('/api/job/cancel', {}),
     jobState: () => call('/api/job/state'),
     patrolStart: () => call('/api/patrol', {}),
+    // v1.14.1：「未知源」冻结按服务端实况重新核对（不是无条件清除）
+    vetoRefresh: () => call('/api/veto/refresh', {}),
     revoke: ids => call('/api/revoke', { ids }),
     serverSync: () => call('/api/server/sync', {}),
     dbClear: () => call('/api/db/clear', {}),

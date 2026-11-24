@@ -189,6 +189,41 @@ app.whenReady().then(() => {
       }
     } catch (e) {}
   }, 60 * 1000)
+  // v1.14.1：「未知源」冻结的短周期复查（桌面版，与 web.js 同款逻辑）。
+  // unloaded 是唯一会「服务端自愈」的冻结类型（用户去服务端点一次允许原生 VM 就好了），
+  // 却和 removed/disabled/isolated 共用 24h 巡检周期 → 实测界面会顶着红色「未知源·冻结」
+  // 十几个小时。这里每 15 分钟核对一次；refreshUnloadedVeto 内部先查有没有 unloaded，
+  // 没有就零请求返回，所以正常情况下不产生任何 HTTP。
+  const VETO_UNLOADED_RECHECK_MS = 15 * 60 * 1000
+  setInterval(() => {
+    try {
+      if (!store || !hunter) return
+      if (hunter.job && hunter.job.running) return
+      const veto = (store.db && store.db.veto) || {}
+      let hasUnloaded = false
+      for (const k of Object.keys(veto)) {
+        const v = veto[k]
+        if (v && (v.type === 'unloaded' || v.type === 'vm-blocked') && !v.partial) { hasUnloaded = true; break }
+      }
+      if (!hasUnloaded) return
+      const last = Number(store.db.vetoUnloadedCheckAt) || 0
+      if (Date.now() - last < VETO_UNLOADED_RECHECK_MS) return
+      // 节流水位：**只记内存，不在这里落盘**（v1.14.2 性能修复，2026-11-24）。
+      // 为什么删：紧跟的 refreshUnloadedVeto() 真解冻时会自己 saveDb()，那次会把水位一起
+      // 落盘；这里再单独写一次，等于把整份 data/sources.json（生产 36MB 级、每天 96 轮）
+      // 白白重写一遍，纯冗余 IO。
+      // 代价：只有「本轮没解冻 / 提前 return」时水位不持久化，进程重启后立刻多跑一次核对；
+      // 核对幂等（只读一次服务端 list，无变化不改任何东西），可以接受。
+      // ★ 内存赋值必须保留：去掉它 last 恒为 0，15 分钟节流会失效、退化成每分钟一次。
+      store.db.vetoUnloadedCheckAt = Date.now()
+      hunter.refreshUnloadedVeto().catch(e => {
+        pushLog({
+          msg: `「未知源」自动复查失败：${String((e && e.message) || e).slice(0, 120)}；15 分钟后重试`,
+          module: '灌入', level: 'warn', at: Date.now()
+        })
+      })
+    } catch (e) {}
+  }, 60 * 1000)
   // 定时爬取：到期后跑增量爬取（文件树 + Releases），已抓取的按 blob sha / 资产标识判重跳过，
   // 只收新音源；内容有变化的就地更新并重置检测结果。
   // 勾了「爬取结束后自动灌入」则走 runAutoPipeline：爬取 → 检测新增/变化音源 → 灌入可用音源。
@@ -746,6 +781,9 @@ ipcMain.handle('job:state', guard(() => ({ running: hunter.job.running, type: hu
 
 ipcMain.handle('patrol:start', guard(async () => await hunter.runPatrol()))
 
+// v1.14.1：「未知源」冻结按服务端实况重新核对（桌面版；Web 版走 web.js 的 POST /api/veto/refresh）
+ipcMain.handle('veto:refresh', guard(async () => await hunter.refreshUnloadedVeto()))
+
 ipcMain.handle('revoke', guard(async (e, ids) => await hunter.runRevoke(ids)))
 
 ipcMain.handle('db:undedupe', guard((e, ids) => {
@@ -909,7 +947,11 @@ ipcMain.handle('import:url', guard(async (e, url, name) => {
 ipcMain.handle('service:toggle', guard(async (e, id, enabled, owner, reason) => {
   const svc = getActiveService(store.config)
   if (!svc) throw new Error(NO_ACCOUNT_ERR)
-  return await svc.adapter.toggle(svc.acct, id, enabled, { owner, reason })
+  const r = await svc.adapter.toggle(svc.acct, id, enabled, { owner, reason })
+  // v1.14.2（2026-11-24）：启用被服务端以「需要原生 VM」回滚时，把原因记进账本
+  // （桌面版与网页版同口径，见 server/web.js 同一处注释）。
+  try { if (hunter) hunter.noteToggleNeedUnsafeVM(id, r) } catch (err) { /* 记账失败不影响开关结论 */ }
+  return r
 }))
 ipcMain.handle('service:remove', guard(async (e, id, owner) => {
   const svc = getActiveService(store.config)

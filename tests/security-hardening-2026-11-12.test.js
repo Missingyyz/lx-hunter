@@ -120,7 +120,7 @@ ok(/const attemptsBefore = metrics\.attempts/.test(checkerSrc3), 'testPlatform �
 ok(/metrics\.attempts === attemptsBefore &&\s*\n\s*\/已知失败\|跳过重复请求\|RATE_LIMIT\|限流\/i\.test\(lastMsg\)\) {\s*\n\s*return done\(\{ status: 'untested'/.test(checkerSrc3), '脚本拦截类拒绝记 untested（语义白名单，网络错误仍 failed）')
 ok(/多个平台报同一个错/.test(checkerSrc3), 'hint 文案修正（不再声称「所有平台」）')
 ok(/this\._deepIncomplete\(cur\) \|\| this\._deepIncomplete\(e\)/.test(hunterSrc), '_dedupe 深检完整性守卫（含 untested 不定胜负，共用 _deepIncomplete）')
-ok(/vals\.some\(pl => !pl \|\| pl\.status === 'untested' \|\| pl\.status === 'pending'\)/.test(hunterSrc), '完整性判定覆盖 untested/pending')
+ok(/vals\.some\(pl => !pl \|\| pl\.status === 'untested' \|\| pl\.status === 'pending'\)/.test(hunterSrc) || /if \(pl\.status === 'pending'\) return true[\s\S]{0,400}if \(pl\.status === 'untested'\)/.test(hunterSrc), '完整性判定覆盖 untested/pending（2026-11-22 起 quick 产物按消息分流，限流仍不完整）')
 
 
 console.log('--- ⑯ P-1508 规则化：同名冲突自动补测 ---')

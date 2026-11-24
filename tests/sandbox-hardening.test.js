@@ -390,7 +390,8 @@ console.log('\n=== ④ 变异测试：断言非空跑 ===')
       console.log(JSON.stringify({ error: '变异点未找到，测试需同步更新' }))
     } else {
     const mutated = orig.replace(marker, 'void (sandboxGlobals[key])')
-    const TMP = path.join(${JSON.stringify(ROOT)}, 'src', 'core', '_sb_mutant.js')
+    // 文件名带 pid：组内并行时避免与其他进程（或自身并发实例）撞同一个固定文件名
+    const TMP = path.join(${JSON.stringify(ROOT)}, 'src', 'core', '_sb_mutant_' + process.pid + '.js')
     fs.writeFileSync(TMP, mutated, 'utf8')
 
     const main = async () => {

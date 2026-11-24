@@ -709,6 +709,23 @@ route('GET', '/api/sources', guard(() => {
 // 冻结是「服务端动作 → 本地不再重灌」的桥；人工解除后下一轮会按服务端现状重新判定，
 // 所以解除只在「用户确认服务端已恢复/想强制重灌」时才用。
 route('GET', '/api/veto', guard(() => ({ veto: store.db.veto || {} })))
+// v1.14.1：「重新核对服务端状态」—— 手动触发一次 unloaded 复查，立刻把已恢复的冻结解开。
+// 为什么不复用 /api/veto/clear：clear 是**无条件**删记录（用户强制要求重灌时才用），
+// 而这里是**按服务端实况判定**——服务端还没恢复就保持冻结，不会因为点了按钮就放出已死的源。
+route('POST', '/api/veto/refresh', guard(async () => {
+  const r = await hunter.refreshUnloadedVeto()
+  if (!r.healthy) {
+    return { ok: false, checked: 0, cleared: 0, message: '暂时无法核对（任务进行中或服务端列表读不到），请稍后再试' }
+  }
+  if (!r.checked) return { ok: true, checked: 0, cleared: 0, message: '当前没有「未知源」冻结记录，无需核对' }
+  return {
+    ok: true, checked: r.checked, cleared: r.cleared,
+    names: r.names,
+    message: r.cleared
+      ? `核对完成：${r.cleared} 条服务端已恢复加载，已解除冻结`
+      : `核对完成：${r.kept} 条仍处于未知源状态，冻结保持不变`
+  }
+}))
 route('POST', '/api/veto/clear', guard((req, res, ctx) => {
   assertAdmin(req, '解除服务端处置冻结')
   if (!store.db.veto || typeof store.db.veto !== 'object') store.db.veto = {}
@@ -987,7 +1004,11 @@ route('POST', '/api/service/toggle', guard(async (req, res, ctx) => {
   if (!svc) throw new Error(NO_ACCOUNT_ERR)
   // reason 透传（2026-11-13）：停用原因标签随开关写进服务端 sources.json 的 disableReason；
   // 不传时服务端按 manual 兜底（网页手动停用本来就是 manual 语义，不传也正确）。
-  return await svc.adapter.toggle(svc.acct, ctx.body.id, ctx.body.enabled, { owner: ctx.body.owner, reason: ctx.body.reason })
+  const r = await svc.adapter.toggle(svc.acct, ctx.body.id, ctx.body.enabled, { owner: ctx.body.owner, reason: ctx.body.reason })
+  // v1.14.2（2026-11-24）：用户点启用时若被服务端以「需要原生 VM」回滚，把原因记进账本，
+  // 下次刷新冻结表才能判 vm-blocked（短复查自愈）而不是 disabled（冻 24h）。
+  try { hunter.noteToggleNeedUnsafeVM(ctx.body.id, r) } catch (e) { /* 记账失败不影响开关结论 */ }
+  return r
 }))
 route('POST', '/api/service/remove', guard(async (req, res, ctx) => {
   assertAdmin(req, '删除服务音源')
@@ -1321,6 +1342,48 @@ server.listen(PORT, '0.0.0.0', () => {
       }
     } catch (e) {}
   }, 60 * 1000)
+
+  // v1.14.1：「未知源」冻结的短周期复查（与巡检无关，独立定时器）
+  // 背景（2026-11-24 实测）：豆包 v9.1.0 判 unloaded 冻在 12:27:31，17950 在 12:44:36
+  // 就自愈加载成功，但冻结表只在「灌入 / 巡检收尾」重算，巡检间隔 24h → 界面顶着红色
+  // 「未知源·冻结」十几个小时，用户点灌入也是 skip。unloaded 是唯一会**服务端自愈**的
+  // 冻结类型（removed/disabled/isolated 是用户主动处置，必须继续等 24h 不被误改）。
+  // 代价控制：refreshUnloadedVeto 内部第一件事就是查有没有 unloaded/vm-blocked，没有就零请求直接返回，
+  // 所以这个 15 分钟轮询在正常情况下不发任何 HTTP。
+  const VETO_UNLOADED_RECHECK_MS = 15 * 60 * 1000
+  setInterval(() => {
+    try {
+      if (!store || !hunter) return
+      if (hunter.job && hunter.job.running) return          // 有任务在跑就跳过，那几条链路自己会刷
+      const veto = (store.db && store.db.veto) || {}
+      let hasUnloaded = false
+      for (const k of Object.keys(veto)) {
+        const v = veto[k]
+        if (v && (v.type === 'unloaded' || v.type === 'vm-blocked') && !v.partial) { hasUnloaded = true; break }
+      }
+      if (!hasUnloaded) return                              // ⑤ 零请求快路径
+      const last = Number(store.db.vetoUnloadedCheckAt) || 0
+      if (Date.now() - last < VETO_UNLOADED_RECHECK_MS) return
+      // 节流水位：**只记内存，不在这里落盘**（v1.14.2 性能修复，2026-11-24）。
+      // 为什么删：紧跟的 refreshUnloadedVeto() 真解冻时会自己 saveDb()，那次会把水位一起
+      // 落盘；这里再单独写一次，等于把整份 data/sources.json（生产 36MB 级、每天 96 轮）
+      // 白白重写一遍，纯冗余 IO。
+      // 代价：只有「本轮没解冻 / 提前 return」时水位不持久化，进程重启后立刻多跑一次核对；
+      // 核对幂等（只读一次服务端 list，无变化不改任何东西），可以接受。
+      // ★ 内存赋值必须保留：去掉它 last 恒为 0，15 分钟节流会失效、退化成每分钟一次。
+      store.db.vetoUnloadedCheckAt = Date.now()
+      hunter.refreshUnloadedVeto()
+        .then(r => {
+          if (r && r.checked) store.db.vetoUnloadedCheckAt = Date.now()
+        })
+        .catch(e => {
+          pushLog({
+            msg: `「未知源」自动复查失败：${String((e && e.message) || e).slice(0, 120)}；15 分钟后重试`,
+            module: '灌入', level: 'warn', at: Date.now()
+          })
+        })
+    } catch (e) {}
+  }, 60 * 1000)   // 每分钟探一次「到点没到点」，实际执行间隔由 VETO_UNLOADED_RECHECK_MS 决定
 
   setInterval(() => {
     try {

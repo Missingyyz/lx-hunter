@@ -958,8 +958,11 @@ async function crawlFetch(rawUrl, options, timeoutMs, mirrorId, preferredId) {
       }
       attempts.push({ mirror: c.id, url: c.url, status: res.status, ms: Date.now() - t0 })
       if (res.ok) return { res, url: c.url, mirror: c.id, attempts }
-      if (res.status === 404) { // 404 说明镜像工作正常但文件不在，继续试下一个没意义
-        return { res, url: c.url, mirror: c.id, attempts }
+      // Q3（2026-11-23）：单候选 404 不再短路整条镜像链。记入 attempts 后继续试下一条；
+      // 只有全候选都 404/410 才在循环末尾收敛成 all-gone（见下方 return）。
+      // 保留"源站 404"信息（attempts 里已有 status），供下游区分源站404/代理404。
+      if (res.status === 404 || res.status === 410) {
+        continue
       }
     } catch (e) {
       if (e && (e.code === 'REDIRECT_BLOCKED' || e.code === 'REDIRECT_TOO_MANY')) {
@@ -974,6 +977,13 @@ async function crawlFetch(rawUrl, options, timeoutMs, mirrorId, preferredId) {
       }
       attempts.push({ mirror: c.id, url: c.url, error: String(e && e.message || e), ms: Date.now() - t0 })
     }
+  }
+  // Q3 收敛：全候选都 404/410 → 返回可区分的 all-gone 结果；下游据此只在这种情况下判 dead。
+  const statuses = attempts.filter(a => a && a.status).map(a => a.status)
+  const all404 = statuses.length > 0 && statuses.every(st => st === 404 || st === 410)
+  if (all404) {
+    const last = attempts[attempts.length - 1]
+    return { res: { status: last.status, headers: { get: () => null }, allGone: true }, url: last.url, mirror: last.mirror, attempts, allGone: true }
   }
   return { res: null, url: rawUrl, mirror: null, attempts }
 }

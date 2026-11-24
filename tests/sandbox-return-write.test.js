@@ -505,7 +505,8 @@ if (!QUICK) {
  */
 console.log('\n=== 危害链：逃逸后到底能做什么（子进程方案的关键断言） ===')
 {
-  const MARK = path.join(ROOT, 'tests', '.sandbox-harm-marker.tmp')
+  // marker 带 pid：组内并行时不同测试进程用各自的文件，避免撞同一个固定路径
+  const MARK = path.join(ROOT, 'tests', '.sandbox-harm-marker_' + process.pid + '.tmp')
   const markFwd = MARK.split(path.sep).join('/')
   try { require('fs').unlinkSync(MARK) } catch (e) {}
 
