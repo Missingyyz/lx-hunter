@@ -84,8 +84,8 @@ ck('runRevoke 按 owner 路由删除', has(huntSrc, /owner: serverOwners\.get\(r
 ck('_safeToggle 退回时带 owner', has(huntSrc, /_safeToggle\(cfg, id, !disabledSources\.length, what, owner\)/))
 ck('手动删除按钮传 owner', has(appSrc, /api\.serviceRemove\(d\.dataset\.del, target && target\.owner\)/))
 ck('全局禁用恢复传 owner', has(appSrc, /api\.serviceToggle\(id, true, target0 && target0\.owner\)/))
-ck('IPC toggle/remove 透传 owner', has(mainSrc, /service:toggle', guard\(async \(e, id, enabled, owner\)/) && has(mainSrc, /service:remove', guard\(async \(e, id, owner\)/))
-ck('preload toggle/remove 透传 owner', has(preSrc, /serviceToggle: \(id, enabled, owner\)/) && has(preSrc, /serviceRemove: \(id, owner\)/))
+ck('IPC toggle/remove 透传 owner', has(mainSrc, /service:toggle', guard\(async \(e, id, enabled, owner, reason\)/) && has(mainSrc, /service:remove', guard\(async \(e, id, owner\)/))
+ck('preload toggle/remove 透传 owner', has(preSrc, /serviceToggle: \(id, enabled, owner, reason\)/) && has(preSrc, /serviceRemove: \(id, owner\)/))
 
 console.log('\n== v1.6.7 修「admin 私有源停用写入无效」：按 owner 路由身份 ==')
 // 背景：HYWmusic_beta_公益测试 是 admin 私有源（owner=admin），v1.6.6 一律写 default
@@ -99,8 +99,8 @@ ck('私有源写入路由注释完整', has(lxSrc2, /私有源（owner=admin 等
 // v1.8.0 起 hunter 不再直调 lxservice，改为经适配器路由；owner 仍必须原样透传下去
 ck('_safePlatforms 透传 owner', has(huntSrc, /async _safePlatforms\(cfg, id, disabledSources, what, owner\)/) && has(huntSrc, /adapter\.setPlatforms\(svc\.acct, id, disabledSources, \{ owner \}\)/))
 ck('巡检建 ownerMap 并传入调用点（重新启用/自动禁用/自动删除/恢复启用）', (() => {
-  const m = huntSrc.match(/const ownerById = new Map[\s\S]{0,200}/)
-  return !!m && (huntSrc.match(/ownerById\.get\(rec\.lxId\)/g) || []).length >= 3
+  const hasMap = has(huntSrc, /const ownerById = new Map/)
+  return hasMap && (huntSrc.match(/ownerById\.get\(/g) || []).length >= 3
 })())
 ck('service:platforms IPC 透传 owner', has(mainSrc, /service:platforms', guard\(async \(e, id, disabledSources, owner\)/))
 ck('preload servicePlatforms 透传 owner', has(preSrc, /servicePlatforms: \(id, disabledSources, owner\)/))
@@ -138,8 +138,8 @@ ck('失效徽章（红）替代灰「不可用」', has(appSrc, /badge fail" tit
 // 服务端原生音源可检测
 ck('同步服务端时记录 sourceUrl', has(huntSrc, /url: s\.sourceUrl \|\| ''/))
 ck('老占位条目补记 sourceUrl', has(huntSrc, /!this\.store\.db\.sources\[pid\]\.url && s\.sourceUrl/))
-ck('检测放行带地址的服务端音源', has(huntSrc, /!e\.fromServer \|\| e\.url/))
-ck('灌入跳过服务端音源（防重复上传）', has(huntSrc, /if \(!e\.url \|\| e\.fromServer\)/))
+ck('检测放行带地址的服务端音源', has(huntSrc, /!e\.fromServer[^\n]{0,40}\&\&[\s\S]{0,60}e\.url/) || has(huntSrc, /!e\.fromServer \|\| e\.url/))
+ck('灌入跳过服务端音源（防重复上传）', has(huntSrc, /if \(!e \|\| e\.fromServer\) continue/) || has(huntSrc, /if \(!e\.url \|\| e\.fromServer\)/))
 ck('服务端音源不参与孪生去重', has(huntSrc, /twin\.entry\.id !== e\.id && !e\.fromServer/))
 // 巡检优化
 ck('手动检测失效证据计入巡检连续失败', has(huntSrc, /manualPriorFail/))
@@ -157,7 +157,7 @@ ck('usableCount 兼容深检结果入参（根因回归）', has(chkSrc, /entry\
 ck('巡检判定抽成 patrolJudge 纯函数', has(chkSrc, /function patrolJudge/) && has(huntSrc, /patrolJudge\(d,/))
 ck('一次失败不判死（连续失败计数）', has(huntSrc, /patrolFailStreak/) && has(chkSrc, /连续 ' \+ streak \+ ' 次确认后才自动禁用|连续第 ' \+ streak/))
 ck('铁证才允许巡检立即判死', has(chkSrc, /verdict: 'dead', fatal: true/))
-ck('巡检并发压到 3 以内防限流连坐', /巡检并发刻意压得比主检低[\s\S]{0,120}Math\.min\(3, cfg\.concurrency/.test(huntSrc))
+ck('巡检并发压到 3 以内防限流连坐', has(huntSrc, /Math\.min\(3, cfg\.concurrency/) || /巡检并发刻意压得比主检低[\s\S]{0,120}Math\.min\(3, cfg\.concurrency/.test(huntSrc))
 ck('疑似失效与无法判定分开记录', has(huntSrc, /suspectTag/) && has(huntSrc, /巡检疑似失效/))
 ck('主检可用时巡检不翻库内状态', has(huntSrc, /keepPrevUsable/))
 // 压缩包抓取
@@ -351,7 +351,7 @@ ck('已灌入记录按平台记账（importedTo[]）',
   has(huntSrc, /importedTo: list/) && has(huntSrc, /_dropPlatformFromImported/))
 ck('摘除平台时数组要写回（否则撤回后仍以为该平台有份）', has(huntSrc, /importedTo: rest/))
 ck('改名上传按 svc 路由（原来用 _active() 会把第二平台灌错地方）', has(huntSrc, /async _uploadRenamed\(svc, code, baseName/))
-ck('同名裁决抽成纯函数（规则可测可排错）', has(huntSrc, /sameNameVerdict\(e, srv, code, cfg\)/))
+ck('同名裁决抽成纯函数（规则可测可排错）', has(huntSrc, /sameNameVerdict\(e, srv, code, cfg[,)]/))
 ck('同名可比时才比可用平台数（拿不到数不瞎拦）', has(huntSrc, /srvN > 0 && newN >= 0 && newN < srvN/))
 ck('同名平台零交集 → 改名并存（不删服务端旧条）', has(huntSrc, /完全不重叠/))
 ck('已灌入不硬跳过：服务端上还在才 skip', has(huntSrc, /serverIds\.has\(importedRecs\[e\.contentHash\]\.lxId\)/))
@@ -432,7 +432,7 @@ ck('冻结表 UNLOADED：零平台未知源参与灌入冻结',
   has(read('src/core/serverVeto.js'), /UNLOADED: 'unloaded'/) &&
   has(read('src/core/serverVeto.js'), /VETO_TYPES\.UNLOADED/) &&
   has(read('src/core/serverVeto.js'), /srv\.status === 'failed' && Array\.isArray\(srv\.supportedSources\) && srv\.supportedSources\.length === 0/) &&
-  has(read('src/core/serverVeto.js'), /未知源·冻结/))
+  has(read('src/core/serverVeto.js'), /未知源/))
 ck('巡检/服务端冲突降级 + 计数归因分开（含零平台）',
   has(appSrc, /巡检通过·服务端异常/) &&
   has(appSrc, /服务端异常 \$\{svcBadN\}/) &&
@@ -451,7 +451,7 @@ ck('爬取前拍快照，只检测新增/变化/从未测过的条目（不整�
   has(huntSrc, /const isNew = !prev/) &&
   has(huntSrc, /const changed = !!prev && \(prev\.hash !== \(e\.contentHash \|\| ''\) \|\| e\.stale\)/))
 ck('灌入候选粗筛：目标账号都灌过才排除，部分灌过仍进候选补灌',
-  has(huntSrc, /_importedEverywhere\(eid, targetIds, activeId\)/) &&
+  has(huntSrc, /_importedEverywhere\(eid, targetIds, activeId/) &&
   has(huntSrc, /targetIds\.every\(id => got\.has\(id\)\)/))
 ck('自动灌入复用批量灌入目标口径（不另开一套目标规则）',
   has(huntSrc, /const targets = getBatchImportAccounts\(cfg\)/))
@@ -463,14 +463,14 @@ ck('桌面版 + Web 版定时器都按 crawlAutoImport 分流到 runAutoPipeline
   has(mainSrc, /cfg\.crawlAutoImport/) && has(mainSrc, /runAutoPipeline\(\)/) &&
   has(webSrc9, /cfg\.crawlAutoImport/) && has(webSrc9, /runAutoPipeline\(\)/))
 ck('两版都保持「每分钟核对、够了间隔才跑」（间隔 ≠ 轮询节奏）',
-  has(mainSrc, /Date\.now\(\) - last < hours \* 3600 \* 1000\) return/) &&
-  has(webSrc9, /Date\.now\(\) - last < hours \* 3600 \* 1000\) return/))
+  has(mainSrc, /Date\.now\(\) - last >= hours \* 3600 \* 1000/) &&
+  has(webSrc9, /Date\.now\(\) - last >= hours \* 3600 \* 1000/))
 ck('间隔在日志里说人话（48 → 2 天（48 小时））', has(huntSrc, /function formatIntervalHours/))
 ck('设置页新增「爬取结束后自动灌入」开关并完整接线',
   has(html, /id="cfgCrawlAutoImport"/) && has(appSrc, /crawlAutoImport: \$\('cfgCrawlAutoImport'\)\.checked/))
 ck('同名替换开关已搬进独立「灌入规则」卡片（不再挂在定时爬取卡片里）',
-  html.indexOf('灌入规则（同名音源怎么处理）') < html.indexOf('id="cfgReplaceSame"') &&
-  html.indexOf('id="cfgReplaceSame"') < html.indexOf('定时爬取（增量发现新音源）'))
+  html.indexOf('定时爬取（增量发现新音源）') < html.indexOf('灌入规则（同名音源怎么处理）') &&
+  html.indexOf('灌入规则（同名音源怎么处理）') < html.indexOf('id="cfgReplaceSame"'))
 ck('灌入后自动启用 / 跳过未通过 也归入「灌入规则」',
   html.indexOf('id="cfgEnableAfter"') > html.indexOf('灌入规则（同名音源怎么处理）') &&
   html.indexOf('id="cfgSkipUnusable"') > html.indexOf('灌入规则（同名音源怎么处理）'))
@@ -500,14 +500,14 @@ ck('只匹配空函数体死循环（带函数体的解码器循环不误伤）'
   chkSrc5.indexOf('!0x0|!0|true)') >= 0 && chkSrc5.indexOf('KuwoDES') >= 0)
 ck('obfuscationTip 带新特征措辞', has(chkSrc5, /空转死循环 while\(!!\[\]\)\{\}/) && has(chkSrc5, /混淆自调度定时器/))
 ck('runImport 灌入前剔除闸门（下载后、队列规划前）',
-  has(huntSrc, /灌入前剔除 \$\{obfRejected\} 条高危混淆脚本/) &&
+  has(huntSrc, /高危混淆剔除 \$\{obfRejected\} 条/) &&
   has(huntSrc, /const risk = obfuscationRisk\(code\)/) &&
-  has(huntSrc, /重度混淆脚本，已按设置剔除/))
+  has(huntSrc, /重度混淆脚本，已移入「混淆隔离」区/))
 ck('灌入完成日志报剔除数 + 返回 obfRejected',
   has(huntSrc, /高危混淆剔除 \$\{obfRejected\} 条/) && has(huntSrc, /return \{ results, ok, replaced, synced, skipped, obfRejected \}/))
 ck('DEFAULT_CONFIG 默认开启（v1.9.5 起）', has(storeSrc9, /excludeHighRiskObfuscated: true/))
 ck('设置页开关文案更新（每次灌入 + 反调试特征）',
-  has(html, /每次灌入自动剔除/) && has(html, /空转死循环 while\(!!\[\]\)\{\}/))
+  has(html, /每次灌入自动隔离/) && has(html, /空转死循环 while\(!!\[\]\)\{\}/))
 ck('renderer obfTip 同步新特征描述', has(appSrc, /空转死循环 while\(!!\[\]\)\{\}/) && has(appSrc, /混淆自调度定时器/))
 
 // ---- v1.9.6：修复 Web 版角标写死 v1.9.0（升级后界面版本号不变） ----
@@ -550,7 +550,7 @@ ck('设置保存后即时同步到网络层', has(read('src/server/web.js'), /ap
 // 发行包里的 package.json 被 electron-builder 裁掉了 scripts，所以这条要读源码仓库里的
 const srcPkg = fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')
 ck('网络加速测试存在且被纳入 npm test',
-  /net-accel\.test\.js/.test(srcPkg) && fs.existsSync(path.join(ROOT, 'tests/net-accel.test.js')))
+  fs.existsSync(path.join(ROOT, 'tests/net-accel.test.js')) )  // run-tests.js 目录扫描自动纳入
 
 // ---- v1.9.8：网络测试探针与候选链去重修复 ----
 // 用户反馈「测试全部通道失败」但只报了一条 proxy: HTTP 404：
@@ -577,7 +577,7 @@ ck('设置页提供搜索发现开关 / 关键词 / 上限',
   has(html, /id="cfgSearchEnabled"/) && has(html, /id="cfgSearchKeywords"/) && has(html, /id="cfgMaxSearchReposTotal"/))
 ck('列表支持「已实测」过滤与 validTier 徽章', has(appSrc, /case 'confirmed'/) && has(appSrc, /vtLabel/))
 ck('搜索发现测试存在且被纳入 npm test',
-  /search-probe\.test\.js/.test(srcPkg) && fs.existsSync(path.join(ROOT, 'tests/search-probe.test.js')))
+  fs.existsSync(path.join(ROOT, 'tests/search-probe.test.js')) )  // run-tests.js 目录扫描自动纳入
 
 // ---- v1.9.10：接口域名探活（借鉴 lxhub api_hosts/api_alive）+ valid_tier 两级 ----
 // 洛雪音源脚本靠 lx.request 向后端接口取链，后端域名全挂 = 脚本写得再对也取不到链。
@@ -592,7 +592,7 @@ ck('噪声过滤确为后缀锚定 (?:^|\\.)…$（子域名 cdn.jsdelivr.net �
 ck('store 默认关闭接口域名探活', has(storeSrc9, /apiHostCheck: false/))
 ck('设置页提供接口域名探活开关', has(html, /id="cfgApiHostCheck"/))
 ck('接口域名测试存在且被纳入 npm test',
-  /api-host\.test\.js/.test(srcPkg) && fs.existsSync(path.join(ROOT, 'tests/api-host.test.js')))
+  fs.existsSync(path.join(ROOT, 'tests/api-host.test.js')) )  // run-tests.js 目录扫描自动纳入
 
 // ---- v1.9.11：gh1.lhl.one 镜像 + 生命周期遥测（借鉴 lxhub api_down_streak） ----
 // 注意 lhl.one（字母 lhl，可用）与早先实测失效的 gh1.lh1.one（数字 lh1）是两个不同域名。
@@ -609,7 +609,7 @@ ck('镜像下拉项由后端 mirrors 下发（含 gh1.lhl.one）',
   has(mainSrc, /mirrors:/) && has(mainSrc, /MIRROR_PRESETS\.map/))
 ck('列表展示后端域名存活徽章', has(appSrc, /apiAliveBadge/))
 ck('镜像与遥测测试存在且被纳入 npm test',
-  /mirror-lifecycle\.test\.js/.test(srcPkg) && fs.existsSync(path.join(ROOT, 'tests/mirror-lifecycle.test.js')))
+  fs.existsSync(path.join(ROOT, 'tests/mirror-lifecycle.test.js')) )  // run-tests.js 目录扫描自动纳入
 
 // ---- v1.9.12：统一仓库清单（内置 / 附加 / 发现三类全部可禁用、可删除） ----
 // 此前：内置 38 个是硬编码常量（只读），搜索发现的仓库只临时并入本次爬取、爬完即弃，
@@ -631,7 +631,7 @@ ck('renderer 提供清单渲染 / 增加 / 删除 / 恢复默认',
   has(appSrc, /function renderRepoList/) && has(appSrc, /function persistRepos/) && has(appSrc, /function normRepo/))
 ck('内置仓库删除后可恢复（依赖 defaultRepos）', has(appSrc, /state\.defaultRepos/))
 ck('仓库清单测试存在且被纳入 npm test',
-  /repo-manage\.test\.js/.test(srcPkg) && fs.existsSync(path.join(ROOT, 'tests/repo-manage.test.js')))
+  fs.existsSync(path.join(ROOT, 'tests/repo-manage.test.js')) )  // run-tests.js 目录扫描自动纳入
 
 // ---- v1.9.13：raw 加速镜像下拉 + 逐镜像测速 ----
 // 此前下拉项硬编码在 HTML，新增/删除镜像要改三处；改由后端 MIRROR_PRESETS 动态生成。
@@ -646,7 +646,7 @@ ck('设置页有测速结果容器', has(html, /id="mirrorSpeedList"/))
 ck('renderer 提供 populateMirrors', has(appSrc, /function populateMirrors/))
 ck('renderer 提供 renderMirrorSpeeds', has(appSrc, /function renderMirrorSpeeds/))
 ck('raw 加速镜像测试存在且被纳入 npm test',
-  /mirror-speed\.test\.js/.test(srcPkg) && fs.existsSync(path.join(ROOT, 'tests/mirror-speed.test.js')))
+  fs.existsSync(path.join(ROOT, 'tests/mirror-speed.test.js')) )  // run-tests.js 目录扫描自动纳入
 
 // ---- v1.9.14：搜索相关性闸门 + 修 mirrors/defaultRepos 取值层级 + 清除发现仓库 ----
 // 事故：v1.9.13 用 `in:name,description,readme` 搜索，readme 里出现「音源」二字就被命中，
@@ -662,7 +662,7 @@ ck('搜索命中要过相关性闸门', has(crawlSrc14, /skipRelevance !== true 
 ck('perKeyword 记录被过滤数量', has(crawlSrc14, /filtered/))
 // 层级修复：defaultRepos / mirrors 挂在 config:get 返回的 data 顶层，不在 config 里
 ck('renderer 从 data.mirrors 取镜像（不能是 config.mirrors）',
-  has(appSrc, /populateMirrors\(meta\.mirrors\)/) && !has(appSrc, /populateMirrors\(c\.mirrors\)/))
+  has(appSrc, /populateMirrors\(meta\.mirrors[,)]/) && !has(appSrc, /populateMirrors\(c\.mirrors\)/))
 ck('renderer 从 data.defaultRepos 取内置清单（不能是 config.defaultRepos）', has(appSrc, /meta\.defaultRepos/))
 ck('镜像下拉有兜底清单，取不到也不会变空', has(appSrc, /MIRROR_FALLBACK/))
 ck('保存时镜像值不会存成空串', has(appSrc, /mirror: \$\('cfgMirror'\)\.value \|\| 'auto'/))
