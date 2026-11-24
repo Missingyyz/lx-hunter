@@ -24,6 +24,11 @@ const { compareVerdict, describeQuality, profile: qualityProfile, compareImportQ
 // 复用 outbound-policy.js 的私网/回环判据（checkOutbound），不自写一套——
 // 那里是「私网/回环硬阻断、普通域名只审计不阻断」的唯一来源。
 const { checkOutbound, auditDomain, normalizeHost } = require('./outbound-policy')
+// 2026-11-23 恶意源治理 + Q3 404 收敛的单一真值来源（纯函数，零副作用）
+const maliciousGuard = require('./maliciousGuard')
+const { guardImport, filterImportCandidates, isMaliciousHash, allGone } = maliciousGuard
+// 静态情报（2026-11-24）：域名 IOC 观察模式（只审计不改行为）+ hash 永不信任硬否决
+const { matchDomainIoc, MALICIOUS_API_DOMAINS } = maliciousGuard
 
 /**
  * dupReason 取值（去重废弃原因）——**唯一来源**（v1.13.13）。
@@ -827,6 +832,21 @@ class Hunter {
     // 长任务循环内的进度写盘节流（性能优化 v1.13.10）：17MB sources.json 全量同步写盘很贵，
     // 循环内不再每 10/20 条就写，改为距上次写 ≥60s 才写一次；任务收尾仍同步 saveDb 保证落盘。
     this._lastThrottledSave = 0
+  }
+
+  /**
+   * 静态情报·域名 IOC【观察模式】（2026-11-24，用户拍板：先审计不拦截）。
+   * 对脚本文本/URL 命中恶意 API 域名时，只写只读审计字段 e.domainIocHits 与一条日志；
+   * 绝不改 status/usable/suspected/quarantined/灌入判定——现有消费方不读该字段 ⇒ 零倒退。
+   * 归一化域名清单在 maliciousGuard.MALICIOUS_API_DOMAINS，观察期结束再决定是否升级硬拦截。
+   */
+  _noteDomainIoc(e, code, phase) {
+    if (!e || typeof e !== 'object' || e.fromServer) return
+    const hits = matchDomainIoc(code, (e.deep && e.deep.platforms && Object.values(e.deep.platforms)
+      .map(p => p && p.url).filter(Boolean)) || e.apiHosts)
+    if (!hits.length) return
+    e.domainIocHits = Array.from(new Set((Array.isArray(e.domainIocHits) ? e.domainIocHits : []).concat(hits)))
+    this.log(`静态情报观察：${phase || '检测'}命中恶意 API 域名 IOC（${hits.join('、')}）→ 仅记录，不改变判定/灌入：${e.lxName || e.scriptName || e.name || e.id}`, '安全', 'warn')
   }
 
   /** 长任务进度写盘：节流版，收尾请仍用 store.saveDb() 保证最终落盘。 */
@@ -2980,7 +3000,8 @@ class Hunter {
         e.obfHits = risk.hits
         // v1.13.7：外联域名画像（静态扫描参考画像，非安全结论），隔离页展示供信任决策
         e.obfDomains = obfDomains(code)
-        if (e.contentHash && trustedHashes.includes(e.contentHash)) {
+        // 静态情报·硬否决（2026-11-24）：恶意指纹即使用户/历史信任过也不放行，落回隔离。
+        if (e.contentHash && !isMaliciousHash(e.contentHash) && trustedHashes.includes(e.contentHash)) {
           e.obfTrusted = true
           e.quarantined = false
           if (e.status === 'quarantined') e.status = 'ok'
@@ -2997,7 +3018,8 @@ class Hunter {
         // 否则「隔离区点一次试跑 → 下次扫描自动写入 trustedObfHashes → 永久放行」，
         // 用户全程没确认过，与「不自动帮用户启用」的红线直接冲突。
         // 这个条件是本条自动信任路径的**唯一入口闸门**，不要因为「反正是 allow 档」删掉它。
-        if (cfg.autoTrustCleanObf !== false && e.contentHash && !trustedHashes.includes(e.contentHash) && e.deep && e.deep.checkedAt && !isProbeOnlyDeep(e)) {
+        // 静态情报·硬否决（2026-11-24）：恶意指纹永不自动信任（保持隔离，跳过自动信任分支）。
+        if (cfg.autoTrustCleanObf !== false && e.contentHash && !isMaliciousHash(e.contentHash) && !trustedHashes.includes(e.contentHash) && e.deep && e.deep.checkedAt && !isProbeOnlyDeep(e)) {
           // P-1432 OPT-1 / v1.10.8：判据收敛到 checker.classifyQuarantineTrust 单一来源，
           // 不再在这里抄第三份「spin/selfSched/eval 任一命中」的字面量。
           // 自动信任是**无人确认**的自动化路径，因此只认 allow 档（零可疑特征）——
@@ -3059,6 +3081,10 @@ class Hunter {
     const name = e.lxName || e.scriptName || e.name || id
     if (trust) {
       if (!e.contentHash) throw new Error('该条目没有内容指纹（contentHash），无法按内容信任')
+      // 静态情报·硬否决（2026-11-24）：恶意指纹条目即使用户点信任也拒绝放行（永不信任）。
+      if (isMaliciousHash(e.contentHash)) {
+        throw new Error('安全硬否决：该条目命中恶意脚本指纹黑名单，永不信任，无法放行')
+      }
       // P-1432 OPT-1 / v1.10.8：判据收敛到 checker.classifyQuarantineTrust 单一来源。
       // 旧写法在这里抄了「spin/selfSched/eval 任一命中 → 抛错拒绝」，导致隔离页 4/6 条灰死。
       //
@@ -3613,6 +3639,7 @@ class Hunter {
           if (e.fetchMirror) this.mirrorPref = e.fetchMirror
           if (e.status === 'ok' && code) {
             hashed++
+            this._noteDomainIoc(e, code, '指纹检测')   // 观察模式：仅审计，不改行为
             if (!e.suspected) { noSource++; this._autoLearnBlockPattern(e) }   // P-1434：非音源自动入特征库
             if (e.stale) { e.stale = false; e.staleAt = 0 }   // 已重新下载校验，清除待重下标记
             // 检测完还没深检：先清掉旧的深检结果标记（内容已变则旧结果作废）
@@ -3705,6 +3732,17 @@ class Hunter {
     this.jobGate('灌入', (ids && ids.length ? ids.length + ' 条' : '全部待灌'))
     const cfg = this.store.config
     let targets = (ids || []).map(i => this.store.db.sources[i]).filter(Boolean)
+    // 2026-11-23 恶意源治理：恶意 hash / szyshr 整仓拉黑 / 存疑源，灌入前置闸门直接拒绝。
+    // 只按元数据（contentHash/repo/id）判定，绝不读取/执行脚本正文。
+    {
+      const g = filterImportCandidates(targets)
+      if (g.blocked.length) {
+        for (const b of g.blocked) {
+          this.log(`安全闸门拒绝灌入：${b.entry.name || b.entry.id}（${b.reason}）`, '灌入', 'warn')
+        }
+        targets = g.keep
+      }
+    }
     // 突破项①②：把本批两处 AI 旁路分类（项①阶段2 冷启动 + 项② R4 更新语义）**转后台**执行，
     // runImport 不再等待（AI 开启时省 ~90s 持锁等待）。结果滞后一轮参与排序（AI 仅第 6-7 级 tie-break，
     // 客观指标全并列才生效，影响面极窄）。加固五件套见 _queueBypassClassify 注释。
@@ -3817,6 +3855,16 @@ class Hunter {
           if (res && res.ok) {
             if (mirror) this.mirrorPref = mirror
             const text = await readText(res, cfg.timeoutMs)
+            // 静态情报·硬否决（2026-11-24）：下载后若补算出的 hash 命中恶意指纹，
+            // 立即丢弃正文并标记该条跳过——堵「入库时无 hash、下载后才命中」的绕过面。
+            if (isMaliciousHash(e.contentHash) || isMaliciousHash(sha256Str(text))) {
+              e.contentHash = sha256Str(text)
+              delete codeCache[e.id]
+              this.log(`安全硬否决：灌入下载后命中恶意脚本指纹，拒绝灌入：${e.name}（sha=${String(e.contentHash).slice(0, 12)}）`, '安全', 'warn')
+              e.skip = '命中恶意脚本指纹（永不信任），拒绝灌入'
+              continue
+            }
+            this._noteDomainIoc(e, text, '灌入下载')   // 观察模式：仅审计，不改行为
             codeCache[e.id] = text
             if (!e.contentHash) e.contentHash = sha256Str(text)
             const meta = extractMeta(text)
@@ -4000,6 +4048,12 @@ class Hunter {
       id: e.id, name, platformId: svc.acct.id, platformType: svc.type,
       accountName: svc.acct.name || svc.acct.url
     })
+    // 静态情报·硬否决（2026-11-24）最后一道：任何进入灌入执行的条目，只要当前内容 hash
+    // 命中恶意指纹，一律拒绝（覆盖同名裁决 replace / 缓存刷新 / 伪装优质源等绕过面）。
+    if (isMaliciousHash(e.contentHash) || isMaliciousHash(codeCache && codeCache[e.id] ? sha256Str(codeCache[e.id]) : '')) {
+      this.log(`安全硬否决：灌入执行前拦截恶意指纹条目：${name}（sha=${String(e.contentHash).slice(0, 12)}）`, '安全', 'warn')
+      return Object.assign(base(), { status: 'skipped', reason: '命中恶意脚本指纹（永不信任），拒绝灌入', hardVeto: true })
+    }
     const tag = multi ? `[${p.label}] ` : ''
     if (item.skip) {
       this.log(tag + '跳过：' + name + ' — ' + item.skip, '灌入', 'warn')
@@ -4605,8 +4659,29 @@ class Hunter {
     }
 
     const checked = !!(e.deep && e.deep.checkedAt) && !e.stale
-    const srvPlats = Array.isArray(srv.supportedSources) ? srv.supportedSources.slice() : []
+    // A（2026-11-23 Q2）：服务端"声明平台数"必须扣掉 disabledSources 才是有效平台。
+    // 集合相减（大小写归一 + 去重），不是 length 相减：声明 5 禁 1 才是 4；全禁为 0。
+    const srvDeclared = Array.isArray(srv.supportedSources) ? srv.supportedSources.slice() : []
+    const srvOff = Array.isArray(srv.disabledSources) ? srv.disabledSources.slice() : []
+    const offSet = new Set(srvOff.filter(Boolean).map(p => String(p).toLowerCase()))
+    const seenPlat = new Set()
+    const srvPlats = srvDeclared.filter(p => {
+      const k = String(p == null ? '' : p).toLowerCase()
+      if (!k || seenPlat.has(k)) return false
+      seenPlat.add(k)
+      return !offSet.has(k)
+    })
     const srvN = srvPlats.length
+    const declaredN = new Set(srvDeclared.filter(Boolean).map(p => String(p).toLowerCase())).size
+    // 全禁用 carve-out：声明过平台、但有效平台为 0 且全部被禁 → 用户主动停用，维持冻结/skip，
+    // 不能被"本地实测更多"翻案覆盖用户治理（含 enableAfterImport 豁免交给 serverVeto/skip 口径）。
+    const srvAllDisabled = declaredN > 0 && srvN === 0 && offSet.size > 0 &&
+      srvDeclared.length > 0 && srvDeclared.every(p => offSet.has(String(p == null ? '' : p).toLowerCase()))
+    // C（2026-11-23）治理信号：都是服务端 list 已返回 / serverVeto 已算好的字段，零新增请求。
+    //   after-import 停用豁免（disableReason==='after-import'）不算用户冻结（computeVeto 已豁免）；
+    //   只有"全禁用 / 隔离 / 整源禁用 / 加载失败零平台"才是真冻结；候选 regression/veto 在队列层 splitFrozen 跳过。
+    const srvGoverned = !!(srvAllDisabled || srv.enabled === false || srv.isolated ||
+      (srv.status === 'failed' && srvDeclared.length === 0))
     const newN = checked ? usableCount(e) : -1
     const localPlats = checked ? usableKeys(e) : []
 
@@ -4614,6 +4689,17 @@ class Hunter {
     //    把服务端能用的源换成本地实测不可用的，是纯损失）。stale 的旧结论不作数。
     if (checked && newN === 0) {
       return { act: 'skip', why: '本地实测 0 个可用平台 → 不替换（保留服务端现条目，避免越换越差）' }
+    }
+
+    // A carve-out：服务端声明过平台但全被用户禁用 → 视为主动停用，维持 skip（不覆盖治理）
+    if (srvAllDisabled) {
+      return { act: 'skip', why: `服务端声明 ${declaredN} 个平台但已全部禁用 → 视为用户主动停用，保留服务端（不覆盖治理）` }
+    }
+    // C（2026-11-23）治理保护：服务端源处于"整源禁用 / 隔离 / 全平台禁用 / 加载失败零平台"时，
+    // 一律维持 skip，不让它被本地同名裁决 replace 掉（删源会覆盖用户的禁用/隔离治理）。
+    // after-import 停用豁免——那是灌入落库时的默认停用，不是用户意图（与 serverVeto 同口径）。
+    if (srvGoverned && srv.disableReason !== 'after-import') {
+      return { act: 'skip', why: '服务端源处于治理冻结态（整源禁用/隔离/全平台禁用/加载失败）→ 保留服务端，不覆盖用户治理' }
     }
 
     // 2.5) 用户口径 2/3：同源代码齐备才分流；缺证据不猜，落到下面的旧规则
@@ -4717,15 +4803,13 @@ class Hunter {
           }
           return { act: 'replace', why: `跨仓库同名，本地版本更高（${localVer} > ${srvVer}）且质量更优（${qd.by}：${qd.reason}）→ 留新删旧（删旧装新）` }
         }
-        // 服务端侧没有实测证据：只能比「本地实测可用平台数 vs 服务端声明平台数」。
-        // 声明值是脚本自己标的，天然偏大，所以这个门槛偏保守 —— 宁可少换，不误删。
+        // B（2026-11-23）：服务端侧没有实测证据时，声明平台数不能当实测证据去压本地、
+        //    也不能凭"本地实测 > 服务端声明"就 replace（声明天然偏小/偏大都不可靠）。
+        //    一律 rename 并存（不删服务端源、不跳过本地），理由注明"服务端仅声明，待人工"。
         if (srvN <= 0) {
           return { act: 'rename', why: `跨仓库同名，本地版本更高（${localVer} > ${srvVer}）但服务端没有声明任何平台，无从判断质量是否更优 → 不删旧的，改名并存` }
         }
-        if (newN <= srvN) {
-          return { act: 'skip', why: `跨仓库同名，本地版本更高（${localVer} > ${srvVer}）但可用平台数未多于服务端声明（${newN} ≤ ${srvN}；服务端侧无实测证据）→ 保留服务端` }
-        }
-        return { act: 'replace', why: `跨仓库同名，本地版本更高（${localVer} > ${srvVer}）且可用平台数更多（本地实测 ${newN} 个 > 服务端声明 ${srvN} 个）→ 留新删旧（删旧装新）` }
+        return { act: 'rename', why: `跨仓库同名，服务端仅有声明平台数 ${srvN}（无实测证据），本地实测 ${newN} 个 → 声明不能当实测裁决，改名并存（不删服务端源，待人工）` }
       }
       if (lv && sv && vc < 0) {
         return { act: 'skip', why: `跨仓库同名，服务端版本更高（${srvVer} > ${localVer}）→ 保留服务端` }
@@ -4738,9 +4822,14 @@ class Hunter {
       return { act: 'rename', why: `跨仓库同名但质量平手或证据不足（${note}）→ 不删任何一方，改名并存` }
     }
 
-    // 3) 服务端现条目可用平台更多 → 保留服务端（无同源证据时的保守保护）
+    // 3)（B 2026-11-23）服务端平台数压本地：只有服务端有**实测证据**（qualityProxy/deep）时
+    //    "平台更多"才成立；否则 srvN 只是脚本自报的声明值，拿声明压本地实测不公平（"我的聚合音源"类）。
+    //    无服务端实测证据 → rename 并存（不删服务端源），理由注明"服务端仅声明，待人工"。
     if (srvN > 0 && newN >= 0 && newN < srvN) {
-      return { act: 'skip', why: `服务端现条目支持 ${srvN} 个平台、多于本地实测可用的 ${newN} 个 → 保留服务端（哪个可用多用哪个）` }
+      if (!srvDeep) {
+        return { act: 'rename', why: `服务端现条目声明 ${srvN} 个平台（无实测证据）、多于本地实测 ${newN} 个 → 声明不能压实测，改名并存（不删服务端源，服务端仅声明，待人工）` }
+      }
+      return { act: 'skip', why: `服务端现条目实测支持 ${srvN} 个平台、多于本地实测可用的 ${newN} 个 → 保留服务端（哪个可用多用哪个）` }
     }
 
     // 4) 版本号可比 → 版本高的赢（versionKey 是字符串键，必须走 cmpVersion）
@@ -4999,6 +5088,13 @@ class Hunter {
           continue
         }
         const sha = sha256Str(text)
+        // 静态情报·硬否决（2026-11-24）：追更入库前命中恶意指纹则拒绝入库，
+        // 堵「同名源经 updateUrl 追更把恶意内容写进库」的绕过面。
+        if (isMaliciousHash(sha)) {
+          e.followedUpdateUrls.push(tip.url)
+          this.log(`安全硬否决：updateUrl 追更内容命中恶意脚本指纹，拒绝入库：${tip.url.slice(0, 120)}（sha=${sha.slice(0, 12)}）`, '安全', 'warn')
+          continue
+        }
         if (hashes.has(sha)) { e.followedUpdateUrls.push(tip.url); continue }
         const name = ((text.match(/@name\s+(.+)/) || [])[1] || '').trim() ||
           ((tip.url.split('/').pop() || 'updateTip').replace(/\.js.*/i, '')) || 'updateTip'
@@ -5117,7 +5213,11 @@ class Hunter {
         // 同名服务端条目：skip 项补带了 item.srv；老数据没有就按名回查
         const srv = item.srv || srvByName[e.lxName || e.scriptName || e.name || '']
         if (!srv || !Array.isArray(srv.supportedSources)) continue
-        const srvN = srv.supportedSources.length
+        // A 口径同步（2026-11-23）：补测触发判断也用"有效平台数"（声明扣 disabledSources），
+        // 与 sameNameVerdict 一致，避免声明 5 实际 4 的源被误判"证据不足"反复补测。
+        const srvOff = new Set((Array.isArray(srv.disabledSources) ? srv.disabledSources : [])
+          .filter(Boolean).map(p => String(p).toLowerCase()))
+        const srvN = srv.supportedSources.filter(p => !srvOff.has(String(p == null ? '' : p).toLowerCase())).length
         const usableN = usableCount(e)
         if (usableN >= srvN) continue        // 证据已够，裁决不是被平台数挡的
         const metrics = (e.deep && e.deep.metrics) || {}
@@ -5644,6 +5744,10 @@ class Hunter {
         let verdict = 'unknown'
         let note = ''
         let suspectTag = false   // 「疑似失效」：与「无法判定（网络原因）」在日志里分开说，避免用户看不懂
+        // 2026-11-23：巡检发现已灌入的恶意 hash 源 → 记安全告警（不改 dead 判定闭环，隔离走 sourceGuard）。
+        if (isMaliciousHash(e.contentHash)) {
+          this.log(`安全告警：巡检命中恶意脚本指纹，已灌入源应隔离：${name}（sha=${String(e.contentHash).slice(0, 12)}）`, '巡检', 'warn')
+        }
         // 本轮 patrolJudge 实际使用的判死阈值（版权类会被放宽到 4）。下方删除判定要用，
         // 故必须在 try 外声明 —— j 本身是 try 内的块级常量，catch 路径拿不到。
         let judgeNeed = 0
@@ -5657,7 +5761,9 @@ class Hunter {
           }
           if (e.status !== 'ok' || !code) {
             const errText = e.error || ''
-            if (/HTTP 404|HTTP 410/.test(errText)) { verdict = 'dead'; note = '脚本已被删除（' + errText + '）' }
+            // Q3（2026-11-23）：只有"全候选 404/410"才判 dead（all-gone），
+            // 单一镜像 404 不再直接判死——它现在会继续试下一条通道（net.js 收敛）。
+            if (/ALL_GONE|HTTP 404|HTTP 410/.test(errText)) { verdict = 'dead'; note = '脚本全通道 404/410，已被删除（' + errText + '）' }
             else { verdict = 'unknown'; note = '脚本下载失败（' + (errText || '网络异常') + '），不判定' }
           } else if (!e.suspected) {
             verdict = 'dead'; note = '脚本内容已不是洛雪音源'

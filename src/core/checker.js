@@ -416,8 +416,11 @@ async function checkBasic(entry, cfg, onEvent, preferredMirror) {
     entry.apiHosts = extractApiHosts(entry.code)
     return { entry, code: entry.code }
   }
-  const { res, url, mirror } = await crawlFetch(entry.url, null, cfg.timeoutMs, cfg.mirror, preferredMirror)
+  const { res, url, mirror, allGone } = await crawlFetch(entry.url, null, cfg.timeoutMs, cfg.mirror, preferredMirror)
   if (!res) { entry.status = 'dead'; entry.error = '全部镜像不可达'; return { entry, code: null } }
+  // Q3（2026-11-23）：全候选 404/410 才判 dead（保留"源站404计入dead"的治理闭环）；
+  // 单一通道 404 现在会继续试镜像，不会再走到这里。
+  if (allGone) { entry.status = 'dead'; entry.error = 'ALL_GONE HTTP ' + res.status; return { entry, code: null } }
   if (!res.ok) { entry.status = 'dead'; entry.error = 'HTTP ' + res.status; return { entry, code: null } }
   const text = await readText(res, cfg.timeoutMs)
   if (text.length > MAX_CONTENT_BYTES) { entry.status = 'dead'; entry.error = '文件过大'; return { entry, code: null } }
