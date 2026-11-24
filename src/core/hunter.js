@@ -16,7 +16,7 @@ const { Store } = require('./store')
 const { versionKey: versionNum, cmpVersion, verLabel } = require('./version')
 const { normName, candidateRepo, serverRepo, baseNameKey, pickHighestVersion, weakNameKey } = require('./identity')
 // v1.13.0：服务端动作（禁用 / 单平台禁用 / 隔离 / 删除）→ 本地冻结标记，防止「删了又灌回来」
-const { computeVeto, isFrozen, vetoReason, splitFrozen, VETO_PRIORITY, profileServerFleet } = require('./serverVeto')
+const { computeVeto, isFrozen, vetoReason, splitFrozen, VETO_PRIORITY, profileServerFleet, VETO_TYPES } = require('./serverVeto')
 // v1.13.0：定时爬取的下次允许时间（配额 → 代理/镜像 → 指数退避，纯函数）
 const { planNextCrawl, describeNextCrawl } = require('./crawlSchedule')
 const { compareVerdict, describeQuality, profile: qualityProfile, compareImportQuality } = require('./quality')
@@ -4198,7 +4198,12 @@ class Hunter {
         }
       }
       if (r && r.success) {
-        this._markImported(e, svc, r.id, r.name || name, r.platforms || [], false, codeCache[e.id])
+        // v1.14.2（2026-11-24）：upload 成功 ≠ 服务端真的启用了。
+        // afterImport 里那次 toggle 很可能因 requireUnsafe 被服务端回滚（enabled 回到 false），
+        // 这种情形必须把 needUnsafeVM 一起记进账本，否则 computeVeto 只会看到 enabled=false
+        // 而判成 disabled（用户主动停用），冻 24h —— 实测就是这个坑。
+        this._markImported(e, svc, r.id, r.name || name, r.platforms || [], false, codeCache[e.id],
+          r.needUnsafeVM ? { needUnsafeVM: true, vmGloballyEnabled: r.vmGloballyEnabled } : null)
         // 把裁决理由带上：用户最常问的就是「为什么这次是替换、那次是改名」
         const note = replaceGone
           ? '（服务端同名旧版已不存在，直接上传）' + (r.replacedFallback === 'renamed' ? '（原名仍被占用，已改名上传）' : '')
@@ -4215,12 +4220,23 @@ class Hunter {
         return Object.assign(base(), {
           status: st, lxId: r.id, message: (r.message || '') + baseNote + note, platforms: r.platforms || [],
           matchedByBase: !!item.matchedByBase,
+          needUnsafeVM: !!r.needUnsafeVM,
           stateMigration: replaceInfo ? replaceInfo.migration : null
         })
       }
       this.log(tag + '灌入失败：' + name + ' — ' + ((r && r.message) || '导入失败'), '灌入', 'warn')
+      // v1.14.2：upload 本身就失败但服务端已报了 requireUnsafe / VM_DISABLED 时，
+      // 若已有服务端 id 就照样记账（无 id 说明没落库，记不了）。
+      if (r && r.id && r.needUnsafeVM) {
+        try {
+          this._markImported(e, svc, r.id, r.name || name, r.platforms || [], false, codeCache[e.id],
+            { needUnsafeVM: true, vmGloballyEnabled: r.vmGloballyEnabled })
+        } catch (e2) { /* 记账失败不连累灌入结论 */ }
+      }
       return Object.assign(base(), {
-        status: 'failed', message: (r && r.message) || '导入失败', requireUnsafe: !!(r && r.requireUnsafe),
+        status: 'failed', message: (r && r.message) || '导入失败',
+        requireUnsafe: !!(r && (r.requireUnsafe || r.needUnsafeVM)),
+        needUnsafeVM: !!(r && r.needUnsafeVM),
         trash: replaceInfo ? replaceInfo.trash : null,
         restored: replaceInfo ? replaceInfo.restored : null
       })
@@ -4235,7 +4251,7 @@ class Hunter {
    * 写「已灌入」记录（v1.8.0 多平台）：顶层的 platformId/accountName 指向最近一次
    * 灌入的平台，importedTo[] 保留全部平台，撤回时按账号精确摘除而不是整条删掉。
    */
-  _markImported(e, svc, lxId, name, platforms, synced, code) {
+  _markImported(e, svc, lxId, name, platforms, synced, code, extra) {
     // 正文副本落档：服务端不回正文，本地这份是「服务端那条到底是不是我们灌的」的唯一凭据
     // （size 对账、按需复测都靠它）。同 contentHash 只写一次。
     if (e.contentHash && typeof code === 'string' && code && this.store.archiveScript) {
@@ -4251,6 +4267,14 @@ class Hunter {
       platforms: platforms || [], serverSynced: !!synced,
       platformId: svc.acct.id, platformType: svc.type, accountName: svc.acct.name || svc.acct.url,
       importedTo: list,
+      // v1.14.2（2026-11-24）：服务端「因需要原生 VM 把启用回滚了」的原因标记。
+      // 来源：hunter 自己 toggle 时服务端响应里的 requireUnsafe / VM_DISABLED（lxservice.toggle 透传）。
+      // 覆盖范围：**只覆盖 hunter 发起的启用**；用户在 lxserver 网页手动加白拿不到这个响应，
+      // 那种情况仍按 disabled 处理 —— 这里如实标注，不当成完备信号。
+      // 用途：computeVeto 据此判 vm-blocked（独立 type，走短复查自愈），而不是 disabled 冻 24h。
+      needUnsafeVM: extra && extra.needUnsafeVM ? true : (prev && prev.needUnsafeVM ? true : undefined),
+      needUnsafeVMAt: extra && extra.needUnsafeVM ? Date.now() : (prev && prev.needUnsafeVMAt) || undefined,
+      vmGloballyEnabled: extra && extra.needUnsafeVM ? !!extra.vmGloballyEnabled : (prev && prev.vmGloballyEnabled),
       // 打分快照：服务端不回传脚本正文/hash/metrics（17950 实测 38 条全无），
       // 下次同名冲突时「服务端那条」本该拿不出任何实测证据 ⇒ 只能一律改名并存。
       // 这是我们自己刚灌进去的脚本，本地有它的实测画像，按服务端 id 存一份最小快照，
@@ -4276,6 +4300,56 @@ class Hunter {
       } : null
     }
     this.store.saveImported()
+  }
+
+  /**
+   * 记下「服务端因需要原生 VM 把启用回滚了」这件事（v1.14.2，2026-11-24）。
+   *
+   * 为什么需要它：`/api/service/toggle`（网页）与 `service:toggle`（桌面 IPC）只是把
+   * lxservice.toggle 的结果原样返回，**从不碰账本**；而「源已在服务端、用户点启用 →
+   * 被 requireUnsafe 回滚」恰恰是 vm-blocked 最常见的场景。没有这一步，
+   * computeVeto 只看得到 enabled=false，只能判成 disabled（用户主动停用）冻 24h。
+   *
+   * 覆盖范围（如实标注，不要当成完备信号）：
+   *   · 只覆盖 **hunter 自己发起的 toggle**（网页按钮 / 桌面按钮 / 灌入时的自动启用）；
+   *   · 用户在 lxserver 网页上直接点启用或加白，hunter 拿不到那个响应，不会走到这里 ——
+   *     那种情况仍按 disabled 处理。
+   *
+   * @param {string|null} lxId 服务端音源 id
+   * @param {object|null} resp lxservice.toggle 的返回体
+   * @returns {boolean} 是否改动了账本
+   */
+  noteToggleNeedUnsafeVM(lxId, resp) {
+    if (lxId == null) return false
+    const imported = this.store.imported || {}
+    // 一个服务端 id 可能对应多条本地账本（多账号），全部同步
+    let touched = false
+    for (const eid of Object.keys(imported)) {
+      const rec = imported[eid]
+      if (!rec) continue
+      const ids = []
+      if (rec.lxId != null) ids.push(String(rec.lxId))
+      if (Array.isArray(rec.importedTo)) for (const x of rec.importedTo) if (x && x.lxId != null) ids.push(String(x.lxId))
+      if (ids.indexOf(String(lxId)) === -1) continue
+
+      if (resp && resp.needUnsafeVM) {
+        if (rec.needUnsafeVM === true) continue
+        rec.needUnsafeVM = true
+        rec.needUnsafeVMAt = Date.now()
+        if (resp.vmGloballyEnabled !== undefined) rec.vmGloballyEnabled = !!resp.vmGloballyEnabled
+        touched = true
+      } else if (rec.needUnsafeVM === true) {
+        // 这次启用成功了（或失败原因与 VM 无关）→ 旧标记作废，别再拿它判 vm-blocked
+        delete rec.needUnsafeVM
+        delete rec.needUnsafeVMAt
+        delete rec.vmGloballyEnabled
+        touched = true
+      }
+    }
+    if (touched) {
+      try { this.store.saveImported() } catch (e) { /* 记账失败不影响 toggle 结论 */ }
+    }
+    return touched
   }
 
   /** 从灌入记录里摘掉某个平台；该音源在所有平台都没了才整条删除 */
@@ -4418,6 +4492,122 @@ class Hunter {
     }
     if (cleared) this.log(`服务端处置冻结：解除 ${cleared} 条（音源已更新或服务端已恢复）`, '灌入')
     return { added, updated, cleared, total: Object.keys(next).length }
+  }
+
+  /**
+   * 「未知源」冻结的短周期复查（v1.14.1，2026-11-24）。
+   *
+   * 为什么单独做：db.veto 里的 five 类冻结中，removed/disabled/isolated/platform-disabled
+   * 都是**用户（或服务端巡检）主动处置**的结果，24h 不变是合理的 —— 用户意图不会自己变。
+   * 唯独 unloaded（服务端试运行加载失败、一个平台都没注册出来）的成因在**服务端侧**，
+   * 用户去服务端点一次「允许原生 VM」/ 服务端重载一次，它就自愈了。
+   *
+   * 实测缺陷（2026-11-24 复盘）：豆包 v9.1.0 的 unloaded 冻结写入于 12:27:31，
+   * 17950 在 12:44:36 就加载成功（5 平台），但 hunter 侧下一次刷新冻结表要等
+   * 「灌入」或「巡检收尾」—— 巡检间隔 24h，于是界面一直顶着红色「未知源·冻结」，
+   * 灌入按钮点了也是 skip。重算逻辑（computeVeto）本身是对的，缺的只是触发时机。
+   *
+   * 设计约束（每一条都是为了不误伤）：
+   *  1. **只在真有 unloaded 时才发请求**：没有就立刻返回 {skipped:true}，零 HTTP。
+   *  2. **只做减法，绝不整体替换 db.veto**：这里只拉「当前选中账号」的列表，
+   *     若沿用 _refreshServerVeto 的整体替换语义，会把其它账号的冻结记录误清（那些账号
+   *     这轮根本没读列表）。所以按 eid 精确改：服务端不再 failed+[] → 删掉这条；
+   *     其它情况（仍失败 / 已变成 removed 等）→ 保持原样，交给常规刷新。
+   *  3. **不碰 removed/disabled/isolated**：只处理 type==='unloaded' 的条目，其它一律跳过。
+   *  4. **不写 lastPatrol、不改巡检水位**：这是核对不是巡检，不参与「多久巡检一次」的账。
+   *  5. 服务端列表读不到 → 直接返回，绝不当成「恢复了」。
+   *
+   * @returns {{checked:number, cleared:number, kept:number, names:string[], healthy:boolean}}
+   */
+  async refreshUnloadedVeto() {
+    const db = this.store.db
+    const veto = db.veto && typeof db.veto === 'object' ? db.veto : {}
+    // v1.14.2：两种「服务端侧可自愈」的冻结一起复查，共用同一趟 list 请求（不增加请求数）：
+    //   unloaded   —— 服务端加载不出任何平台，加白/修脚本后自愈
+    //   vm-blocked —— 服务端因需要原生 VM 回滚了启用，加白并启用后自愈
+    const unloadedEids = Object.keys(veto).filter(eid => {
+      const v = veto[eid]
+      return v && (v.type === VETO_TYPES.UNLOADED || v.type === VETO_TYPES.VM_BLOCKED) && !v.partial
+    })
+    // ① 没有这两类 → 一个请求都不发（这条是「零额外开销」的关键）
+    if (!unloadedEids.length) return { checked: 0, cleared: 0, kept: 0, names: [], healthy: true }
+
+    // 任务在跑（灌入/巡检/采集）时不抢：那几条链路自己会在收尾刷冻结表，
+    // 这里再拉一次只会多一个并发请求，还可能读到半途状态。
+    if (this.job && this.job.running) return { checked: 0, cleared: 0, kept: unloadedEids.length, names: [], healthy: false }
+
+    let svc
+    try { svc = this._active() } catch (e) {
+      return { checked: 0, cleared: 0, kept: unloadedEids.length, names: [], healthy: false }
+    }
+    let serverList = null
+    try { serverList = await svc.adapter.list(svc.acct) } catch (e) {
+      this.log(`服务端处置自动复查：读取服务端列表失败（${String((e && e.message) || e).slice(0, 80)}），本轮跳过（冻结表保持不变）`, '灌入', 'warn')
+      return { checked: 0, cleared: 0, kept: unloadedEids.length, names: [], healthy: false }
+    }
+    // ⑤ 读不到 / 读到空 → 不猜（空列表在服务端认证异常时也会出现，见 runPatrol 的空列表安全阀）
+    if (!Array.isArray(serverList) || !serverList.length) return { checked: 0, cleared: 0, kept: unloadedEids.length, names: [], healthy: false }
+
+    const pid = svc.acct && svc.acct.id
+    const activeId = (this.store.config && this.store.config.activePlatformId) || pid
+    const byId = new Map()
+    for (const s of serverList) if (s && s.id != null) byId.set(String(s.id), s)
+
+    const clearedNames = []
+    let kept = 0
+    let changed = false
+    for (const eid of unloadedEids) {
+      const v = veto[eid]
+      const rec = this.store.imported && this.store.imported[eid]
+      const e = db.sources && db.sources[eid]
+      // 条目/账本已没了 → 冻结无意义，顺手清掉（与 computeVeto 的 `if (!e) continue` 同口径）。
+      // 也计入 cleared 并记日志：静默消失会让用户以为「冻结自己好了」，实际是本地条目被删过。
+      if (!rec || !e) {
+        delete veto[eid]; changed = true
+        clearedNames.push(e ? this._vetoName(e) : (v.lxId ? String(v.lxId).replace(/\.js$/, '') : '未知条目'))
+        continue
+      }
+      // ③ 只处理确实落在当前账号上的记录（别的账号这个 lxId 不适用，这轮也没读它的列表）
+      const lxId = recLxIdOn(rec, pid, activeId)
+      if (lxId == null) { kept++; continue }
+      // 内容变了 → 上游发了新版，旧结论作废（与 computeVeto:101 同口径，兜一层）
+      const sha = e.contentHash || ''
+      if (v.sha && sha && v.sha !== sha) { delete veto[eid]; changed = true; clearedNames.push(this._vetoName(e)); continue }
+
+      const srv = byId.get(String(lxId))
+      if (!srv) { kept++; continue }   // 列表里没有这条 → 可能是被删了，交给常规刷新判 removed，这里不动
+      // ② 按类型分流判定（v1.14.2）。两类判据刻意不同，**绝不能混用**：
+      if (v.type === VETO_TYPES.VM_BLOCKED) {
+        // vm-blocked 只认「服务端确实把它启用了」。回滚后这条**没有 status 字段**，
+        // 若照搬下面 unloaded 的 failed+[] 判据，status===undefined 会让 stillUnloaded
+        // 恒为 false → 首个 tick 就把整类误解冻（这正是绝不复用 UNLOADED 的原因）。
+        if (srv.enabled !== true) { kept++; continue }
+        delete veto[eid]
+        changed = true
+        clearedNames.push(this._vetoName(e))
+        continue
+      }
+      // unloaded：只要不再是 failed+[] 就说明它加载出了平台
+      const stillUnloaded = srv.status === 'failed' &&
+        Array.isArray(srv.supportedSources) && srv.supportedSources.length === 0
+      if (stillUnloaded) { kept++; continue }
+      delete veto[eid]
+      changed = true
+      clearedNames.push(this._vetoName(e))
+    }
+
+    if (changed) { db.veto = veto; this.store.saveDb() }
+    if (clearedNames.length) {
+      this.log(`服务端处置自动复查：服务端已恢复，解除冻结 ${clearedNames.length} 条（${clearedNames.slice(0, 5).join('、')}` +
+        `${clearedNames.length > 5 ? ' 等' : ''}）；这些音源现在可以正常灌入了`, '灌入')
+    }
+    return { checked: unloadedEids.length, cleared: clearedNames.length, kept, names: clearedNames, healthy: true }
+  }
+
+  /** 冻结条目的显示名（日志用，取不到就退回 eid） */
+  _vetoName(e) {
+    if (!e) return '未知条目'
+    return e.scriptName || e.lxName || e.name || e.id || '未知条目'
   }
 
   /**

@@ -2579,14 +2579,45 @@ function platCells(e) {
   }).join('')
 }
 
+/**
+ * 冻结徽章的「上次核对」后缀（v1.14.1，纯展示、零请求）。
+ *
+ * 只对 unloaded（未知源）显示 —— 它是唯一会「服务端自愈」的冻结类型，所以"这条结论是
+ * 什么时候得出的"对用户最有意义（我们现在有 15 分钟短复查，用户能据此判断要不要手动点
+ * 「重新核对」）。removed/disabled/isolated 是用户主动处置，时间戳没这个语义，不显示。
+ */
+function vetoAgeTip(v) {
+  // v1.14.2：vm-blocked 也走 15 分钟短复查（服务端侧可自愈），所以同样显示「上次核对」。
+  // removed/disabled/isolated 是用户主动处置、仍等 24h 巡检，没有这个语义，不显示。
+  if (!v || (v.type !== 'unloaded' && v.type !== 'vm-blocked') || !v.at) return ''
+  // 手写格式化：与「上次巡检」（本文件 showPatrolTime）一致，同为 YYYY-MM-DD HH:mm；
+  // toLocaleString('zh-CN') 出来的是 2026/11/24，和界面其它时间戳不统一。
+  let s
+  try {
+    const d = new Date(v.at)
+    const hh = n => String(n).padStart(2, '0')
+    s = `${d.getFullYear()}-${hh(d.getMonth() + 1)}-${hh(d.getDate())} ${hh(d.getHours())}:${hh(d.getMinutes())}`
+  } catch (e) { return '' }
+  const mins = Math.max(0, Math.round((Date.now() - Number(v.at)) / 60000))
+  const ago = mins < 60 ? `${mins} 分钟前` : mins < 1440 ? `${Math.round(mins / 60)} 小时前` : `${Math.round(mins / 1440)} 天前`
+  return `\n上次核对：${s}（${ago}）。系统每 15 分钟自动复查一次，也可在「已灌入」页点「重新核对服务端状态」立即核对。`
+}
+
 function statusCellBase(e) {
   if (e.checking) return '<span class="badge accent">检测中…</span>'
   // v1.13.0：服务端处置冻结（禁用/单平台禁用/护栏隔离/删除）→ 内容不变就不再灌入。
   // 和「已灌入」并列显示：它说明的不是"灌过没有"，而是"为什么不会再灌"。
   // partial（只关了部分平台）只提示、不冻结 —— 源还能用，不能连更新都不许推
+  //
+  // v1.14.1（2026-11-24）：徽章带上「上次核对时间」。
+  // 实测问题：豆包源在 12:27:31 判死冻结，服务端 12:44:36 就自愈了，但界面只写
+  // 「未知源·冻结」，用户看不出这是 17 分钟前（或十几个小时前）的旧结论，
+  // 会以为服务端到现在还没好。veto.at 本来就有，纯展示、零请求。
   const vBadge = e.veto
-    ? `<span class="badge ${e.veto.partial ? 'warn' : 'fail'}" title="${esc((e.veto.detail || '') + (e.veto.partial ? '；其余平台仍可用，照常参与更新与灌入' : '；该音源内容更新前不会自动灌入任何平台，更新后自动解冻'))}">` +
-      (e.veto.partial ? '部分平台禁用' : e.veto.type === 'removed' ? '服务端已删·冻结' : e.veto.type === 'isolated' ? '服务端隔离·冻结' : e.veto.type === 'unloaded' ? '未知源·冻结' : '服务端已禁·冻结') +
+    ? `<span class="badge ${e.veto.partial ? 'warn' : 'fail'}" title="${esc((e.veto.detail || '') + (e.veto.partial ? '；其余平台仍可用，照常参与更新与灌入'
+          : e.veto.type === 'vm-blocked' ? '；该音源内容更新前不会自动灌入任何平台。它需要原生 VM 模式：去服务端打开 VM 白名单并启用，之后会自动解冻'
+          : '；该音源内容更新前不会自动灌入任何平台，更新后自动解冻') + vetoAgeTip(e.veto))}">` +
+      (e.veto.partial ? '部分平台禁用' : e.veto.type === 'removed' ? '服务端已删·冻结' : e.veto.type === 'isolated' ? '服务端隔离·冻结' : e.veto.type === 'unloaded' ? '未知源·冻结' : e.veto.type === 'vm-blocked' ? '需VM白名单·冻结' : '服务端已禁·冻结') +
       '</span>'
     : ''
   const im = importedBadge(e)
@@ -4353,6 +4384,26 @@ $('btnPatrol').addEventListener('click', async () => {
     loadSources()
     refreshInstalled()
   } else toast('巡检失败: ' + r.error, 'err')
+})
+
+// v1.14.1：「重新核对服务端状态」—— 只针对「未知源·冻结」按服务端实况判，不无条件解冻
+$('btnVetoRefresh').addEventListener('click', async () => {
+  if (state.busy) return toast('已有任务在运行', 'warn')
+  const btn = $('btnVetoRefresh')
+  const old = btn.textContent
+  btn.disabled = true
+  btn.textContent = '核对中…'
+  let r
+  try { r = await api.vetoRefresh() } finally { btn.disabled = false; btn.textContent = old }
+  if (!r || !r.ok) return toast('核对失败: ' + ((r && r.error) || '请求异常'), 'err')
+  // 桌面版 IPC 直接返回 refreshUnloadedVeto() 的原始对象（无 message/ok 包装），这里两种形态都接
+  const d = r.data || r
+  const cleared = Number(d.cleared) || 0
+  const msg = d.message || (d.healthy === false
+    ? '暂时无法核对（任务进行中或服务端列表读不到），请稍后再试'
+    : cleared ? `核对完成：${cleared} 条服务端已恢复加载，已解除冻结` : '核对完成：没有可解除的「未知源」冻结')
+  toast(msg, d.healthy === false ? 'warn' : cleared ? 'ok' : 'info')
+  if (cleared) { loadSources(); refreshInstalled() }
 })
 
 /** 启动后静默把服务端已有音源纳入「已灌入」管理（已连接才执行） */

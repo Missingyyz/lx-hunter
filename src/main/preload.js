@@ -39,6 +39,8 @@ const api = {
   jobCancel: () => ipcRenderer.invoke('job:cancel'),
   jobState: () => ipcRenderer.invoke('job:state'),
   patrolStart: () => ipcRenderer.invoke('patrol:start'),
+  // v1.14.1：「未知源」冻结按服务端实况重新核对
+  vetoRefresh: () => ipcRenderer.invoke('veto:refresh'),
   revoke: (ids) => ipcRenderer.invoke('revoke', ids),
   serverSync: () => ipcRenderer.invoke('server:sync'),
   dbClear: () => ipcRenderer.invoke('db:clear'),

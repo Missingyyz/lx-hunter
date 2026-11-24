@@ -29,7 +29,15 @@ const VETO_TYPES = {
   PLATFORM_DISABLED: 'platform-disabled',  // 单平台 / 部分平台被禁用
   REMOVED: 'removed',                      // 服务端已删除（手动删除或巡检移除）
   ISOLATED: 'isolated',                    // 自检护栏隔离（CPU 热点等）
-  UNLOADED: 'unloaded'                     // 服务端试运行加载失败、未注册任何平台（未知源）
+  UNLOADED: 'unloaded',                    // 服务端试运行加载失败、未注册任何平台（未知源）
+  // v1.14.2（2026-11-24）：服务端因「需要原生 VM 而没加白」把启用回滚了。
+  // 为什么必须独立成一种 type、绝不能复用 UNLOADED：
+  //   回滚后 lxserver 的 apiStatus 被 delete，list 回来的这条**根本没有 status 字段**，
+  //   而 refreshUnloadedVeto 里 unloaded 的解冻判据是
+  //     srv.status === 'failed' && Array.isArray(srv.supportedSources) && length === 0
+  //   对 status===undefined 恒为 false → 首个 tick 就会判成「已恢复」而把整类误解冻。
+  // 本类型的解冻判据单独写：**只认 srv.enabled === true**（见 refreshUnloadedVeto）。
+  VM_BLOCKED: 'vm-blocked'
 }
 
 const TYPE_LABEL = {
@@ -37,11 +45,14 @@ const TYPE_LABEL = {
   'platform-disabled': '服务端已禁用它的部分平台',
   removed: '服务端已删除该音源',
   isolated: '被服务端自检护栏隔离',
-  unloaded: '服务端加载不出任何平台（未知源）'
+  unloaded: '服务端加载不出任何平台（未知源）',
+  'vm-blocked': '服务端因它需要原生 VM 而拒绝了启用'
 }
 
 /** 多平台取并集时的优先级：删除 > 隔离 > 零平台 > 整源禁用 > 单平台禁用（越"重"越优先） */
-const VETO_PRIORITY = { removed: 4, isolated: 3, unloaded: 2.5, disabled: 2, 'platform-disabled': 1 }
+// vm-blocked 排在 unloaded 之后、disabled 之前：它比「用户主动停用」更轻（原因明确、可自愈），
+// 但比「未知源」更需要人动手（得去服务端加白），所以也不该被 disabled 盖掉。
+const VETO_PRIORITY = { removed: 4, isolated: 3, unloaded: 2.5, 'vm-blocked': 2.2, disabled: 2, 'platform-disabled': 1 }
 
 /**
  * 从「服务端列表 + 本地账本 + 上一层冻结表」算出新的冻结表。
@@ -124,6 +135,27 @@ function computeVeto(p) {
       // 脚本更新后 contentHash 变化会自动解冻（见上方 sha 比对）。
       type = VETO_TYPES.UNLOADED
       detail = '服务端试运行加载失败、未注册任何平台（未知源）；脚本更新后自动解冻'
+    } else if (rec.needUnsafeVM === true && srv.enabled === false && srv.disableReason !== 'after-import') {
+      // v1.14.2（2026-11-24）：服务端因「脚本需要原生 VM 而没加白」把启用回滚了。
+      // 为什么单列：这类源在服务端是 enabled=false 且**没有 status 字段**（回滚时 apiStatus
+      // 被 delete），不先拦住就会落进下面的 disabled 分支，被当成「用户主动停用」冻 24h ——
+      // 而它其实只差一个 VM 白名单，用户加白那一刻就好了，和 unloaded 一样属于会自愈的一类。
+      // rec.needUnsafeVM 来自 hunter 自己 toggle 时服务端响应里的 requireUnsafe/VM_DISABLED。
+      // 覆盖范围：**只覆盖 hunter 发起的启用**；用户在 lxserver 网页手动启用/加白拿不到该响应，
+      // 那种情况仍按 disabled 处理（如实标注，不当成完备信号）。
+      //
+      // ★ 必须排除 disableReason === 'after-import'（2026-11-24 联调发现）：
+      //   lxserver P2 修好回滚后，after-import 标签会被保住。灌入时的 afterImport toggle
+      //   同样会失败并回 requireUnsafe，于是 hunter 也记了 needUnsafeVM=true —— 两个条件
+      //   同时成立。而 after-import 的豁免写在下面 `srv.enabled === false` 分支**内部**，
+      //   本分支排在它前面，不排除就会抢先命中，把 P2 的核心收益完全抵消：
+      //   源照样被冻，且冻成 vm-blocked（严判只认 enabled===true，而 after-import 源
+      //   一直 enabled=false）→ 永不自动解冻，比原来的 disabled 更糟。
+      //   排除之后它落回 disabled 分支，被既有豁免 continue 掉，符合 lxserver 的语义
+      //   （after-import = 灌入时默认停用，等复检验证自动启用，不是用户处置意图）。
+      type = VETO_TYPES.VM_BLOCKED
+      detail = '服务端需要该脚本以原生 VM 模式运行，未加白所以启用被回滚；' +
+        '去服务端给它开 VM 白名单并启用后会自动解冻'
     } else if (srv.enabled === false) {
       // 「灌入后停用」（disableReason=after-import，2026-11-13 与 lxserver 联动）不冻结：
       // 这是灌入落盘时的默认停用，等 lxserver 停用源复检验证后自动启用 ——
