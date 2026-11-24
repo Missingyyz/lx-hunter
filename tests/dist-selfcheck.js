@@ -13,6 +13,19 @@ const read = p => fs.readFileSync(path.join(OUT, p), 'utf8')
 let bad = 0
 const ck = (n, c, x) => { if (!c) bad++; console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${x ? '  -> ' + x : ''}`) }
 const has = (src, re) => re.test(src)
+// 数值化版本比较：'1.14.3' 字典序小于 '1.7.1'（第2位 1<7），直接用 >= 比较字符串会误判。
+// 历史 selfcheck 里几处 `pkg.version >= '1.7.x'` 因此恒 false；以前 CI 不跑本脚本没暴露，
+// 现在 build-pc.yml 加了 test:dist 步骤，必须让断言反映真实版本高低。
+const verGE = (a, b) => {
+  const pa = String(a).split('-')[0].split('.').map(Number)
+  const pb = String(b).split('-')[0].split('.').map(Number)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] || 0, y = pb[i] || 0
+    if (x > y) return true
+    if (x < y) return false
+  }
+  return true
+}
 
 const netSrc = read('src/core/net.js')
 const sbSrc = read('src/core/sandbox.js')
@@ -233,7 +246,7 @@ ck('检测阶段剔除开关（v1.9.5 起默认开）', has(huntSrc, /excludeHig
 ck('剔除只针对 high 级', has(huntSrc, /risk\.level === 'high'/))
 ck('高危徽章 ⚠混淆高危', has(appSrc, /⚠混淆高危/) && has(appSrc, /function obfTip/))
 ck('设置页剔除开关', has(html, /cfgExcludeObf/))
-ck('版本标记 v1.7.1（或更高）', pkg.version >= '1.7.1' && has(html, new RegExp('PC 版 v' + pkg.version.replace(/\./g, '\\.'))))
+ck('版本标记 v1.7.1（或更高）', verGE(pkg.version, '1.7.1') && has(html, new RegExp('PC 版 v' + pkg.version.replace(/\./g, '\\.'))))
 
 console.log('\n== v1.7.3 表格排序 + 便携数据目录 ==')
 // 需求1：音源表可按名称/平台可用性/来源仓库/状态排序；状态排序把已灌入垫底，
@@ -274,7 +287,7 @@ ck('迁移在 Store 创建前执行', has(mainSrc, /migrateLegacyData\(path\.joi
 ck('config:get 返回解析后的 dataDir', has(mainSrc, /dataDir: getDataDir\(\)/))
 ck('打开数据目录用同一 dataDir', has(mainSrc, /shell\.openPath\(getDataDir\(\)\)/))
 ck('设置页说明便携数据目录', has(html, /便携模式（数据与软件同目录）/))
-ck('版本标记 v1.7.3（或更高）', pkg.version >= '1.7.3' && has(html, new RegExp('PC 版 v' + pkg.version.replace(/\./g, '\\.'))))
+ck('版本标记 v1.7.3（或更高）', verGE(pkg.version, '1.7.3') && has(html, new RegExp('PC 版 v' + pkg.version.replace(/\./g, '\\.'))))
 
 // ---- v1.7.4：公共音源清理（只删 lxserver 公开源，绝不碰账号私有源）----
 console.log('\n== v1.7.4 公共音源清理 ==')
@@ -317,7 +330,7 @@ ck('网络级失败立即中止整批（剩余记 skipped）', has(lxSvcSrc, /ou
 ck('业务失败（源不存在）不中止', has(lxSvcSrc, /单条业务失败（如「源不存在」）不中断/))
 ck('UI 中止提示（引导确认服务端状态）', has(appSrc, /d\.aborted/) && has(appSrc, /必要时重启容器/))
 ck('UI 大批量风险提示（连删假死）', has(appSrc, /连续重载脚本有假死风险/))
-ck('版本标记 v1.7.4（或更高）', pkg.version >= '1.7.4' && has(html, new RegExp('PC 版 v' + pkg.version.replace(/\./g, '\\.'))))
+ck('版本标记 v1.7.4（或更高）', verGE(pkg.version, '1.7.4') && has(html, new RegExp('PC 版 v' + pkg.version.replace(/\./g, '\\.'))))
 
 // ---- v1.8.0：多平台账号 + 同时灌入 + 已灌入口径 ----
 console.log('\n== v1.8.0 多平台账号与灌入 ==')
@@ -733,6 +746,40 @@ ck('不支持的平台不显示（按用户要求保留原样）',
 ck('已灌入行与公共清理页共用同一渲染',
   (appSrc.match(/platBadges\(s\)/g) || []).length >= 3, '命中 ' + (appSrc.match(/platBadges\(s\)/g) || []).length + ' 处')
 ck('页面上给出颜色图例说明', has(html, /平台列：/) && has(html, /停用<\/span> 该平台在服务端被禁用/))
+
+// ---- v1.14.3：冻结短复查 + vm-blocked 新类型 + P0 删冗余写盘 ----
+console.log('\n== v1.14.3 冻结自动复查 / vm-blocked / 性能 ==')
+// 15 分钟短复查：水位字段在双端定时器里（核心函数只做复查、不碰水位）
+ck('复查节流水位 vetoUnloadedCheckAt（桌面 + Web 定时器各一处以上）',
+  has(read('src/main/index.js'), /vetoUnloadedCheckAt/) &&
+  has(read('src/server/web.js'), /vetoUnloadedCheckAt/) &&
+  has(read('src/main/index.js'), /VETO_UNLOADED_RECHECK_MS = 15 \* 60 \* 1000/) &&
+  has(read('src/server/web.js'), /VETO_UNLOADED_RECHECK_MS = 15 \* 60 \* 1000/))
+// 手动核对通道：桌面 IPC veto:refresh + Web 路由 /api/veto/refresh + 桥接
+ck('手动核对 veto:refresh 双端通道齐（IPC + Web 路由 + preload + bridge）',
+  has(read('src/main/index.js'), /veto:refresh/) &&
+  has(read('src/server/web.js'), /\/api\/veto\/refresh/) &&
+  has(preSrc, /vetoRefresh/) &&
+  has(read('src/renderer/web-bridge.js'), /veto\/refresh/))
+// 核心复查函数本体
+ck('核心提供 refreshUnloadedVeto 复查函数', has(huntSrc, /async refreshUnloadedVeto\(\)/))
+// vm-blocked 新类型：定义 + 干扰修复排除条件（绝不能被 after-import 抢先命中）
+ck('vm-blocked 类型定义与优先级',
+  has(read('src/core/serverVeto.js'), /VM_BLOCKED: 'vm-blocked'/) &&
+  has(read('src/core/serverVeto.js'), /'vm-blocked': 2\.2/))
+ck('vm-blocked 干扰修复：排除 after-import（否则永不自动解冻）',
+  has(read('src/core/serverVeto.js'), /srv\.disableReason !== 'after-import'/))
+// 桌面版 sources:get 必须下发 veto（否则五个冻结徽章全不显示）
+ck('桌面 sources:get 挂载逐条 veto + 顶层 veto（与 Web 一致）', (() => {
+  const s = read('src/main/index.js')
+  const m = s.match(/ipcMain\.handle\('sources:get'[\s\S]*?\n\}\)\)/)
+  return !!m && /veto\[s\.id\]/.test(m[0]) && /const veto = store\.db\.veto \|\| \{\}/.test(m[0]) && /\n    veto\n/.test(m[0])
+})())
+// 单实例锁：防多开同时写同一份数据目录
+ck('桌面单实例锁 requestSingleInstanceLock',
+  has(read('src/main/index.js'), /app\.requestSingleInstanceLock\(\)/) &&
+  has(read('src/main/index.js'), /app\.on\('second-instance'/))
+ck('发行包版本 v1.14.3', pkg.version === '1.14.3')
 
 console.log('\n' + (bad === 0 ? 'ALL PASS' : bad + ' FAILED'))
 process.exit(bad ? 1 : 0)

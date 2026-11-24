@@ -1,5 +1,13 @@
 'use strict'
 const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron')
+
+// v1.14.2 单实例锁（2026-11-24）：只允许一个实例运行。
+// 背景：桌面版数据目录只有一份（sources.json 36MB 级、imported.json 等），若开两个进程，
+// 各自 new Store() 读同一份文件、各自跑独立的 15 分钟定时器、各自 saveDb() 全量覆写 →
+// 相互覆盖改动、丢数据、对服务端的请求翻倍。第二实例拿到 false 后立即退出，
+// 并且**不执行**下方的数据目录重定向/迁移（见 portableInfo），避免它碰任何数据。
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) app.quit()
 const path = require('path')
 const fs = require('fs')
 const { Store } = require('../core/store')
@@ -110,8 +118,9 @@ function setupPortableMode() {
     return { error: String((e && e.message) || e) }
   }
 }
-// 必须在 new Store / app.whenReady 之前重定向 userData，后续所有 getPath('userData') 才一致
-const portableInfo = setupPortableMode()
+// 必须在 new Store / app.whenReady 之前重定向 userData，后续所有 getPath('userData') 才一致。
+// 第二实例不执行目录重定向/迁移，绝不碰共享数据目录（单实例锁，见文件头）。
+const portableInfo = gotSingleInstanceLock ? setupPortableMode() : null
 
 function createWindow() {
   win = new BrowserWindow({
@@ -134,6 +143,9 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // 第二实例在文件头已 app.quit()，这里再兜一层：绝不建 Store/Hunter、不注册任何定时器/IPC，
+  // 避免两个进程同时读写同一份数据目录或各跑一份 15 分钟复查。
+  if (!gotSingleInstanceLock) return
   if (portableInfo && portableInfo.root) {
     pushLog({
       msg: `便携模式：数据目录 ${getDataDir()}（与软件同目录；拷贝整个软件文件夹即可迁移到其他电脑）` +
@@ -256,6 +268,13 @@ app.whenReady().then(() => {
       }
     } catch (e) {}
   }, 60 * 1000)
+})
+
+// 再开一个实例时，不新开进程，聚焦已存在的窗口（配合文件头的单实例锁）。
+app.on('second-instance', () => {
+  if (!win) return
+  if (win.isMinimized()) win.restore()
+  win.focus()
 })
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
@@ -722,14 +741,25 @@ ipcMain.handle('sources:get', guard(() => {
   for (const s of store.getSources()) {
     if (s.deep && s.deep.failKind == null) s.deep.failKind = deepFailKind(s.deep)
   }
+  // v1.14.2：与 Web 版 src/server/web.js `/api/sources` 对齐——把「服务端处置冻结」
+  // 标到每条音源上（五个徽章：服务端已删/未知源/需VM白名单/服务端隔离/部分平台禁用），
+  // 并返回顶层 veto（徽章的「上次核对时间」等要读）。桌面版此前漏挂，导致五个徽章
+  // 全不显示、「重新核对服务端状态」按钮点了也看不到结果。
+  const veto = store.db.veto || {}
+  const list = require('../core/sourceView').publicSourceList(store.getSources(), store.config)
+  for (const s of list) {
+    if (s && veto[s.id]) s.veto = veto[s.id]
+  }
   return {
     // 桌面版同样剥掉 code：IPC 也要序列化这 11MB，剥掉后列表响应体 14.3MB → 2.7MB
     // （渲染层列表不用正文，见 core/sourceView.js 的说明）
     // v1.10.8：桌面版与 Web 版保持一致——隔离区三档分级随列表下发（qzLevel/qzReasons）
-    sources: require('../core/sourceView').publicSourceList(store.getSources(), store.config),
+    sources: list,
     imported: store.imported,
     lastCrawl: store.db.lastCrawl,
-    patrol: store.db.patrol || { lastRun: 0 }
+    patrol: store.db.patrol || { lastRun: 0 },
+    // v1.14.2：与 Web 版一致，顶层带出冻结表（徽章时间 / 重新核对结果需要）
+    veto
   }
 }))
 
